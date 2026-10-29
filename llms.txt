@@ -1,0 +1,15 @@
+# graphql-orm-client
+
+A GraphQL client for graphql-orm APIs: fragments colocated with components, compiled route
+queries, a normalised store and live updates from generated Changed subscriptions. Status:
+design stage; APIs in these documents are proposals. Read the installed docs, which match the
+installed version.
+
+- [README](README.md)
+- [Design](docs/design.md)
+- [graphql-orm contract](docs/graphql-orm-contract.md)
+- [Roadmap](docs/roadmap.md)
+- [Contributor guidance](AGENTS.md)
+- [Changelog](CHANGELOG.md)
+- Skills: skills/graphql-orm-client-adopt, skills/graphql-orm-client-data,
+  skills/graphql-orm-client-live, skills/graphql-orm-client-server

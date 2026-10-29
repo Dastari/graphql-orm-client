@@ -1,0 +1,35 @@
+---
+name: graphql-orm-client-live
+description: Keep graphql-orm-client data live with generated Changed subscriptions, per-type cache policy, record versions, expiry and polling fallbacks.
+---
+
+# Live data and cache policy
+
+Status: design stage. Check the installed `docs/design.md` and `docs/graphql-orm-contract.md`.
+
+## Making data live
+
+- Mark a fragment `@live` when its fields should update while on screen. The live layer
+  subscribes to the type's generated `<Entity>Changed` events for the records that are
+  retained. Do not write subscription operations by hand for this.
+- Live delivery needs the server to write that state through the ORM. If a type's state is
+  written around the ORM (in-memory registries, raw SQL), no events arrive. Configure a
+  polling interval for that type and record the gap.
+- Without a record version, the last write to arrive wins. For a row that is rewritten while
+  users watch it, ask the backend to add `#[graphql_orm(version)]`.
+
+## Cache policy
+
+- Configure per type in `store.types`: `staleMs` for background refresh, `expiresField` for
+  records with a lifetime. `Changed` fires on writes, not on clock expiry, so expiring records
+  need `expiresField` or they stay on screen after they lapse.
+- Keep `store.scope` set to the signed-in identity. Never persist across scopes.
+- Use persistence (IndexedDB) only when offline start is a requirement.
+
+## Diagnosing stale data
+
+1. Is the fragment marked `@live` and is the record retained?
+2. Does the server emit `Changed` for that write? (Check that the write path goes through the
+   ORM and that the relation propagates `up` if the change is on a child.)
+3. Is an older poll result overwriting a newer event? That requires a record version.
+4. After a reconnect, did the client replay or refetch?

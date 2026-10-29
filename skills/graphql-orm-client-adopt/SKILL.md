@@ -1,0 +1,31 @@
+---
+name: graphql-orm-client-adopt
+description: Install graphql-orm-client in an application, configure the network, store and identity scope, run the codegen preset and wire route loaders.
+---
+
+# Adopt graphql-orm-client
+
+Status: design stage. The APIs below are proposed; check the installed package's
+`docs/design.md` and changelog before writing code, and do not invent APIs it does not list.
+
+Read the installed `README.md`, `docs/design.md` and `docs/graphql-orm-contract.md` first.
+The client only works against graphql-orm services and their router.
+
+1. **Schema snapshot.** Keep the router's SDL in the repository (for example
+   `schema/router.graphql`) and refresh it with the project's schema pull script.
+2. **Codegen.** Use the preset from `graphql-orm-client/codegen` in the project's codegen
+   config. Every document is written with the generated `graphql()` function, so each carries
+   its own types, and an invalid field fails the build.
+3. **Client.** Create one client per signed-in identity with `createClient`. Pass the identity
+   key as `store.scope`. When the identity changes, dispose the client; never reuse it.
+4. **Network.** HTTP for queries and mutations (same-origin BFF where the project has one),
+   WebSocket (`graphql-transport-ws`) for subscriptions. Authenticate the socket in
+   `connectionParams`.
+5. **Provider.** Wrap the application in the React provider from `graphql-orm-client/react`.
+6. **Routes.** Each route that shows data owns one root query. Start it in the route loader
+   with `client.preload(Query, variables)` and read it in the component with `useQuery`.
+7. **Migrate gradually.** An application already on Apollo can move one route at a time.
+   Move the fragments next to their components first (see `graphql-orm-client-data`).
+
+Verify: the route makes one request on first load, a second visit within the retention
+period makes none, and signing out clears every record.
