@@ -8,7 +8,7 @@ description: Install graphql-orm-client in an application, configure the network
 Status: design stage. The APIs below are proposed; check the installed package's
 `docs/design.md` and changelog before writing code, and do not invent APIs it does not list.
 
-Read the installed `README.md`, `docs/design.md` and `docs/graphql-orm-contract.md` first.
+Install a versioned GitHub release archive (`pnpm add https://github.com/Dastari/graphql-orm-client/releases/download/v<version>/graphql-orm-client-<version>.tgz`), and keep the lockfile. Then read the installed `README.md`, `docs/design.md` and `docs/graphql-orm-contract.md`.
 The client only works against graphql-orm services and their router.
 
 1. **Schema snapshot.** Keep the router's SDL in the repository (for example
