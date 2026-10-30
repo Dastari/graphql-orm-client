@@ -6,9 +6,10 @@ Status: partly built. Implemented and tested:
 - the store: normalisation, version ordering, masked reads, subscriptions, retention and garbage collection, disposal;
 - `Client`: `execute`, `watchQuery`, `preload` and `mutate`;
 - `readFragment`;
-- React: `ClientProvider`, `useQuery`, `useFragment` and `useFragmentList`.
+- React: `ClientProvider`, `useQuery`, `useFragment` and `useFragmentList`;
+- the live layer: `compile(...).live`, `LiveManager`, and `createClient({ live })`.
 
-Proposed, not built: the live layer, `usePagination`, optimistic updates, persistence, the codegen preset, and per-type `staleMs`/`expiresField` policy.
+Proposed, not built: polling for live overflow and unavailable types, `usePagination`, optimistic updates, persistence, the codegen preset, and per-type `staleMs`/`expiresField` policy.
 
 ## Goals
 
@@ -180,6 +181,23 @@ hold scope (a new search term on the same organisation) keeps the previous resul
 
 Polling remains for state that emits no events (in-memory server state) and when the number
 of live keys exceeds the subscription limit.
+
+### Live modes
+
+The compiler reads each type's generated `<Type>Changed` subscription from the schema and picks
+how to narrow it:
+
+| Mode | When | Subscriptions |
+| --- | --- | --- |
+| `keys` | the field has a `Keys` argument (graphql-orm #261) | one per type, in chunks of up to 500 keys |
+| `key` | the field has a `Key` argument | one per held record, up to `maxKeyedSubscriptions` (50) |
+| `unkeyed` | neither | one per type; events for records nobody holds are dropped |
+
+The payload's entity field is found by type (`Device` in `DeviceChangedEvent`), and its action
+by name. Types with `@live` fragments but no usable subscription are listed in
+`compile(...).liveUnavailable`, and their holders must poll. `client.live.status()` reports
+per-type counts, including overflow beyond the `key`-mode limit. A `DELETED` event removes the
+record, and any query that showed it reads again.
 
 ## Mutations
 

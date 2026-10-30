@@ -1,6 +1,7 @@
 import { buildSchema } from "graphql"
 import { compile } from "../src/compiler/index.js"
 import type { GraphQLResponse, Network, OperationRequest } from "../src/client.js"
+import type { SubscriptionSink } from "../src/live.js"
 
 /** A schema in graphql-orm's shape: PascalCase fields, Id keys, keyset connections, Where inputs. */
 export const schema = buildSchema(`
@@ -14,6 +15,18 @@ export const schema = buildSchema(`
   type Mutation {
     UpdateDevice(Id: String!, Input: UpdateDeviceInput!): DeviceResult!
   }
+  type Subscription {
+    DeviceChanged(Filter: SubscriptionFilterInput, Key: String): DeviceChangedEvent!
+    SlotChanged(Filter: SubscriptionFilterInput, Keys: [SlotKeyInput!]): SlotChangedEvent!
+    OrganisationChanged(Filter: SubscriptionFilterInput): OrganisationChangedEvent!
+  }
+  input SubscriptionFilterInput { Actions: [ChangeAction!] }
+  input SlotKeyInput { Site: String!, Name: String! }
+  enum ChangeAction { CREATED UPDATED DELETED }
+  enum ChangeKind { DIRECT PROPAGATED }
+  type DeviceChangedEvent { Action: ChangeAction!, ChangeKind: ChangeKind!, Id: String!, Device: Device }
+  type SlotChangedEvent { Action: ChangeAction!, ChangeKind: ChangeKind!, Slot: Slot }
+  type OrganisationChangedEvent { Action: ChangeAction!, ChangeKind: ChangeKind!, Id: String!, Organisation: Organisation }
   input DeviceWhereInput { Name: StringFilter, OrganisationId: StringFilter }
   input StringFilter { Eq: String, Contains: String }
   input KeysetPageInput { after: String, limit: Int }
@@ -43,7 +56,8 @@ export const documents = [
     ConnectionState
     Organisation { ...OrganisationBadge }
   }`,
-  `fragment OrganisationBadge on Organisation { DisplayName }`,
+  `fragment OrganisationBadge on Organisation @live { DisplayName }`,
+  `fragment SlotState on Slot @live { State }`,
   `fragment DeviceDetail on Device {
     Name
     Hostname
@@ -60,7 +74,7 @@ export const documents = [
     Device(Id: $Id) { ...DeviceDetail ...DeviceRow }
   }`,
   `query SlotPage($Site: String!, $Name: String!) {
-    Slot(Site: $Site, Name: $Name) { State }
+    Slot(Site: $Site, Name: $Name) { State ...SlotState }
   }`,
   `query SearchPage($Text: String!) {
     Search(Text: $Text) {
@@ -86,7 +100,7 @@ export const ops = compiled.operations as Record<
   (typeof compiled.operations)[string]
 >
 export const frags = compiled.fragments as Record<
-  "DeviceRow" | "OrganisationBadge" | "DeviceDetail",
+  "DeviceRow" | "OrganisationBadge" | "DeviceDetail" | "SlotState",
   (typeof compiled.fragments)[string]
 >
 
@@ -121,4 +135,19 @@ export function mockNetwork(responder: (request: OperationRequest) => GraphQLRes
     },
   }
   return { network, requests }
+}
+
+/** A subscription transport the test drives by hand. */
+export function mockSubscriptions() {
+  const open = new Map<number, { request: OperationRequest; sink: SubscriptionSink }>()
+  let next = 0
+  const subscribe = (request: OperationRequest, sink: SubscriptionSink) => {
+    const id = ++next
+    open.set(id, { request, sink })
+    return () => {
+      open.delete(id)
+    }
+  }
+  const find = (name: string) => [...open.values()].filter((entry) => entry.request.name === name)
+  return { subscribe, open, find }
 }

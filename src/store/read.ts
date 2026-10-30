@@ -25,6 +25,8 @@ interface ReadOptions {
   readonly inlineSpreads?: boolean
   /** Collects the root-record keys read (used for garbage collection). */
   readonly rootKeys?: Set<string>
+  /** Called for every fragment spread that applies to a record. */
+  readonly onSpread?: (fragment: string, id: string, typename: string) => void
 }
 
 function isLink(value: unknown): value is StoredLink {
@@ -102,6 +104,7 @@ export function readSelections<T>(store: Store, selector: Selector, options: Rea
         }
         case "spread": {
           if (!selection.possibleTypes.includes(typename)) break
+          options.onSpread?.(selection.name, id, typename)
           if (options.inlineSpreads) {
             const fragment = selector.fragments[selection.name]
             if (fragment) readInto(data, id, typename, fragment.selections)

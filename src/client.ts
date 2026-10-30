@@ -1,7 +1,8 @@
 import type { FragmentArtifact, OperationArtifact } from "./artifact.js"
 import { stableStringify, type Variables } from "./store/arguments.js"
 import { contextOf, normalize } from "./store/normalize.js"
-import { FRAGMENT_REF, type FragmentRefData } from "./store/read.js"
+import { LiveManager, type LiveOptions } from "./live.js"
+import { FRAGMENT_REF, readSelections, type FragmentRefData } from "./store/read.js"
 import { ROOT_ID, Store, type Selector, type Snapshot, type StoreOptions } from "./store/store.js"
 
 export interface GraphQLErrorLike {
@@ -61,6 +62,8 @@ export interface QueryState<T> {
 export interface ClientOptions {
   readonly network: Network
   readonly store?: StoreOptions
+  /** Keep records read through `@live` fragments current with generated Changed subscriptions. */
+  readonly live?: LiveOptions
 }
 
 /** A shared, retained view of one query and its variables. */
@@ -128,6 +131,7 @@ class QueryResource<T> implements WatchedQuery<T> {
     this.controller?.abort()
     this.unsubscribeStore?.()
     this.unsubscribeStore = null
+    this.client.live?.hold(this.key, new Map())
     this.release?.()
     this.release = null
   }
@@ -159,9 +163,30 @@ class QueryResource<T> implements WatchedQuery<T> {
 
   private watch(snapshot: Snapshot<T>): void {
     this.unsubscribeStore?.()
+    this.holdLive()
     this.unsubscribeStore = this.client.store.subscribe(snapshot, (next) => {
       this.set({ ...this.state, data: next.data as T })
+      this.holdLive()
+      // A record this query shows was deleted or collected: read it again from the server.
+      if (next.missing && this.users > 0) void this.fetch()
     })
+  }
+
+  /** Tell the live layer which records this query shows through `@live` fragments. */
+  private holdLive(): void {
+    const live = this.client.live
+    if (!live) return
+    const targets = new Map<string, Set<string>>()
+    readSelections(this.client.store, selectorOf(this.artifact, this.variables), {
+      inlineSpreads: true,
+      onSpread: (fragment, id, typename) => {
+        if (!this.artifact.fragments[fragment]?.live || !live.covers(typename)) return
+        const ids = targets.get(typename) ?? new Set<string>()
+        ids.add(id)
+        targets.set(typename, ids)
+      },
+    })
+    live.hold(this.key, targets)
   }
 
   private set(state: QueryState<T>): void {
@@ -176,6 +201,8 @@ class QueryResource<T> implements WatchedQuery<T> {
  */
 export class Client {
   readonly store: Store
+  /** Null when the client was created without live options. */
+  readonly live: LiveManager | null
   private readonly network: Network
   private readonly resources = new Map<string, QueryResource<unknown>>()
   private readonly controllers = new Set<AbortController>()
@@ -184,6 +211,12 @@ export class Client {
   constructor(options: ClientOptions) {
     this.network = options.network
     this.store = new Store(options.store)
+    this.live = options.live ? new LiveManager(this.store, options.live) : null
+  }
+
+  /** Refetch every open query; call after a subscription reconnect may have missed events. */
+  async refetchActive(): Promise<void> {
+    await Promise.all([...this.resources.values()].filter((resource) => resource.users > 0).map((resource) => resource.fetch()))
   }
 
   /** Send an operation and write its response into the store. */
@@ -267,6 +300,7 @@ export class Client {
   }
 
   dispose(): void {
+    this.live?.dispose()
     for (const controller of this.controllers) controller.abort()
     this.controllers.clear()
     this.resources.clear()

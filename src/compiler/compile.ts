@@ -27,6 +27,8 @@ import {
 import type {
   ArgumentSpec,
   FragmentArtifact,
+  LiveArtifact,
+  LiveMode,
   OperationArtifact,
   Selection,
 } from "../artifact.js"
@@ -42,11 +44,17 @@ export interface CompileOptions {
    * version never replaces a newer stored record.
    */
   readonly versions?: Readonly<Record<string, string>>
+  /** The generated subscription field for a type. Default `${typename}Changed`. */
+  readonly liveField?: (typename: string) => string
 }
 
 export interface CompileResult {
   readonly operations: Readonly<Record<string, OperationArtifact>>
   readonly fragments: Readonly<Record<string, FragmentArtifact>>
+  /** Live subscriptions per type that has `@live` fragments. */
+  readonly live: Readonly<Record<string, LiveArtifact>>
+  /** Types with `@live` fragments but no usable `Changed` subscription; they need polling. */
+  readonly liveUnavailable: readonly string[]
 }
 
 export class CompileError extends Error {
@@ -79,6 +87,15 @@ export function compile(
   schema: GraphQLSchema,
   sources: readonly (string | DocumentNode)[],
   options: CompileOptions = {}
+): CompileResult {
+  return compileDocuments(schema, sources, options, true)
+}
+
+function compileDocuments(
+  schema: GraphQLSchema,
+  sources: readonly (string | DocumentNode)[],
+  options: CompileOptions,
+  withLive: boolean
 ): CompileResult {
   const clientSchema = extendSchema(schema, CLIENT_DIRECTIVES)
   const documents = sources.map((source) => (typeof source === "string" ? parse(source) : source))
@@ -165,7 +182,69 @@ export function compile(
       fragments: Object.fromEntries([...used].sort().map((fragment) => [fragment, fragments[fragment]!])),
     }
   }
-  return { operations, fragments }
+  if (!withLive) return { operations, fragments, live: {}, liveUnavailable: [] }
+  const { live, liveUnavailable } = compileLive(schema, fragments, fragmentNodes, options)
+  return { operations, fragments, live, liveUnavailable }
+}
+
+function compileLive(
+  schema: GraphQLSchema,
+  fragments: Readonly<Record<string, FragmentArtifact>>,
+  fragmentNodes: ReadonlyMap<string, FragmentDefinitionNode>,
+  options: CompileOptions
+): { live: Record<string, LiveArtifact>; liveUnavailable: string[] } {
+  const byType = new Map<string, string[]>()
+  for (const fragment of Object.values(fragments)) {
+    if (!fragment.live) continue
+    const type = schema.getType(fragment.typeCondition)
+    if (!type || !isObjectType(type)) continue
+    byType.set(type.name, [...(byType.get(type.name) ?? []), fragment.name])
+  }
+  const live: Record<string, LiveArtifact> = {}
+  const liveUnavailable: string[] = []
+  const subscriptionRoot = schema.getSubscriptionType()
+  for (const [typename, names] of [...byType].sort(([a], [b]) => (a < b ? -1 : 1))) {
+    const fieldName = options.liveField?.(typename) ?? `${typename}Changed`
+    const field = subscriptionRoot?.getFields()[fieldName]
+    const payload = field ? getNamedType(field.type) : undefined
+    if (!field || !payload || !isObjectType(payload)) {
+      liveUnavailable.push(typename)
+      continue
+    }
+    const payloadFields = Object.values(payload.getFields())
+    const entity = payloadFields.find((candidate) => getNamedType(candidate.type).name === typename)
+    const action = payloadFields.find((candidate) => candidate.name.toLowerCase() === "action")
+    const keyFields = keyFieldsOf(schema, typename, options)
+    if (!entity || !action || !keyFields) {
+      liveUnavailable.push(typename)
+      continue
+    }
+    const keysArg = field.args.find((arg) => arg.name.toLowerCase() === "keys")
+    const keyArg = field.args.find((arg) => arg.name.toLowerCase() === "key")
+    const mode: LiveMode = keysArg ? "keys" : keyArg ? "key" : "unkeyed"
+    const arg = keysArg ?? keyArg
+    const operationName = `Live${typename}`
+    const variables = arg ? `($${arg.name}: ${String(arg.type)})` : ""
+    const argumentUse = arg ? `(${arg.name}: $${arg.name})` : ""
+    const spreads = [...names].sort().map((name) => `...${name}`).join(" ")
+    const text = `subscription ${operationName}${variables} { ${fieldName}${argumentUse} { ${action.name} ${entity.name} { ${spreads} } } }`
+    const document: DocumentNode = {
+      kind: Kind.DOCUMENT,
+      definitions: [...parse(text).definitions, ...fragmentNodes.values()],
+    }
+    const compiled = compileDocuments(schema, [document], options, false)
+    live[typename] = {
+      typename,
+      mode,
+      field: fieldName,
+      entityField: entity.name,
+      actionField: action.name,
+      keyArgument: arg?.name ?? null,
+      keyFields,
+      operation: compiled.operations[operationName]!,
+    }
+  }
+  return { live, liveUnavailable }
 }
 
 function pick<T>(source: Record<string, T>, names: ReadonlySet<string>): Record<string, T> {

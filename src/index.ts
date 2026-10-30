@@ -2,9 +2,13 @@ export type {
   Artifact,
   ArgumentSpec,
   FragmentArtifact,
+  LiveArtifact,
+  LiveMode,
   OperationArtifact,
   Selection,
 } from "./artifact.js"
+export { LiveManager } from "./live.js"
+export type { LiveOptions, LiveTypeStatus, SubscriptionSink } from "./live.js"
 export {
   Client,
   OperationError,

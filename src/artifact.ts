@@ -81,4 +81,29 @@ export interface OperationArtifact {
   readonly fragments: Readonly<Record<string, FragmentArtifact>>
 }
 
-export type Artifact = OperationArtifact | FragmentArtifact
+/**
+ * How a type's generated `<Type>Changed` subscription can be narrowed to the records on screen:
+ * - `keys`: one subscription per type with a bounded `Keys` list;
+ * - `key`: one subscription per record with `Key`;
+ * - `unkeyed`: one subscription per type; the client ignores records it does not hold.
+ */
+export type LiveMode = "keys" | "key" | "unkeyed"
+
+export interface LiveArtifact {
+  readonly typename: string
+  readonly mode: LiveMode
+  /** The subscription field, e.g. `DeviceChanged`. */
+  readonly field: string
+  /** The payload field holding the changed entity. */
+  readonly entityField: string
+  /** The payload field holding CREATED / UPDATED / DELETED. */
+  readonly actionField: string
+  /** The argument and variable name for keys (`Keys` or `Key`); null when unkeyed. */
+  readonly keyArgument: string | null
+  /** The key fields in primary-key order; composite keys are sent as input objects. */
+  readonly keyFields: readonly string[]
+  /** The subscription to run, selecting every `@live` fragment on the type. */
+  readonly operation: OperationArtifact
+}
+
+export type Artifact = OperationArtifact | FragmentArtifact | LiveArtifact
