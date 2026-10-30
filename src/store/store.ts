@@ -28,6 +28,12 @@ export interface Snapshot<T = unknown> extends ReadResult<T> {
   readonly selector: Selector
 }
 
+/** What an optimistic write changed, so it can be rolled back. */
+export interface OptimisticLayer {
+  readonly backups: Map<string, { readonly typename: string; readonly fields: Map<string, StoredValue> } | null>
+  readonly written: Map<string, Map<string, StoredValue>>
+}
+
 export interface StoreOptions {
   /** How long an unretained operation's records stay before collection. Default 5 minutes. */
   readonly retainMs?: number
@@ -76,6 +82,7 @@ export class Store {
   getOrCreate(id: string, typename: string): StoredRecord {
     this.assertLive()
     const existing = this.records.get(id)
+    this.backup(id)
     if (existing && existing.__typename === typename) return existing
     const record: StoredRecord = { __id: id, __typename: typename, fields: new Map() }
     this.records.set(id, record)
@@ -86,8 +93,67 @@ export class Store {
   setField(record: StoredRecord, key: string, value: StoredValue): void {
     const previous = record.fields.get(key)
     if (record.fields.has(key) && sameValue(previous, value)) return
+    this.backup(record.__id)
+    if (this.journal) {
+      const written = this.journal.written.get(record.__id) ?? new Map<string, StoredValue>()
+      written.set(key, value)
+      this.journal.written.set(record.__id, written)
+    }
     record.fields.set(key, value)
     this.changed.add(record.__id)
+  }
+
+  private journal: OptimisticLayer | null = null
+
+  private backup(id: string): void {
+    const journal = this.journal
+    if (!journal || journal.backups.has(id)) return
+    const existing = this.records.get(id)
+    journal.backups.set(
+      id,
+      existing ? { typename: existing.__typename, fields: new Map(existing.fields) } : null
+    )
+  }
+
+  /**
+   * Apply writes as an optimistic layer. Rolling it back restores each field the layer wrote,
+   * unless something newer (a response or live event) has replaced it since.
+   */
+  optimistic(write: () => void): OptimisticLayer {
+    if (this.journal) throw new Error("Optimistic layers cannot nest")
+    const layer: OptimisticLayer = { backups: new Map(), written: new Map() }
+    this.journal = layer
+    try {
+      write()
+    } finally {
+      this.journal = null
+    }
+    this.publish()
+    return layer
+  }
+
+  rollback(layer: OptimisticLayer): void {
+    for (const [id, written] of layer.written) {
+      const record = this.records.get(id)
+      if (!record) continue
+      const backup = layer.backups.get(id)
+      let untouched = true
+      for (const [key, value] of written) {
+        if (!sameValue(record.fields.get(key), value)) {
+          untouched = false
+          continue
+        }
+        if (backup && backup.fields.has(key)) record.fields.set(key, backup.fields.get(key))
+        else record.fields.delete(key)
+        this.changed.add(id)
+      }
+      // A record the layer created, and nothing else has written to, goes away again.
+      if (backup === null && untouched && record.fields.size === 0) this.delete(id)
+    }
+    for (const [id, backup] of layer.backups) {
+      if (backup === null && !layer.written.has(id)) this.delete(id)
+    }
+    this.publish()
   }
 
   delete(id: string): void {

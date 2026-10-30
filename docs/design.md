@@ -11,9 +11,10 @@ Status: partly built. Implemented and tested:
 - the generator: `graphql-orm-client generate` with `--check`. It emits typed artifacts, masked
   reference types, the `live` artifacts and an overloaded `graphql()`.
 
-- pagination: `@connection`, `loadMore`, `hasMore` and `loadingMore`.
+- pagination: `@connection`, `loadMore`, `hasMore` and `loadingMore`;
+- optimistic mutations, interval polling, and the live polling fallback.
 
-Proposed, not built: polling for live overflow and unavailable types, offset (page-number) navigation, optimistic updates, persistence, and per-type `staleMs`/`expiresField` policy.
+Proposed, not built: offset (page-number) navigation, automatic list insertion after mutations, persistence, and per-type `staleMs`/`expiresField` policy.
 
 ## Goals
 
@@ -207,16 +208,30 @@ record, and any query that showed it reads again.
 ## Mutations
 
 ```ts
-const [rename, { pending }] = useMutation(RenameDeviceMutation, {
-  optimistic: (vars) => ({ Device: { __id: vars.id, Hostname: vars.hostname } }),
+await client.mutate(RenameDeviceMutation, { Id: id, Name: name }, {
+  optimisticResponse: { UpdateDevice: { __typename: "DeviceResult", Success: true, Entity: { __typename: "Device", Id: id, Name: name } } },
 })
 ```
 
-- The mutation's selection spreads the fragments of the views it affects, so the response
-  updates the store directly.
-- An optimistic update is applied as a layer and removed when the response or an error arrives.
-- Inserting into or removing from a list uses explicit list updaters keyed by connection and
-  `Where`. When no updater is given, the affected lists are invalidated and refetched.
+- **Store updates.** Spread the fragments of the views a mutation affects into its selection, so
+  its response updates every view of the record.
+- **Optimistic responses.** An `optimisticResponse` is written as a layer and shows at once. When
+  the real response or an error arrives, the layer is rolled back field by field, and the real
+  response is written. A field that changed since (from a live event or another response) is not
+  rolled back.
+- **Lists.** Inserting into or removing from a list is not automatic. Refetch the affected query,
+  or rely on the live layer.
+
+## Polling
+
+- **Fixed intervals.** `watchQuery(..., { pollMs })` and `useQuery(..., { pollMs })` refetch on
+  an interval while the query is open.
+- **Live fallback.** A query that shows `@live` records no subscription covers polls every
+  `polling.liveFallbackMs` (default 30 s; `null` turns it off). That covers types with no usable
+  `Changed` subscription, records beyond the per-record cap in `key` mode, and every `@live`
+  record when the client has no live layer.
+- **Pausing.** Polls pause while `polling.isActive()` is false (by default, while the document is
+  hidden).
 
 ## Pagination
 

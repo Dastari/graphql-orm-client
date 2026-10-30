@@ -7,8 +7,9 @@ record once. Generated `Changed` subscriptions update the store while the record
 screen.
 
 > **Status: early alpha.** The compiler, the normalised store, the React bindings and the live
-> layer, cursor pagination and the generator with TypeScript types all work and are tested.
-> Optimistic updates and polling fallbacks are not built yet, and APIs may still change. See the [roadmap](docs/roadmap.md).
+> layer, cursor pagination, optimistic mutations, polling and the generator with TypeScript types
+> all work and are tested. It has not yet run in a production application, and APIs may still
+> change. See the [roadmap](docs/roadmap.md).
 
 ## Why not Apollo or Relay
 

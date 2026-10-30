@@ -3,7 +3,7 @@ import { fieldStorageKey, stableStringify, type Variables } from "./store/argume
 import { contextOf, normalize } from "./store/normalize.js"
 import { LiveManager, type LiveOptions } from "./live.js"
 import { FRAGMENT_REF, readSelections, type FragmentRefData } from "./store/read.js"
-import { ROOT_ID, Store, type Selector, type Snapshot, type StoreOptions } from "./store/store.js"
+import { ROOT_ID, Store, type OptimisticLayer, type Selector, type Snapshot, type StoreOptions } from "./store/store.js"
 
 export interface GraphQLErrorLike {
   readonly message: string
@@ -68,6 +68,26 @@ export interface ClientOptions {
   readonly store?: StoreOptions
   /** Keep records read through `@live` fragments current with generated Changed subscriptions. */
   readonly live?: LiveOptions
+  readonly polling?: PollingOptions
+}
+
+export interface PollingOptions {
+  /**
+   * How often a query refetches when it shows `@live` records that no subscription covers: types
+   * without a usable Changed subscription, or records beyond a per-record cap. Default 30 s;
+   * `null` disables the fallback.
+   */
+  readonly liveFallbackMs?: number | null
+  /** Polls pause while this returns false. Default: the document is visible. */
+  readonly isActive?: () => boolean
+  readonly setInterval?: (callback: () => void, ms: number) => unknown
+  readonly clearInterval?: (handle: unknown) => void
+}
+
+export interface WatchOptions {
+  readonly policy?: FetchPolicy
+  /** Refetch on this interval while the query is open. */
+  readonly pollMs?: number
 }
 
 /** A shared, retained view of one query and its variables. */
@@ -131,11 +151,57 @@ class QueryResource<T> implements WatchedQuery<T> {
     if (this.users > 1) return
     this.release = this.client.store.retain(this.key, selectorOf(this.artifact, this.variables))
     if (this.state.status !== "ready" || this.policy !== "store-or-network") void this.fetch()
+    this.holdLive()
+    this.schedulePoll()
+  }
+
+  private fixedPollMs: number | null = null
+  private fallbackPoll = false
+  private pollTimer: unknown = null
+  private pollMs: number | null = null
+
+  /** Poll at this interval while open; the shortest requested interval wins. */
+  requestPoll(ms: number): void {
+    this.fixedPollMs = this.fixedPollMs === null ? ms : Math.min(this.fixedPollMs, ms)
+    this.schedulePoll()
+  }
+
+  private schedulePoll(): void {
+    const fallback = this.client.polling.liveFallbackMs === undefined ? 30_000 : this.client.polling.liveFallbackMs
+    const candidates = [this.fixedPollMs, this.fallbackPoll ? fallback : null].filter(
+      (value): value is number => typeof value === "number" && value > 0
+    )
+    const next = this.users > 0 && candidates.length ? Math.min(...candidates) : null
+    if (next === this.pollMs) return
+    const clear = this.client.polling.clearInterval ?? ((handle: unknown) => clearInterval(handle as ReturnType<typeof setInterval>))
+    if (this.pollTimer !== null) clear(this.pollTimer)
+    this.pollTimer = null
+    this.pollMs = next
+    if (next === null) return
+    const set =
+      this.client.polling.setInterval ??
+      ((callback: () => void, ms: number) => {
+        const handle = setInterval(callback, ms)
+        // Don't keep a Node process (SSR, tests) alive for a poll.
+        ;(handle as { unref?: () => void }).unref?.()
+        return handle
+      })
+    this.pollTimer = set(() => {
+      const active = this.client.polling.isActive ?? defaultActive
+      if (this.users > 0 && active() && !this.inflight) void this.fetch()
+    }, next)
+  }
+
+  /** Whether the query polls, and how often; for diagnostics and tests. */
+  get polling(): number | null {
+    return this.pollMs
   }
 
   close(): void {
     this.users -= 1
     if (this.users > 0) return
+    this.users = 0
+    this.schedulePoll()
     this.controller?.abort()
     this.unsubscribeStore?.()
     this.unsubscribeStore = null
@@ -233,19 +299,27 @@ class QueryResource<T> implements WatchedQuery<T> {
 
   /** Tell the live layer which records this query shows through `@live` fragments. */
   private holdLive(): void {
+    if (this.users === 0) return
     const live = this.client.live
-    if (!live) return
     const targets = new Map<string, Set<string>>()
+    let uncovered = false
     readSelections(this.client.store, selectorOf(this.artifact, this.variables), {
       inlineSpreads: true,
       onSpread: (fragment, id, typename) => {
-        if (!this.artifact.fragments[fragment]?.live || !live.covers(typename)) return
+        if (!this.artifact.fragments[fragment]?.live) return
+        if (!live?.covers(typename)) {
+          uncovered = true
+          return
+        }
         const ids = targets.get(typename) ?? new Set<string>()
         ids.add(id)
         targets.set(typename, ids)
       },
     })
-    live.hold(this.key, targets)
+    live?.hold(this.key, targets)
+    const overflowing = live ? [...targets.keys()].some((typename) => live.overflows(typename)) : false
+    this.fallbackPoll = uncovered || overflowing
+    this.schedulePoll()
   }
 
   private set(state: QueryState<T>): void {
@@ -267,8 +341,11 @@ export class Client {
   private readonly controllers = new Set<AbortController>()
   private mutationCount = 0
 
+  readonly polling: PollingOptions
+
   constructor(options: ClientOptions) {
     this.network = options.network
+    this.polling = options.polling ?? {}
     this.store = new Store(options.store)
     this.live = options.live ? new LiveManager(this.store, options.live) : null
   }
@@ -282,7 +359,7 @@ export class Client {
   async execute<T = unknown, V extends Variables = Variables>(
     artifact: OperationArtifact<T, V>,
     variables: V,
-    options: { signal?: AbortSignal } = {}
+    options: { signal?: AbortSignal; beforeWrite?: () => void } = {}
   ): Promise<{ snapshot: Snapshot<T>; errors: readonly GraphQLErrorLike[] }> {
     if (this.store.isDisposed) throw new Error("This client was disposed with its identity")
     const controller = new AbortController()
@@ -298,6 +375,7 @@ export class Client {
       if (this.store.isDisposed || controller.signal.aborted)
         throw new DOMException("The request was cancelled", "AbortError")
       const errors = response.errors ?? []
+      options.beforeWrite?.()
       if (!response.data) throw new OperationError(artifact.name, errors)
       const rootId = artifact.kind === "query" ? ROOT_ID : `client:${artifact.kind}:${++this.mutationCount}`
       normalize(this.store, artifact.normalization, response.data, contextOf(artifact, variables), rootId, artifact.rootType)
@@ -318,14 +396,16 @@ export class Client {
   watchQuery<T = unknown, V extends Variables = Variables>(
     artifact: OperationArtifact<T, V>,
     variables: V,
-    policy: FetchPolicy = "store-and-network"
+    options: FetchPolicy | WatchOptions = "store-and-network"
   ): WatchedQuery<T> & { open(): void; close(): void } {
+    const { policy = "store-and-network", pollMs } = typeof options === "string" ? { policy: options } : options
     const key = `${queryKey(artifact, variables)}:${policy}`
     let resource = this.resources.get(key) as QueryResource<T> | undefined
     if (!resource) {
       resource = new QueryResource<T>(this, artifact, variables, queryKey(artifact, variables), policy)
       this.resources.set(key, resource as QueryResource<unknown>)
     }
+    if (pollMs !== undefined) resource.requestPoll(pollMs)
     const shared = resource
     return {
       getState: shared.getState,
@@ -355,11 +435,35 @@ export class Client {
   /** Run a mutation; its response updates every stored record it contains. */
   async mutate<T = unknown, V extends Variables = Variables>(
     artifact: OperationArtifact<T, V>,
-    variables: V
+    variables: V,
+    options: {
+      /**
+       * The response you expect, shaped like the mutation's result (with __typename and keys).
+       * It shows at once and is rolled back when the real response or an error arrives. Fields
+       * changed since (by a live event, say) are not rolled back.
+       */
+      optimisticResponse?: Record<string, unknown>
+    } = {}
   ): Promise<{ data: T; errors: readonly GraphQLErrorLike[] }> {
     if (artifact.kind !== "mutation") throw new Error(`${artifact.name} is not a mutation`)
-    const { snapshot, errors } = await this.execute<T>(artifact, variables)
-    return { data: snapshot.data, errors }
+    let layer: OptimisticLayer | null = null
+    if (options.optimisticResponse) {
+      const response = options.optimisticResponse
+      const root = `client:optimistic:${++this.mutationCount}`
+      layer = this.store.optimistic(() =>
+        normalize(this.store, artifact.normalization, response, contextOf(artifact, variables), root, artifact.rootType)
+      )
+    }
+    const rollback = () => {
+      if (layer) this.store.rollback(layer)
+      layer = null
+    }
+    try {
+      const { snapshot, errors } = await this.execute<T>(artifact, variables, { beforeWrite: rollback })
+      return { data: snapshot.data, errors }
+    } finally {
+      rollback()
+    }
   }
 
   dispose(): void {
@@ -410,6 +514,8 @@ export function readFragment(fragment: FragmentArtifact<any, any>, ref: unknown)
   const { store, selector } = fragmentSelector(fragment, ref)
   return store.lookup(selector).data
 }
+
+const defaultActive = () => typeof document === "undefined" || document.visibilityState !== "hidden"
 
 /** Follow stored links from a record to the first `@connection` field the selections read. */
 function findConnection(

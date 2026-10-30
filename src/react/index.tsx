@@ -42,15 +42,21 @@ const IDLE: QueryState<never> = {
 export function useQuery<T = unknown, V extends Variables = Variables>(
   artifact: OperationArtifact<T, V>,
   variables: V | null,
-  options: { policy?: FetchPolicy } = {}
+  options: { policy?: FetchPolicy; pollMs?: number } = {}
 ): QueryState<T> & { refetch: () => Promise<void>; loadMore: () => Promise<void> } {
   const client = useClient()
   const variablesKey = variables === null ? null : stableStringify(variables)
   const watched = useMemo(
-    () => (variables === null ? null : client.watchQuery<T, V>(artifact, variables, options.policy)),
+    () =>
+      variables === null
+        ? null
+        : client.watchQuery<T, V>(artifact, variables, {
+            ...(options.policy ? { policy: options.policy } : {}),
+            ...(options.pollMs !== undefined ? { pollMs: options.pollMs } : {}),
+          }),
     // variablesKey stands in for variables: equal variables share one query.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [client, artifact, variablesKey, options.policy]
+    [client, artifact, variablesKey, options.policy, options.pollMs]
   )
   useEffect(() => {
     if (!watched) return

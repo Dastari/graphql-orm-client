@@ -13,8 +13,10 @@ Status: design stage. Check the installed `docs/design.md` and `docs/graphql-orm
   subscribes to the type's generated `<Entity>Changed` events for the records that are
   retained. Do not write subscription operations by hand for this.
 - Live delivery needs the server to write that state through the ORM. If a type's state is
-  written around the ORM (in-memory registries, raw SQL), no events arrive. Configure a
-  polling interval for that type and record the gap.
+  written around the ORM (in-memory registries, raw SQL), no events arrive. Types with no usable
+  `Changed` subscription are in the generated `liveUnavailable`. Queries showing them poll every
+  `polling.liveFallbackMs` (default 30 s), and so do records beyond the per-record cap. Record
+  the gap rather than adding a hand-written subscription.
 - Without a record version, the last write to arrive wins. For a row that is rewritten while
   users watch it, ask the backend to add `#[graphql_orm(version)]`.
 

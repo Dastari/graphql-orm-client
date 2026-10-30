@@ -62,6 +62,13 @@ export class LiveManager {
     return typename in this.options.artifacts
   }
 
+  /** Whether some held records of a type have no subscription (beyond the per-record cap). */
+  overflows(typename: string): boolean {
+    const artifact = this.options.artifacts[typename]
+    if (artifact?.mode !== "key") return false
+    return (this.held().get(typename)?.size ?? 0) > (this.options.maxKeyedSubscriptions ?? 50)
+  }
+
   /** Replace the records one holder (a watched query) keeps live. Empty targets release it. */
   hold(holder: string, targets: Targets): void {
     if (this.disposed) return
