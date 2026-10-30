@@ -1,2 +1,5 @@
 export { compile, keyFieldsOf, CompileError } from "./compile.js"
 export type { CompileOptions, CompileResult } from "./compile.js"
+export { generate } from "./generate.js"
+export type { GenerateOptions } from "./generate.js"
+export { extractDocuments } from "./extract.js"

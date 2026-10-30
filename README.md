@@ -7,8 +7,8 @@ record once. Generated `Changed` subscriptions update the store while the record
 screen.
 
 > **Status: early alpha.** The compiler, the normalised store, the React bindings and the live
-> layer work and are tested. Pagination helpers, optimistic updates, polling fallbacks and the
-> codegen preset are not built yet, and APIs may still change. See the [roadmap](docs/roadmap.md).
+> layer and the generator with TypeScript types all work and are tested. Pagination helpers,
+> optimistic updates and polling fallbacks are not built yet, and APIs may still change. See the [roadmap](docs/roadmap.md).
 
 ## Why not Apollo or Relay
 
@@ -35,6 +35,41 @@ catalogue. This client is built on those guarantees.
 
 Read [the design](docs/design.md) for the full model and [the graphql-orm
 contract](docs/graphql-orm-contract.md) for what the server must provide.
+
+## Generate
+
+Write documents with `graphql(...)` in your source files, one operation or fragment per call,
+then generate a typed module:
+
+`graphql-orm-client.config.json`:
+
+```json
+{
+  "schema": "schema/router.graphql",
+  "documents": ["src"],
+  "out": "src/graphql/generated.ts",
+  "scalars": { "DateTime": "string", "UUID": "string", "JSON": "unknown" },
+  "keys": { "Slot": ["Site", "Name"] },
+  "versions": { "Ticket": "RowVersion" }
+}
+```
+
+```sh
+pnpm exec graphql-orm-client generate          # write the module
+pnpm exec graphql-orm-client generate --check  # fail when it is out of date (CI)
+```
+
+Import `graphql` from the generated module. Each call returns a typed artifact:
+
+- for an operation, typed data and variables;
+- for a fragment, the fragment's own data.
+
+A query's data shows child fragments as references. `readFragment`, `useFragment` and
+`useFragmentList` open those references, and only for the fragment that produced them. The
+module also exports `live`, to pass to `createClient({ live: { artifacts: live, subscribe } })`,
+and `liveUnavailable`, which lists the types that have no usable `Changed` subscription.
+
+The schema may be router or subgraph SDL; federation directives are accepted.
 
 ## For agents
 

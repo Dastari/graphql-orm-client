@@ -1,4 +1,4 @@
-import type { FragmentArtifact, OperationArtifact } from "./artifact.js"
+import type { FragmentArtifact, FragmentRefFor, OperationArtifact } from "./artifact.js"
 import { stableStringify, type Variables } from "./store/arguments.js"
 import { contextOf, normalize } from "./store/normalize.js"
 import { LiveManager, type LiveOptions } from "./live.js"
@@ -73,11 +73,11 @@ export interface WatchedQuery<T> {
   refetch(): Promise<void>
 }
 
-export function selectorOf(artifact: OperationArtifact, variables: Variables, id: string = ROOT_ID): Selector {
+export function selectorOf(artifact: OperationArtifact<any, any>, variables: Variables, id: string = ROOT_ID): Selector {
   return { id, selections: artifact.selections, variables, fragments: artifact.fragments }
 }
 
-function queryKey(artifact: OperationArtifact, variables: Variables): string {
+function queryKey(artifact: OperationArtifact<any, any>, variables: Variables): string {
   return `${artifact.hash}:${stableStringify(variables)}`
 }
 
@@ -92,7 +92,7 @@ class QueryResource<T> implements WatchedQuery<T> {
 
   constructor(
     private readonly client: Client,
-    readonly artifact: OperationArtifact,
+    readonly artifact: OperationArtifact<T, any>,
     readonly variables: Variables,
     readonly key: string,
     private readonly policy: FetchPolicy
@@ -220,9 +220,9 @@ export class Client {
   }
 
   /** Send an operation and write its response into the store. */
-  async execute<T>(
-    artifact: OperationArtifact,
-    variables: Variables,
+  async execute<T = unknown, V extends Variables = Variables>(
+    artifact: OperationArtifact<T, V>,
+    variables: V,
     options: { signal?: AbortSignal } = {}
   ): Promise<{ snapshot: Snapshot<T>; errors: readonly GraphQLErrorLike[] }> {
     if (this.store.isDisposed) throw new Error("This client was disposed with its identity")
@@ -256,9 +256,9 @@ export class Client {
    * A shared view of a query. Call `open()` from `watch` users; the resource retains its records
    * while anyone uses it and is dropped when the last user closes it.
    */
-  watchQuery<T>(
-    artifact: OperationArtifact,
-    variables: Variables,
+  watchQuery<T = unknown, V extends Variables = Variables>(
+    artifact: OperationArtifact<T, V>,
+    variables: V,
     policy: FetchPolicy = "store-and-network"
   ): WatchedQuery<T> & { open(): void; close(): void } {
     const key = `${queryKey(artifact, variables)}:${policy}`
@@ -281,7 +281,7 @@ export class Client {
   }
 
   /** Start a query before rendering (from a route loader). Resolves when the data is stored. */
-  async preload(artifact: OperationArtifact, variables: Variables): Promise<void> {
+  async preload<T, V extends Variables>(artifact: OperationArtifact<T, V>, variables: V): Promise<void> {
     const watched = this.watchQuery(artifact, variables)
     watched.open()
     try {
@@ -293,7 +293,10 @@ export class Client {
   }
 
   /** Run a mutation; its response updates every stored record it contains. */
-  async mutate<T>(artifact: OperationArtifact, variables: Variables): Promise<{ data: T; errors: readonly GraphQLErrorLike[] }> {
+  async mutate<T = unknown, V extends Variables = Variables>(
+    artifact: OperationArtifact<T, V>,
+    variables: V
+  ): Promise<{ data: T; errors: readonly GraphQLErrorLike[] }> {
     if (artifact.kind !== "mutation") throw new Error(`${artifact.name} is not a mutation`)
     const { snapshot, errors } = await this.execute<T>(artifact, variables)
     return { data: snapshot.data, errors }
@@ -319,7 +322,7 @@ function refData(ref: unknown): FragmentRefData | null {
 }
 
 /** The selector a fragment reads through a reference produced by a spread of that fragment. */
-export function fragmentSelector(fragment: FragmentArtifact, ref: unknown): { store: Store; selector: Selector } {
+export function fragmentSelector(fragment: FragmentArtifact<any, any>, ref: unknown): { store: Store; selector: Selector } {
   const data = refData(ref)
   if (!data) throw new Error(`readFragment(${fragment.name}) needs a reference from a spread of ${fragment.name}`)
   if (!data.fragments.has(fragment.name))
@@ -334,10 +337,16 @@ export function fragmentSelector(fragment: FragmentArtifact, ref: unknown): { st
  * Read a fragment's own fields through a reference. A plain function, so adapters and mappers
  * can call it; components that should re-render use `useFragment` instead.
  */
-export function readFragment<T = Record<string, unknown>>(fragment: FragmentArtifact, ref: unknown): T
-export function readFragment<T = Record<string, unknown>>(fragment: FragmentArtifact, ref: null | undefined): null
-export function readFragment<T = Record<string, unknown>>(fragment: FragmentArtifact, ref: unknown): T | null {
+export function readFragment<D = Record<string, unknown>, N extends string = string>(
+  fragment: FragmentArtifact<D, N>,
+  ref: FragmentRefFor<N>
+): D
+export function readFragment<D = Record<string, unknown>, N extends string = string>(
+  fragment: FragmentArtifact<D, N>,
+  ref: FragmentRefFor<N> | null | undefined
+): D | null
+export function readFragment(fragment: FragmentArtifact<any, any>, ref: unknown): unknown {
   if (ref === null || ref === undefined) return null
   const { store, selector } = fragmentSelector(fragment, ref)
-  return store.lookup<T>(selector).data
+  return store.lookup(selector).data
 }

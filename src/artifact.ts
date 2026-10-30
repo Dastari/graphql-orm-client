@@ -51,9 +51,25 @@ export type Selection =
   | InlineFragmentSelection
   | FragmentSpreadSelection
 
-export interface FragmentArtifact {
+/**
+ * Type-only marker for masked fragment references: an object that a spread of fragment `N`
+ * produced. Only `readFragment`, `useFragment` and `useFragmentList` read through it.
+ */
+export type FragmentRefs<N extends string> = {
+  readonly " $fragmentRefs": { readonly [K in N]: true }
+}
+
+/**
+ * The reference a fragment accepts: a typed fragment (literal name) requires a reference from a
+ * spread of that fragment; an untyped artifact (`string` name) accepts any value.
+ */
+export type FragmentRefFor<N extends string> = string extends N ? unknown : FragmentRefs<N>
+
+export interface FragmentArtifact<TData = unknown, TName extends string = string> {
+  /** Type-only: the fragment's own data. */
+  readonly " $data"?: TData
   readonly kind: "fragment"
-  readonly name: string
+  readonly name: TName
   readonly typeCondition: string
   /** What `readFragment` and `useFragment` return: only this fragment's own fields. */
   readonly selections: readonly Selection[]
@@ -61,7 +77,9 @@ export interface FragmentArtifact {
   readonly live: boolean
 }
 
-export interface OperationArtifact {
+export interface OperationArtifact<TData = unknown, TVariables = Record<string, unknown>> {
+  /** Type-only: the root's data and variables. */
+  readonly " $types"?: { readonly data: TData; readonly variables: TVariables }
   readonly kind: "query" | "mutation" | "subscription"
   readonly name: string
   /** The operation text with every fragment it uses, as sent to the server. */

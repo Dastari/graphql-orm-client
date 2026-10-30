@@ -7,9 +7,11 @@ Status: partly built. Implemented and tested:
 - `Client`: `execute`, `watchQuery`, `preload` and `mutate`;
 - `readFragment`;
 - React: `ClientProvider`, `useQuery`, `useFragment` and `useFragmentList`;
-- the live layer: `compile(...).live`, `LiveManager`, and `createClient({ live })`.
+- the live layer: `compile(...).live`, `LiveManager`, and `createClient({ live })`;
+- the generator: `graphql-orm-client generate` with `--check`. It emits typed artifacts, masked
+  reference types, the `live` artifacts and an overloaded `graphql()`.
 
-Proposed, not built: polling for live overflow and unavailable types, `usePagination`, optimistic updates, persistence, the codegen preset, and per-type `staleMs`/`expiresField` policy.
+Proposed, not built: polling for live overflow and unavailable types, `usePagination`, optimistic updates, persistence, and per-type `staleMs`/`expiresField` policy.
 
 ## Goals
 
@@ -86,8 +88,9 @@ render records one component at a time.
 
 ## Compiler
 
-A graphql-codegen preset, exported from `graphql-orm-client/codegen`, reads every document in
-the application and emits one artifact per root:
+`graphql-orm-client generate` reads every `graphql(...)` document in the application. It uses
+`compile` and `generate` from `graphql-orm-client/compiler`, and emits one typed module with an
+artifact per root:
 
 - **Query text.** The flattened operation, sent as is or by persisted hash.
 - **Persisted hash.** Registered with the router's operation allow-list when it is enabled.

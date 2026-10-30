@@ -31,7 +31,8 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
-    "check": "pnpm typecheck && pnpm test && node bin/graphql-orm-client.mjs skills list > /dev/null"
+    "check": "pnpm typecheck && pnpm test && node bin/graphql-orm-client.mjs skills list > /dev/null",
+    "prepack": "pnpm build"
   },
   "sideEffects": false,
   "exports": {

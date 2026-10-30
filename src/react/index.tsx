@@ -8,7 +8,7 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react"
-import type { FragmentArtifact, OperationArtifact } from "../artifact.js"
+import type { FragmentArtifact, FragmentRefFor, OperationArtifact } from "../artifact.js"
 import { fragmentSelector, type Client, type FetchPolicy, type QueryState } from "../client.js"
 import { stableStringify, type Variables } from "../store/arguments.js"
 import { recycle, type Snapshot } from "../store/store.js"
@@ -32,15 +32,15 @@ const IDLE: QueryState<never> = { status: "loading", data: undefined, error: nul
  * Read a route's root query. Returns the root's own fields; child fragments arrive as masked
  * references to pass to the components that declared them. `variables: null` skips the query.
  */
-export function useQuery<T>(
-  artifact: OperationArtifact,
-  variables: Variables | null,
+export function useQuery<T = unknown, V extends Variables = Variables>(
+  artifact: OperationArtifact<T, V>,
+  variables: V | null,
   options: { policy?: FetchPolicy } = {}
 ): QueryState<T> & { refetch: () => Promise<void> } {
   const client = useClient()
   const variablesKey = variables === null ? null : stableStringify(variables)
   const watched = useMemo(
-    () => (variables === null ? null : client.watchQuery<T>(artifact, variables, options.policy)),
+    () => (variables === null ? null : client.watchQuery<T, V>(artifact, variables, options.policy)),
     // variablesKey stands in for variables: equal variables share one query.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [client, artifact, variablesKey, options.policy]
@@ -62,8 +62,8 @@ const noopSubscribe = () => () => {}
 const idleState = () => IDLE
 const resolved = () => Promise.resolve()
 
-function useFragmentSnapshot(fragment: FragmentArtifact, ref: unknown): Snapshot | null {
-  const cache = useRef<{ ref: unknown; fragment: FragmentArtifact; snapshot: Snapshot | null } | null>(null)
+function useFragmentSnapshot(fragment: FragmentArtifact<any, any>, ref: unknown): Snapshot | null {
+  const cache = useRef<{ ref: unknown; fragment: FragmentArtifact<any, any>; snapshot: Snapshot | null } | null>(null)
   const getSnapshot = useCallback((): Snapshot | null => {
     if (ref === null || ref === undefined) return null
     const current = cache.current
@@ -91,19 +91,29 @@ function useFragmentSnapshot(fragment: FragmentArtifact, ref: unknown): Snapshot
 }
 
 /** A component's own fragment fields, re-rendered only when they change. */
-export function useFragment<T = Record<string, unknown>>(fragment: FragmentArtifact, ref: unknown): T
-export function useFragment<T = Record<string, unknown>>(fragment: FragmentArtifact, ref: null | undefined): null
-export function useFragment<T = Record<string, unknown>>(fragment: FragmentArtifact, ref: unknown): T | null {
+export function useFragment<D = Record<string, unknown>, N extends string = string>(
+  fragment: FragmentArtifact<D, N>,
+  ref: FragmentRefFor<N>
+): D
+export function useFragment<D = Record<string, unknown>, N extends string = string>(
+  fragment: FragmentArtifact<D, N>,
+  ref: FragmentRefFor<N> | null | undefined
+): D | null
+export function useFragment(fragment: FragmentArtifact<any, any>, ref: unknown): unknown {
   const snapshot = useFragmentSnapshot(fragment, ref)
-  return (snapshot?.data ?? null) as T | null
+  return snapshot?.data ?? null
 }
 
 /**
  * View models for a list of references, for tables and adapters that need whole rows. The array
  * keeps its identity until a row changes; unchanged rows keep theirs.
  */
-export function useFragmentList<T = Record<string, unknown>>(
-  fragment: FragmentArtifact,
+export function useFragmentList<D = Record<string, unknown>, N extends string = string>(
+  fragment: FragmentArtifact<D, N>,
+  refs: readonly FragmentRefFor<N>[] | null | undefined
+): readonly D[]
+export function useFragmentList<T>(
+  fragment: FragmentArtifact<any, any>,
   refs: readonly unknown[] | null | undefined
 ): readonly T[] {
   const cache = useRef<{ refs: readonly unknown[] | null | undefined; rows: readonly T[] } | null>(null)

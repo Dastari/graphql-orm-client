@@ -2,6 +2,8 @@ export type {
   Artifact,
   ArgumentSpec,
   FragmentArtifact,
+  FragmentRefFor,
+  FragmentRefs,
   LiveArtifact,
   LiveMode,
   OperationArtifact,

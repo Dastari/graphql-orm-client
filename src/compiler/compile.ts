@@ -49,8 +49,11 @@ export interface CompileOptions {
 }
 
 export interface CompileResult {
-  readonly operations: Readonly<Record<string, OperationArtifact>>
-  readonly fragments: Readonly<Record<string, FragmentArtifact>>
+  // Runtime-compiled artifacts carry no static types; generated code supplies them.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  readonly operations: Readonly<Record<string, OperationArtifact<any, any>>>
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  readonly fragments: Readonly<Record<string, FragmentArtifact<any, string>>>
   /** Live subscriptions per type that has `@live` fragments. */
   readonly live: Readonly<Record<string, LiveArtifact>>
   /** Types with `@live` fragments but no usable `Changed` subscription; they need polling. */
