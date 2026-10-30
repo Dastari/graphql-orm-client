@@ -20,9 +20,12 @@ The client only works against graphql-orm services and their router.
    and an invalid field fails the build.
 3. **Client.** Create one client per signed-in identity with `createClient`. Pass the identity
    key as `store.scope`. When the identity changes, dispose the client; never reuse it.
-4. **Network.** HTTP for queries and mutations (same-origin BFF where the project has one),
-   WebSocket (`graphql-transport-ws`) for subscriptions. Authenticate the socket in
-   `connectionParams`.
+4. **Network.** Use `createHttpNetwork({ url })` for queries and mutations (a same-origin BFF
+   where the project has one; pass `headers` or a wrapped `fetch` for auth). For subscriptions,
+   create a graphql-ws client, authenticate it in `connectionParams`, and pass
+   `live: { artifacts: live, subscribe: graphqlWsSubscribe(ws) }`. In its `connected` event,
+   call `client.refetchActive()` when `wasRetry` is true: missed events aren't replayed yet.
+   Write a custom `Network` only when the project needs something these don't do.
 5. **Provider.** Wrap the application in the React provider from `graphql-orm-client/react`.
 6. **Routes.** Each route that shows data owns one root query. Start it in the route loader
    with `client.preload(Query, variables)` and read it in the component with `useQuery`.

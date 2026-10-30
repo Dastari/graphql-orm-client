@@ -23,6 +23,9 @@ importers:
       graphql:
         specifier: ^16.14.2
         version: 16.14.2
+      graphql-ws:
+        specifier: ^6.4.1
+        version: 6.4.1(graphql@16.14.2)
       jsdom:
         specifier: ^30.1.3
         version: 30.1.3
@@ -352,6 +355,22 @@ packages:
     resolution: {integrity: sha512-5xoDfX+fL7faATnagmWPpbFtwh/R77WmMMqqHGS65C3vvB0YHrgF+B1YmZ3441tMj5n63k0212XNoJwzlhffQw==}
     engines: {node: ^8.16.0 || ^10.6.0 || >=11.0.0}
     os: [darwin]
+
+  graphql-ws@6.4.1:
+    resolution: {integrity: sha512-a3MzY5u+tCHHwuyimzxMAHZQ6TY7bOpkQURtKXE5kKIkBdsZ2axlb7sLzMpzGFO4guhws9FyMVB1onyX58pO4w==}
+    engines: {node: '>=20'}
+    peerDependencies:
+      '@fastify/websocket': ^10 || ^11
+      crossws: ~0.3 || ~0.4
+      graphql: ^15.10.1 || ^16 || ^17
+      ws: ^8
+    peerDependenciesMeta:
+      '@fastify/websocket':
+        optional: true
+      crossws:
+        optional: true
+      ws:
+        optional: true
 
   graphql@16.14.2:
     resolution: {integrity: sha512-Chq1s4CY7jmh8gO2qvLIJyfCDIN+EHLFW/9iShnp1z8FjBQMoodWP1kDC36VAMXXIvAjj4ARa7ntfAV2BrjsbA==}
@@ -905,6 +924,10 @@ snapshots:
 
   fsevents@2.3.3:
     optional: true
+
+  graphql-ws@6.4.1(graphql@16.14.2):
+    dependencies:
+      graphql: 16.14.2
 
   graphql@16.14.2: {}
 

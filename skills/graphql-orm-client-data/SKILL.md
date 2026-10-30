@@ -49,6 +49,8 @@ Status: design stage. Check the installed `docs/design.md` for the current API.
 
 ## Mutations
 
+- In components, use `useMutation(Mutation)`: `commit(variables, { optimisticResponse })`,
+  `inFlight` and `error`. `commit` rejects on failure, so await it or catch it.
 - Spread the fragments of the views the mutation affects into its selection, so the response
   updates the store.
 - Use an optimistic update only when the result is predictable. Give list insertions and

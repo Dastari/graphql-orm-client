@@ -5,8 +5,10 @@ Status: partly built. Implemented and tested:
 - NodeId;
 - the store: normalisation, version ordering, masked reads, subscriptions, retention and garbage collection, disposal;
 - `Client`: `execute`, `watchQuery`, `preload` and `mutate`;
+- transport: `createHttpNetwork` (GraphQL over HTTP) and `graphqlWsSubscribe` (a graphql-ws
+  client for the live layer);
 - `readFragment`;
-- React: `ClientProvider`, `useQuery`, `useFragment` and `useFragmentList`;
+- React: `ClientProvider`, `useQuery`, `useFragment`, `useFragmentList` and `useMutation`;
 - the live layer: `compile(...).live`, `LiveManager`, and `createClient({ live })`;
 - the generator: `graphql-orm-client generate` with `--check`. It emits typed artifacts, masked
   reference types, the `live` artifacts and an overloaded `graphql()`.
@@ -143,13 +145,11 @@ A small buffer of recently released roots stays warm for back navigation.
 
 ```ts
 const client = createClient({
-  network: {
-    http: { url: "/api/graphql", persisted: "prefer" },
-    ws: { url: "wss://graph.example.com/graphql", connectionParams: () => ({ authorization: ... }) },
-  },
+  network: createHttpNetwork({ url: "/api/graphql" }),
   store: {
-    scope: identityKey,            // a change disposes the store synchronously
     retainMs: 5 * 60_000,
+    // Planned from here: scope, per-type policy and persistence.
+    scope: identityKey,            // a change disposes the store synchronously
     types: {
       Device: { staleMs: 30_000 },
       ReleaseCatalog: { staleMs: 5 * 60_000 },
@@ -157,7 +157,8 @@ const client = createClient({
     },
     persistence: null,             // or indexedDbPersistence({ name, maxBytes })
   },
-  live: { fallbackPollMs: 30_000 },
+  live: { artifacts: live, subscribe: graphqlWsSubscribe(ws) },
+  polling: { liveFallbackMs: 30_000 },
 })
 ```
 
@@ -211,6 +212,9 @@ per-type counts, including overflow beyond the `key`-mode limit. A `DELETED` eve
 record, and any query that showed it reads again.
 
 ## Mutations
+
+In React, `useMutation(Mutation)` returns `commit`, `inFlight` and `error`; `commit` takes the
+same arguments as `client.mutate` and rejects when the mutation fails.
 
 ```ts
 await client.mutate(RenameDeviceMutation, { Id: id, Name: name }, {

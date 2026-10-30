@@ -30,6 +30,8 @@ export type {
   QueryStatus,
   WatchedQuery,
 } from "./client.js"
+export { HttpError, createHttpNetwork, graphqlWsSubscribe } from "./transport.js"
+export type { GraphQLWsClientLike, HttpNetworkOptions } from "./transport.js"
 export { decodeNodeId, encodeNodeId } from "./node-id.js"
 export type { KeyPart, NodeId } from "./node-id.js"
 export { ROOT_ID, Store } from "./store/store.js"

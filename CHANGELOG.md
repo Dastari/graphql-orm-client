@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Built-in transport: `createHttpNetwork({ url, headers, fetch, credentials })` sends GraphQL
+  over HTTP and throws `HttpError` for a response without a GraphQL body.
+  `graphqlWsSubscribe(ws)` adapts a graphql-ws client for `live.subscribe`. graphql-ws stays
+  the application's dependency; the adapter is checked against its types.
+- `useMutation(Mutation)` in `graphql-orm-client/react`: `commit`, `inFlight` and `error`.
 - `@refetchable` fragments. The compiler adds a `node(NodeId)` query to the fragment artifact
   (`fragment.refetch`, named `<Fragment>Refetch` or `queryName`). `client.refetchFragment` and
   `useRefetchableFragment` read one record again; a null result without errors removes it. The

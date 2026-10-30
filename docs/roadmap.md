@@ -10,7 +10,7 @@ uses Apollo.
    builds view models, its own fragment, and make sure every query selects stable keys. Fragment
    masking is optional at this stage. It adds most where several components share one query, and
    least where one adapter maps all rows for a table.
-3. **Compiler and store.** (Built: the compiler, generator, store, client, React hooks, pagination, optimistic updates and `@refetchable` fragments.) The codegen preset, the normalised store, `useQuery`,
+3. **Compiler and store.** (Built: the compiler, generator, store, client, React hooks, pagination, optimistic updates, `@refetchable` fragments, `useMutation` and the HTTP and graphql-ws transport.) The codegen preset, the normalised store, `useQuery`,
    `useFragment`, `usePagination` and `useMutation`, behind an API that consumers can adopt one
    route at a time.
 4. **Live layer.** Store-driven `Changed` subscriptions, version ordering, reconnect replay,
