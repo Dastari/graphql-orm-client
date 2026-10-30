@@ -106,8 +106,9 @@ artifact per root:
   whose selection is the union of those fragments for each type.
 - **Types.** TypeScript result, variable and fragment-reference types.
 
-The compiler validates the documents against the router's schema snapshot. It rejects a
-fragment on a type without a complete key, because such records cannot be normalised.
+The compiler validates the documents against the router's schema snapshot. A fragment on a
+type without a `NodeId` or a complete key is allowed; its data is stored inside the parent
+record, so it can't be refetched or kept live on its own.
 
 ## Store
 
@@ -115,8 +116,11 @@ fragment on a type without a complete key, because such records cannot be normal
 
 Every record that has a complete key is stored under its `NodeId`, an opaque base64url
 encoding of `[typename, ...keyParts]`. Keys are unique only within a type, so the type name is
-part of the identity. A record without a key (an embedded object or an aggregate row) is
-stored inside its parent.
+part of the identity. When a type has graphql-orm's generated `NodeId: ID!` field, the compiler
+selects it and the store uses the server's value, which is right for any key shape. Otherwise
+the store encodes the `NodeId` from the type's key fields (`Id`, or the configured `keys`); both
+produce the same value for the same record. A record without a key (an embedded object or an
+aggregate row) is stored inside its parent.
 
 ### Writes and ordering
 

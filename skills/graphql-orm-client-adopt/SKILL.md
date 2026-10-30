@@ -14,7 +14,7 @@ The client only works against graphql-orm services and their router.
 1. **Schema snapshot.** Keep the router's SDL in the repository (for example
    `schema/router.graphql`) and refresh it with the project's schema pull script.
 2. **Generate.** Add `graphql-orm-client.config.json` (`schema`, `documents`, `out`,
-   `scalars`; `keys` for composite or non-`Id` keys; `versions` for record-version fields).
+   `scalars`; `keys` for composite or non-`Id` keys on types without `NodeId`; `versions` for record-version fields).
    Run `graphql-orm-client generate`, and run `generate --check` in CI. Write every document with
    the generated `graphql()`, one operation or fragment per call, so each carries its own types
    and an invalid field fails the build.

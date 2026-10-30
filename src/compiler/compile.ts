@@ -100,6 +100,18 @@ function stripClientDirectives<T extends import("graphql").ASTNode>(node: T): T 
   }) as T
 }
 
+const NODE_ID = "NodeId"
+
+/**
+ * Whether a type carries graphql-orm's generated `NodeId: ID!`. The server's NodeId identifies the
+ * record for any key shape, so the compiler selects it and the store prefers it to key fields.
+ */
+function hasNodeId(type: GraphQLCompositeType): boolean {
+  if (!isObjectType(type) && !isInterfaceType(type)) return false
+  const nodeId = type.getFields()[NODE_ID]
+  return nodeId !== undefined && getNamedType(nodeId.type).name === "ID"
+}
+
 /** Key fields of a type: explicit configuration, else `Id` when the type has it. */
 export function keyFieldsOf(
   schema: GraphQLSchema,
@@ -440,6 +452,7 @@ function augmentSelectionSet(
   )
   const additions: FieldNode[] = []
   if (!present.has("__typename")) additions.push(field("__typename"))
+  if (hasNodeId(parent) && !present.has(NODE_ID)) additions.push(field(NODE_ID))
   if (isObjectType(parent)) {
     for (const key of keyFieldsOf(schema, parent.name, options) ?? []) {
       if (!present.has(key)) additions.push(field(key))

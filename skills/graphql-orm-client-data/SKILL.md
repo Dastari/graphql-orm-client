@@ -16,8 +16,8 @@ Status: design stage. Check the installed `docs/design.md` for the current API.
 - Select only the fields the component renders. To render a child component, spread the
   child's fragment (`...DeviceHealth`) and pass the reference down. Do not select the child's
   fields in the parent.
-- Include the key fields (`Id`, or the entity's complete key). The compiler rejects a fragment
-  on a type without a complete key.
+- You don't need to select `NodeId` or the key fields; the compiler adds them. A type without a
+  `NodeId` or a complete key is stored inside its parent, not as its own record.
 
 ## Roots own the request
 

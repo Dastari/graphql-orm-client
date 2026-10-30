@@ -8,6 +8,10 @@
   compiler refuses a type that doesn't implement `Node`, a schema without `node(NodeId)`,
   fragments that use operation variables, and name clashes. Needs graphql-orm 0.86.0 and
   graphql-orm-router 0.8.0.
+- Records of a type with graphql-orm's generated `NodeId: ID!` are stored under the server's
+  `NodeId`. The compiler selects it on such types and on `interface Node`, so composite and
+  non-`Id` keys need no `keys` configuration. The encoding is tested against graphql-orm's
+  shared vectors.
 
 ## 0.1.0-alpha.0 (2026-10-30)
 

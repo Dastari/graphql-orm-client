@@ -16,6 +16,18 @@ describe("NodeId", () => {
     }
   })
 
+  it("matches graphql-orm's shared encoding vectors", () => {
+    for (const [typename, parts, id] of [
+      ["ManagedSlot", ["north", "a"], "WyJNYW5hZ2VkU2xvdCIsIm5vcnRoIiwiYSJd"],
+      ["Ticket", [42], "WyJUaWNrZXQiLDQyXQ"],
+      ["Note", ["ünïcødé ✓"], "WyJOb3RlIiwiw7xuw69jw7hkw6kg4pyTIl0"],
+      ["Quote", ['say "hi"\\n'], "WyJRdW90ZSIsInNheSBcImhpXCJcXG4iXQ"],
+    ] as const) {
+      expect(encodeNodeId(typename, parts)).toBe(id)
+      expect(decodeNodeId(id)).toEqual({ typename, keyParts: [...parts] })
+    }
+  })
+
   it("keeps the same key distinct across types", () => {
     expect(encodeNodeId("Device", ["x"])).not.toBe(encodeNodeId("DeviceLocation", ["x"]))
   })
