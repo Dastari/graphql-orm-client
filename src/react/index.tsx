@@ -168,6 +168,58 @@ export function useRefetchableFragment(
   return { ...state, data: snapshot?.data ?? null, refetch }
 }
 
+export interface MutationState {
+  /** True while any commit from this hook is in flight. */
+  readonly inFlight: boolean
+  /** The last commit's failure: a thrown error, or the GraphQL errors returned with its data. */
+  readonly error: Error | null
+}
+
+/**
+ * Commit a mutation from a component. `commit` resolves with the result, as `client.mutate`
+ * does, and rejects when the mutation fails, so await or catch it. The response is written into
+ * the store, so every view of the changed records updates.
+ */
+export function useMutation<T = unknown, V extends Variables = Variables>(
+  mutation: OperationArtifact<T, V>
+): MutationState & {
+  commit: (
+    variables: V,
+    options?: { optimisticResponse?: Record<string, unknown> }
+  ) => Promise<{ data: T; errors: readonly GraphQLErrorLike[] }>
+} {
+  const client = useClient()
+  const [state, setState] = useState<MutationState>({ inFlight: false, error: null })
+  const pending = useRef(0)
+  const mounted = useRef(true)
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+    }
+  }, [])
+  const commit = useCallback(
+    async (variables: V, options: { optimisticResponse?: Record<string, unknown> } = {}) => {
+      pending.current += 1
+      setState((previous) => ({ ...previous, inFlight: true }))
+      let error: Error | null = null
+      try {
+        const result = await client.mutate(mutation, variables, options)
+        if (result.errors.length) error = graphQLError(mutation.name, result.errors)
+        return result
+      } catch (thrown) {
+        error = thrown instanceof Error ? thrown : new Error(String(thrown))
+        throw thrown
+      } finally {
+        pending.current -= 1
+        if (mounted.current) setState({ inFlight: pending.current > 0, error })
+      }
+    },
+    [client, mutation]
+  )
+  return { ...state, commit }
+}
+
 function graphQLError(name: string, errors: readonly GraphQLErrorLike[]): Error {
   return new Error(`${name}: ${errors.map((error) => error.message).join("; ")}`)
 }

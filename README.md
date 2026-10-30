@@ -70,6 +70,31 @@ A query's data shows child fragments as references. `readFragment`, `useFragment
 module also exports `live`, to pass to `createClient({ live: { artifacts: live, subscribe } })`,
 and `liveUnavailable`, which lists the types that have no usable `Changed` subscription.
 
+Connect the client to the router with the built-in transport. Pass `live` only when the
+router serves subscriptions:
+
+```ts
+import { createClient as createWsClient } from "graphql-ws"
+import { createClient, createHttpNetwork, graphqlWsSubscribe, type Client } from "graphql-orm-client"
+import { live } from "./generated/graphql-orm"
+
+let client: Client
+const ws = createWsClient({
+  url: "wss://graph.example.com/graphql",
+  // Missed events aren't replayed yet, so read open queries again after a reconnect.
+  on: { connected: (_socket, _payload, wasRetry) => void (wasRetry && client.refetchActive()) },
+})
+client = createClient({
+  network: createHttpNetwork({ url: "/api/graphql" }),
+  live: { artifacts: live, subscribe: graphqlWsSubscribe(ws) },
+})
+```
+
+`createHttpNetwork` takes `headers` (an object or a function called per request), `fetch` and
+`credentials`. A response with GraphQL errors is returned whatever its HTTP status; one without
+a GraphQL body throws `HttpError`. Commit mutations with `client.mutate`, or `useMutation` in
+React.
+
 A fragment marked `@refetchable` can read its record again on its own, through the router's
 `node(NodeId)` lookup: `useRefetchableFragment(Fragment, ref)` or
 `client.refetchFragment(Fragment, ref)`. Its type must implement `Node`.
