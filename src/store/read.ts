@@ -1,5 +1,5 @@
 import type { Selection } from "../artifact.js"
-import { storageKey } from "./arguments.js"
+import { fieldStorageKey, storageKey } from "./arguments.js"
 import { ROOT_ID, type Selector, type Store, type StoredLink, type StoredLinks } from "./store.js"
 
 /** Hidden on every object that carries masked fragment references. */
@@ -77,7 +77,7 @@ export function readSelections<T>(store: Store, selector: Selector, options: Rea
           break
         }
         case "link": {
-          const key = storageKey(selection.fieldName, selection.args, selector.variables)
+          const key = fieldStorageKey(selection, selector.variables)
           if (id === ROOT_ID) options.rootKeys?.add(key)
           if (!record.fields.has(key)) {
             missing = true

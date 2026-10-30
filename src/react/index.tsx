@@ -26,7 +26,14 @@ export function useClient(): Client {
   return client
 }
 
-const IDLE: QueryState<never> = { status: "loading", data: undefined, error: null, errors: [] }
+const IDLE: QueryState<never> = {
+  status: "loading",
+  data: undefined,
+  error: null,
+  errors: [],
+  hasMore: false,
+  loadingMore: false,
+}
 
 /**
  * Read a route's root query. Returns the root's own fields; child fragments arrive as masked
@@ -36,7 +43,7 @@ export function useQuery<T = unknown, V extends Variables = Variables>(
   artifact: OperationArtifact<T, V>,
   variables: V | null,
   options: { policy?: FetchPolicy } = {}
-): QueryState<T> & { refetch: () => Promise<void> } {
+): QueryState<T> & { refetch: () => Promise<void>; loadMore: () => Promise<void> } {
   const client = useClient()
   const variablesKey = variables === null ? null : stableStringify(variables)
   const watched = useMemo(
@@ -55,7 +62,7 @@ export function useQuery<T = unknown, V extends Variables = Variables>(
     watched?.getState ?? idleState,
     watched?.getState ?? idleState
   ) as QueryState<T>
-  return { ...state, refetch: watched?.refetch ?? resolved }
+  return { ...state, refetch: watched?.refetch ?? resolved, loadMore: watched?.loadMore ?? resolved }
 }
 
 const noopSubscribe = () => () => {}

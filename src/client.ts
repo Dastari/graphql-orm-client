@@ -1,5 +1,5 @@
-import type { FragmentArtifact, FragmentRefFor, OperationArtifact } from "./artifact.js"
-import { stableStringify, type Variables } from "./store/arguments.js"
+import type { ConnectionSpec, FragmentArtifact, FragmentRefFor, LinkSelection, OperationArtifact, Selection } from "./artifact.js"
+import { fieldStorageKey, stableStringify, type Variables } from "./store/arguments.js"
 import { contextOf, normalize } from "./store/normalize.js"
 import { LiveManager, type LiveOptions } from "./live.js"
 import { FRAGMENT_REF, readSelections, type FragmentRefData } from "./store/read.js"
@@ -57,6 +57,10 @@ export interface QueryState<T> {
   readonly error: Error | null
   /** Errors returned alongside data (a denied field, for example). */
   readonly errors: readonly GraphQLErrorLike[]
+  /** The query's `@connection` list has another page. */
+  readonly hasMore: boolean
+  /** A next page is being fetched; the loaded rows stay in `data`. */
+  readonly loadingMore: boolean
 }
 
 export interface ClientOptions {
@@ -71,6 +75,8 @@ export interface WatchedQuery<T> {
   getState(): QueryState<T>
   subscribe(listener: () => void): () => void
   refetch(): Promise<void>
+  /** Fetch the next page of the query's `@connection` list and append it. */
+  loadMore(): Promise<void>
 }
 
 export function selectorOf(artifact: OperationArtifact<any, any>, variables: Variables, id: string = ROOT_ID): Selector {
@@ -104,6 +110,8 @@ class QueryResource<T> implements WatchedQuery<T> {
       data: complete ? snapshot.data : undefined,
       error: null,
       errors: [],
+      hasMore: complete ? this.connection()?.hasMore ?? false : false,
+      loadingMore: false,
     }
     if (complete) this.watch(snapshot)
   }
@@ -138,6 +146,50 @@ class QueryResource<T> implements WatchedQuery<T> {
 
   refetch = (): Promise<void> => this.fetch()
 
+  private loadingMore: Promise<void> | null = null
+
+  loadMore = (): Promise<void> => {
+    if (this.loadingMore) return this.loadingMore
+    const connection = this.connection()
+    if (!connection?.hasMore || connection.endCursor === null) return Promise.resolve()
+    const { spec, variable } = connection
+    if (variable === null)
+      return Promise.reject(new Error(`Pass ${this.artifact.name}'s ${spec.paging[0]} argument as a variable to load more`))
+    const pageValue = (this.variables[variable] as Record<string, unknown> | null | undefined) ?? {}
+    const next = { ...this.variables, [variable]: { ...pageValue, [spec.after]: connection.endCursor } }
+    this.set({ ...this.state, loadingMore: true })
+    this.loadingMore = this.client
+      .execute<T>(this.artifact, next)
+      .then(() => this.set({ ...this.state, loadingMore: false, hasMore: this.connection()?.hasMore ?? false }))
+      .catch((error: unknown) => {
+        this.set({ ...this.state, loadingMore: false, error: error instanceof Error ? error : new Error(String(error)) })
+      })
+      .finally(() => {
+        this.loadingMore = null
+      })
+    return this.loadingMore
+  }
+
+  /** The first `@connection` list this query reads, with its stored page info. */
+  private connection(): { spec: ConnectionSpec; variable: string | null; endCursor: string | null; hasMore: boolean } | null {
+    const found = findConnection(this.client.store, this.artifact.selections, this.variables, ROOT_ID)
+    if (!found) return null
+    const { spec, selection, id } = found
+    const record = this.client.store.get(id)
+    const pageInfoRef = record
+      ? ([...record.fields].find(([key]) => key === spec.pageInfo || key.startsWith(`${spec.pageInfo}(`))?.[1] as { __ref?: string } | undefined)?.__ref
+      : undefined
+    const pageInfo = pageInfoRef ? this.client.store.get(pageInfoRef) : undefined
+    const pagingArg = selection.args.find((arg) => arg.name === spec.paging[0])
+    const endCursor = pageInfo?.fields.get(spec.endCursor)
+    return {
+      spec,
+      variable: pagingArg?.kind === "variable" ? pagingArg.variable : null,
+      endCursor: typeof endCursor === "string" ? endCursor : null,
+      hasMore: pageInfo?.fields.get(spec.hasNextPage) === true,
+    }
+  }
+
   fetch(): Promise<void> {
     if (this.inflight) return this.inflight
     if (this.state.data !== undefined) this.set({ ...this.state, status: "refreshing" })
@@ -148,7 +200,14 @@ class QueryResource<T> implements WatchedQuery<T> {
       .then(({ snapshot, errors }) => {
         if (controller.signal.aborted) return
         this.watch(snapshot)
-        this.set({ status: "ready", data: snapshot.data, error: null, errors })
+        this.set({
+          ...this.state,
+          status: "ready",
+          data: snapshot.data,
+          error: null,
+          errors,
+          hasMore: this.connection()?.hasMore ?? false,
+        })
       })
       .catch((error: unknown) => {
         if (controller.signal.aborted) return
@@ -165,7 +224,7 @@ class QueryResource<T> implements WatchedQuery<T> {
     this.unsubscribeStore?.()
     this.holdLive()
     this.unsubscribeStore = this.client.store.subscribe(snapshot, (next) => {
-      this.set({ ...this.state, data: next.data as T })
+      this.set({ ...this.state, data: next.data as T, hasMore: this.connection()?.hasMore ?? false })
       this.holdLive()
       // A record this query shows was deleted or collected: read it again from the server.
       if (next.missing && this.users > 0) void this.fetch()
@@ -272,6 +331,7 @@ export class Client {
       getState: shared.getState,
       subscribe: shared.subscribe,
       refetch: shared.refetch,
+      loadMore: shared.loadMore,
       open: () => shared.open(),
       close: () => {
         shared.close()
@@ -349,4 +409,29 @@ export function readFragment(fragment: FragmentArtifact<any, any>, ref: unknown)
   if (ref === null || ref === undefined) return null
   const { store, selector } = fragmentSelector(fragment, ref)
   return store.lookup(selector).data
+}
+
+/** Follow stored links from a record to the first `@connection` field the selections read. */
+function findConnection(
+  store: Store,
+  selections: readonly Selection[],
+  variables: Variables,
+  id: string
+): { spec: ConnectionSpec; selection: LinkSelection; id: string } | null {
+  const record = store.get(id)
+  if (!record) return null
+  for (const selection of selections) {
+    if (selection.kind === "inline") {
+      const found = findConnection(store, selection.selections, variables, id)
+      if (found) return found
+      continue
+    }
+    if (selection.kind !== "link" || selection.plural) continue
+    const ref = (record.fields.get(fieldStorageKey(selection, variables)) as { __ref?: string } | null | undefined)?.__ref
+    if (!ref) continue
+    if (selection.connection) return { spec: selection.connection, selection, id: ref }
+    const found = findConnection(store, selection.selections, variables, ref)
+    if (found) return found
+  }
+  return null
 }

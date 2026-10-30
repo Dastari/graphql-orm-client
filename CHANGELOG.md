@@ -6,6 +6,10 @@
 - Store: one record per NodeId, with storage keys per argument set and keyless objects kept under their parent. An older record version never replaces a newer one. Reads give masked fragment references with structural sharing. Subscriptions notify only affected readers. Retention and garbage collection, and synchronous disposal.
 - Client: `execute`, shared `watchQuery`, `preload`, `mutate` and `readFragment`. Request cancellation on disposal.
 - React: `ClientProvider`, `useQuery`, `useFragment` and `useFragmentList`.
+- Pagination:
+  - `@connection(key, paging)` merges pages into one stored list per filter. A cursor appends; a first-page refresh keeps the later pages.
+  - `loadMore`, `hasMore` and `loadingMore` on `watchQuery` and `useQuery`.
+  - The compiler adds the cursor and page-info fields, and strips client directives from the operation text.
 - Generator:
   - `graphql-orm-client generate [--config] [--check]`, with `extractDocuments` and `generate` from `graphql-orm-client/compiler`.
   - Typed artifacts. Masked `FragmentRefs` types. Enum and input types. Union variants keyed by `__typename`.

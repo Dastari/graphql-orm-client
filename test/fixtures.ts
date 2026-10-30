@@ -70,6 +70,12 @@ export const documents = [
       PageInfo { HasNextPage EndCursor TotalCount }
     }
   }`,
+  `query FleetScroll($Where: DeviceWhereInput, $Page: KeysetPageInput) {
+    Devices(Where: $Where, Page: $Page) @connection(key: "fleet") {
+      Edges { Node { ...DeviceRow } }
+      PageInfo { TotalCount }
+    }
+  }`,
   `query DevicePage($Id: String!) {
     Device(Id: $Id) { ...DeviceDetail ...DeviceRow }
   }`,
@@ -96,7 +102,7 @@ export const compiled = compile(schema, documents, {
 })
 
 export const ops = compiled.operations as Record<
-  "FleetPage" | "DevicePage" | "SlotPage" | "SearchPage" | "RenameDevice",
+  "FleetPage" | "FleetScroll" | "DevicePage" | "SlotPage" | "SearchPage" | "RenameDevice",
   (typeof compiled.operations)[string]
 >
 export const frags = compiled.fragments as Record<
@@ -115,11 +121,19 @@ export const device = (id: string, overrides: Record<string, unknown> = {}) => (
   ...overrides,
 })
 
-export const fleet = (devices: readonly Record<string, unknown>[]) => ({
+export const fleet = (
+  devices: readonly Record<string, unknown>[],
+  page: { hasNext?: boolean; endCursor?: string | null; total?: number } = {}
+) => ({
   Devices: {
     __typename: "DeviceConnection",
-    Edges: devices.map((node, index) => ({ __typename: "DeviceEdge", Cursor: `c${index}`, Node: node })),
-    PageInfo: { __typename: "PageInfo", HasNextPage: false, EndCursor: null, TotalCount: devices.length },
+    Edges: devices.map((node) => ({ __typename: "DeviceEdge", Cursor: `c-${String(node.Id)}`, Node: node })),
+    PageInfo: {
+      __typename: "PageInfo",
+      HasNextPage: page.hasNext ?? false,
+      EndCursor: page.endCursor ?? (devices.length ? `c-${String(devices.at(-1)!.Id)}` : null),
+      TotalCount: page.total ?? devices.length,
+    },
   },
 })
 

@@ -1,4 +1,4 @@
-import type { ArgumentSpec } from "../artifact.js"
+import type { ArgumentSpec, ConnectionSpec } from "../artifact.js"
 
 export type Variables = Readonly<Record<string, unknown>>
 
@@ -38,4 +38,21 @@ export function storageKey(
   if (args.length === 0) return fieldName
   const resolved = Object.fromEntries(args.map((arg) => [arg.name, resolve(arg, variables)]))
   return `${fieldName}(${stableStringify(resolved)})`
+}
+
+/** The storage key of a selected field; a connection leaves out its paging arguments. */
+export function fieldStorageKey(
+  selection: { readonly fieldName: string; readonly args: readonly ArgumentSpec[]; readonly connection?: ConnectionSpec },
+  variables: Variables
+): string {
+  if (!selection.connection) return storageKey(selection.fieldName, selection.args, variables)
+  const { paging, key } = selection.connection
+  const args = selection.args.filter((arg) => !paging.includes(arg.name))
+  return `${storageKey(selection.fieldName, args, variables)}@connection(${key})`
+}
+
+/** The resolved value of one argument, or undefined when the field doesn't take it. */
+export function argumentValue(args: readonly ArgumentSpec[], name: string, variables: Variables): unknown {
+  const spec = args.find((arg) => arg.name === name)
+  return spec ? resolve(spec, variables) : undefined
 }

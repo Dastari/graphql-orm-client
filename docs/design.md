@@ -11,7 +11,9 @@ Status: partly built. Implemented and tested:
 - the generator: `graphql-orm-client generate` with `--check`. It emits typed artifacts, masked
   reference types, the `live` artifacts and an overloaded `graphql()`.
 
-Proposed, not built: polling for live overflow and unavailable types, `usePagination`, optimistic updates, persistence, and per-type `staleMs`/`expiresField` policy.
+- pagination: `@connection`, `loadMore`, `hasMore` and `loadingMore`.
+
+Proposed, not built: polling for live overflow and unavailable types, offset (page-number) navigation, optimistic updates, persistence, and per-type `staleMs`/`expiresField` policy.
 
 ## Goals
 
@@ -218,10 +220,27 @@ const [rename, { pending }] = useMutation(RenameDeviceMutation, {
 
 ## Pagination
 
-graphql-orm generates two list shapes: offset connections for sortable tables and keyset
-lists for a fixed order. `usePagination(fragment, ref)` supports both. Each page is merged
-into the list stored for that field and its `Where`/order arguments. A refetch of the first
-page replaces the head and keeps the later pages.
+Mark a paginated list field `@connection(key: "...")`, and pass its paging argument as a variable:
+
+```graphql
+query FleetScroll($Where: DeviceWhereInput, $Page: KeysetPageInput) {
+  Devices(Where: $Where, Page: $Page) @connection(key: "fleet") {
+    Edges { Node { ...DeviceRow } }
+    PageInfo { TotalCount }
+  }
+}
+```
+
+- **Merging.** The paging argument (`Page` by default) is left out of the storage key, so every
+  page merges into one stored list per filter. The compiler adds `Cursor`, `PageInfo.HasNextPage`
+  and `PageInfo.EndCursor` when they're not selected. The directive isn't sent to the server.
+- **Loading more.** `loadMore()` (on `watchQuery` and `useQuery`) fetches the next page, with
+  the paging variable's `after` set to the stored end cursor, and appends it.
+- **State.** `hasMore` and `loadingMore` are in the query state.
+- **Refreshing.** Refetching the first page (a refresh or poll) replaces the head and keeps the
+  pages loaded after it. The end cursor stays at the last loaded page.
+- **Field names** default to graphql-orm's: `Edges`, `Node`, `Cursor`, `PageInfo`, `EndCursor`,
+  `HasNextPage` and `Page.after`. Change them with the `connection` compile option.
 
 ## Refetching a fragment
 

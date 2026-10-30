@@ -17,6 +17,22 @@ export interface ScalarSelection {
   readonly args: readonly ArgumentSpec[]
 }
 
+/** A paginated list field marked `@connection`: its pages merge into one stored list. */
+export interface ConnectionSpec {
+  /** Distinguishes connections on the same field; part of the storage key. */
+  readonly key: string
+  /** Arguments that select a page; left out of the storage key so pages merge. */
+  readonly paging: readonly string[]
+  readonly edges: string
+  readonly node: string
+  readonly cursor: string
+  readonly pageInfo: string
+  readonly endCursor: string
+  readonly hasNextPage: string
+  /** The field of the paging argument that carries the cursor to continue after. */
+  readonly after: string
+}
+
 export interface LinkSelection {
   readonly kind: "link"
   readonly responseKey: string
@@ -26,6 +42,7 @@ export interface LinkSelection {
   /** Concrete types the field can return. */
   readonly types: readonly string[]
   readonly selections: readonly Selection[]
+  readonly connection?: ConnectionSpec
 }
 
 export interface InlineFragmentSelection {

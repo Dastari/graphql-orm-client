@@ -26,6 +26,7 @@ import {
 } from "graphql"
 import type {
   ArgumentSpec,
+  ConnectionSpec,
   FragmentArtifact,
   LiveArtifact,
   LiveMode,
@@ -46,6 +47,8 @@ export interface CompileOptions {
   readonly versions?: Readonly<Record<string, string>>
   /** The generated subscription field for a type. Default `${typename}Changed`. */
   readonly liveField?: (typename: string) => string
+  /** Connection field names, when they differ from graphql-orm's PascalCase defaults. */
+  readonly connection?: Partial<Omit<ConnectionSpec, "key">>
 }
 
 export interface CompileResult {
@@ -67,7 +70,31 @@ export class CompileError extends Error {
   }
 }
 
-const CLIENT_DIRECTIVES = parse(`directive @live on FRAGMENT_DEFINITION`)
+const CLIENT_DIRECTIVES = parse(`
+  directive @live on FRAGMENT_DEFINITION
+  directive @connection(key: String!, paging: [String!]) on FIELD
+`)
+
+/** graphql-orm's connection and keyset field names. */
+const DEFAULT_CONNECTION = {
+  paging: ["Page"],
+  edges: "Edges",
+  node: "Node",
+  cursor: "Cursor",
+  pageInfo: "PageInfo",
+  endCursor: "EndCursor",
+  hasNextPage: "HasNextPage",
+  after: "after",
+} as const
+
+/** Remove client-only directives from what is sent to the server. */
+function stripClientDirectives<T extends import("graphql").ASTNode>(node: T): T {
+  return visit(node, {
+    Directive(directive) {
+      return directive.name.value === "live" || directive.name.value === "connection" ? null : undefined
+    },
+  }) as T
+}
 
 /** Key fields of a type: explicit configuration, else `Id` when the type has it. */
 export function keyFieldsOf(
@@ -152,7 +179,7 @@ function compileDocuments(
       kind: "fragment",
       name,
       typeCondition: parent.name,
-      selections: convert(schema, augmented.selectionSet, parent, fragmentNodes, false),
+      selections: convert(schema, augmented.selectionSet, parent, fragmentNodes, false, options),
       live: (node.directives ?? []).some((directive) => directive.name.value === "live"),
     }
   }
@@ -169,9 +196,9 @@ function compileDocuments(
     }
     const used = usedFragments(augmented.selectionSet, fragmentNodes)
     const text = [augmented, ...[...used].sort().map((fragment) => augmentedFragments.get(fragment)!)]
-      .map((definition) => print(definition))
+      .map((definition) => print(stripClientDirectives(definition)))
       .join("\n\n")
-    const reachable = reachableTypes(convert(schema, augmented.selectionSet, rootType, augmentedFragments, true))
+    const reachable = reachableTypes(convert(schema, augmented.selectionSet, rootType, augmentedFragments, true, options))
     operations[name] = {
       kind: node.operation,
       keys: pick(metadata.keys, reachable),
@@ -180,8 +207,8 @@ function compileDocuments(
       text,
       hash: createHash("sha256").update(text).digest("hex"),
       rootType: rootType.name,
-      selections: convert(schema, augmented.selectionSet, rootType, fragmentNodes, false),
-      normalization: convert(schema, augmented.selectionSet, rootType, augmentedFragments, true),
+      selections: convert(schema, augmented.selectionSet, rootType, fragmentNodes, false, options),
+      normalization: convert(schema, augmented.selectionSet, rootType, augmentedFragments, true, options),
       fragments: Object.fromEntries([...used].sort().map((fragment) => [fragment, fragments[fragment]!])),
     }
   }
@@ -265,6 +292,43 @@ function reachableTypes(selections: readonly Selection[], found = new Set<string
   return found
 }
 
+/** A connection needs each edge's cursor and the page info to continue and merge. */
+function ensureConnectionFields(
+  selectionSet: SelectionSetNode,
+  names: Omit<ConnectionSpec, "key">
+): SelectionSetNode {
+  const ensure = (set: SelectionSetNode, fieldName: string, children: readonly string[]): SelectionSetNode => {
+    const index = set.selections.findIndex(
+      (entry) => entry.kind === Kind.FIELD && entry.name.value === fieldName && !entry.alias
+    )
+    const existing = index >= 0 ? (set.selections[index] as FieldNode) : field(fieldName)
+    const inner = existing.selectionSet ?? { kind: Kind.SELECTION_SET, selections: [] }
+    const present = new Set(inner.selections.flatMap((entry) => (entry.kind === Kind.FIELD && !entry.alias ? [entry.name.value] : [])))
+    const updated: FieldNode = {
+      ...existing,
+      selectionSet: { ...inner, selections: [...inner.selections, ...children.filter((child) => !present.has(child)).map(field)] },
+    }
+    const selections = [...set.selections]
+    if (index >= 0) selections[index] = updated
+    else selections.push(updated)
+    return { ...set, selections }
+  }
+  return ensure(ensure(selectionSet, names.edges, [names.cursor]), names.pageInfo, [names.hasNextPage, names.endCursor])
+}
+
+function connectionSpec(node: FieldNode, options: CompileOptions): ConnectionSpec | undefined {
+  const directive = (node.directives ?? []).find((entry) => entry.name.value === "connection")
+  if (!directive) return undefined
+  const keyArg = directive.arguments?.find((arg) => arg.name.value === "key")
+  const pagingArg = directive.arguments?.find((arg) => arg.name.value === "paging")
+  const key = keyArg?.value.kind === Kind.STRING ? keyArg.value.value : node.name.value
+  const paging =
+    pagingArg?.value.kind === Kind.LIST
+      ? pagingArg.value.values.flatMap((value) => (value.kind === Kind.STRING ? [value.value] : []))
+      : undefined
+  return { ...DEFAULT_CONNECTION, ...options.connection, key, ...(paging ? { paging } : {}) }
+}
+
 function field(name: string): FieldNode {
   return { kind: Kind.FIELD, name: { kind: Kind.NAME, value: name } }
 }
@@ -286,7 +350,11 @@ function augmentSelectionSet(
         : undefined
       const named = fieldDef ? getNamedType(fieldDef.type) : undefined
       if (!named || !isCompositeType(named)) return selection
-      return { ...selection, selectionSet: augmentSelectionSet(schema, selection.selectionSet, named, options) }
+      const isConnection = (selection.directives ?? []).some((directive) => directive.name.value === "connection")
+      const selectionSet = isConnection
+        ? ensureConnectionFields(selection.selectionSet, { ...DEFAULT_CONNECTION, ...options.connection })
+        : selection.selectionSet
+      return { ...selection, selectionSet: augmentSelectionSet(schema, selectionSet, named, options) }
     }
     if (selection.kind === Kind.INLINE_FRAGMENT) {
       const target = selection.typeCondition
@@ -392,7 +460,8 @@ function convert(
   selectionSet: SelectionSetNode,
   parent: GraphQLCompositeType,
   fragments: ReadonlyMap<string, FragmentDefinitionNode>,
-  inlineSpreads: boolean
+  inlineSpreads: boolean,
+  options: CompileOptions = {}
 ): Selection[] {
   const result: Selection[] = []
   for (const selection of selectionSet.selections) {
@@ -414,7 +483,8 @@ function convert(
         args,
         plural: isPlural(fieldDef.type),
         types: possibleTypes(schema, named),
-        selections: convert(schema, selection.selectionSet, named, fragments, inlineSpreads),
+        selections: convert(schema, selection.selectionSet, named, fragments, inlineSpreads, options),
+        ...(connectionSpec(selection, options) ? { connection: connectionSpec(selection, options)! } : {}),
       })
     } else if (selection.kind === Kind.INLINE_FRAGMENT) {
       const typeCondition = selection.typeCondition?.name.value ?? null
@@ -423,7 +493,7 @@ function convert(
         kind: "inline",
         typeCondition,
         possibleTypes: typeCondition ? possibleTypes(schema, target) : null,
-        selections: convert(schema, selection.selectionSet, target, fragments, inlineSpreads),
+        selections: convert(schema, selection.selectionSet, target, fragments, inlineSpreads, options),
       })
     } else {
       const definition = fragments.get(selection.name.value)!
@@ -434,7 +504,7 @@ function convert(
           kind: "inline",
           typeCondition,
           possibleTypes: possibleTypes(schema, target),
-          selections: convert(schema, definition.selectionSet, target, fragments, true),
+          selections: convert(schema, definition.selectionSet, target, fragments, true, options),
         })
       } else {
         const target = schema.getType(typeCondition) as GraphQLCompositeType

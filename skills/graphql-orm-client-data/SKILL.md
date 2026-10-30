@@ -32,7 +32,10 @@ Status: design stage. Check the installed `docs/design.md` for the current API.
 - Map every filter and search onto graphql-orm `Where` inputs. Filtering a downloaded page
   does not filter the dataset.
 - Use offset connections for sortable tables and keyset lists for a fixed order.
-  `usePagination` handles both.
+- For an infinite list, mark the list field `@connection(key: "...")` and pass its paging
+  argument as a variable (`Page: $Page`). Call `loadMore()` from `useQuery`, and show
+  `loadingMore`/`hasMore`. Pages merge into one list per filter; a refresh keeps the scrolled
+  pages.
 
 ## Mutations
 
