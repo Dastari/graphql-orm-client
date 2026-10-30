@@ -14,6 +14,7 @@ const schema = buildSchema(`
     node(NodeId: ID!): Node
     nodes(NodeIds: [ID!]!): [Node]!
     Devices(Limit: Int): [Device!]!
+    Slots: [Slot!]!
     Settings: Settings
   }
   interface Node { NodeId: ID! }
@@ -24,6 +25,12 @@ const schema = buildSchema(`
     Hostname: String
     Readings(Last: Int): [Int!]!
   }
+  type Slot implements Node {
+    NodeId: ID!
+    Zone: String!
+    Code: String!
+    Label: String
+  }
   type Settings { Theme: String }
 `)
 
@@ -31,6 +38,8 @@ const documents = [
   `fragment DeviceCard on Device @refetchable { Name Hostname }`,
   `fragment DeviceName on Device { Name }`,
   `query DeviceList { Devices { ...DeviceCard ...DeviceName } }`,
+  `fragment SlotLabel on Slot @refetchable { Label }`,
+  `query SlotList { Slots { ...SlotLabel } }`,
 ]
 
 const compiled = compile(schema, documents)
@@ -56,7 +65,7 @@ describe("@refetchable fragments", () => {
     expect(DeviceList.text).not.toContain("@refetchable")
     expect(compiled.fragments.DeviceName!.refetch).toBeUndefined()
     // The generated query is not one of the application's operations.
-    expect(Object.keys(compiled.operations)).toEqual(["DeviceList"])
+    expect(Object.keys(compiled.operations).sort()).toEqual(["DeviceList", "SlotList"])
   })
 
   it("take a queryName", () => {
@@ -96,6 +105,25 @@ describe("@refetchable fragments", () => {
     expect(client.store.get(nodeId)?.fields.get("Name")).toBe("renamed")
     // The list query was not sent again.
     expect(requests.filter((request) => request.name === "DeviceList")).toHaveLength(1)
+  })
+
+  it("identify a record by the server's NodeId when its key is not Id", async () => {
+    const SlotLabel = compiled.fragments.SlotLabel!
+    expect(compiled.operations.SlotList!.text).toMatch(/Slots \{\s*__typename\s+NodeId/)
+    expect(SlotLabel.refetch?.text).toMatch(/node\(NodeId: \$NodeId\) \{\s*__typename\s+NodeId/)
+    const slotId = encodeNodeId("Slot", ["north", "a"])
+    let label = "first"
+    const { network, requests } = mockNetwork(({ name }) => {
+      const slot = { __typename: "Slot", NodeId: slotId, Label: label }
+      return name === "SlotList" ? { data: { Slots: [slot] } } : { data: { node: slot } }
+    })
+    const client = createClient({ network })
+    const { snapshot } = await client.execute<{ Slots: object[] }>(compiled.operations.SlotList!, {})
+    expect(client.store.get(slotId)?.fields.get("Label")).toBe("first")
+    label = "second"
+    expect(await client.refetchFragment(SlotLabel, snapshot.data.Slots[0]!)).toEqual({ found: true, errors: [] })
+    expect(requests.at(-1)).toMatchObject({ name: "SlotLabelRefetch", variables: { NodeId: slotId } })
+    expect(client.store.get(slotId)?.fields.get("Label")).toBe("second")
   })
 
   it("remove a record the lookup no longer returns, and keep it on errors", async () => {

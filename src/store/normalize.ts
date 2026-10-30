@@ -1,5 +1,5 @@
 import type { LinkSelection, OperationArtifact, Selection } from "../artifact.js"
-import { encodeNodeId, type KeyPart } from "../node-id.js"
+import { decodeNodeId, encodeNodeId, type KeyPart } from "../node-id.js"
 import { argumentValue, fieldStorageKey, storageKey, type Variables } from "./arguments.js"
 import { ROOT_ID, type Store, type StoredRecord } from "./store.js"
 
@@ -13,13 +13,17 @@ export function contextOf(artifact: OperationArtifact, variables: Variables): No
   return { keys: artifact.keys, versions: artifact.versions, variables }
 }
 
-/** The NodeId of an object in a response, or null when its type has no complete key in it. */
+/**
+ * The NodeId of an object in a response: the server's `NodeId` field when the object carries one,
+ * else encoded from its key fields; null when its type has no complete key in it.
+ */
 export function identify(
   value: Record<string, unknown>,
   keys: Readonly<Record<string, readonly string[]>>
 ): string | null {
   const typename = value.__typename
   if (typeof typename !== "string") return null
+  if (typeof value.NodeId === "string" && decodeNodeId(value.NodeId)) return value.NodeId
   const fields = keys[typename]
   if (!fields || fields.length === 0) return null
   const parts: KeyPart[] = []
