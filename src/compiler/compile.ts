@@ -5,6 +5,7 @@ import {
   getNamedType,
   isAbstractType,
   isCompositeType,
+  isInterfaceType,
   isListType,
   isNonNullType,
   isObjectType,
@@ -73,7 +74,10 @@ export class CompileError extends Error {
 const CLIENT_DIRECTIVES = parse(`
   directive @live on FRAGMENT_DEFINITION
   directive @connection(key: String!, paging: [String!]) on FIELD
+  directive @refetchable(queryName: String) on FRAGMENT_DEFINITION
 `)
+
+const CLIENT_DIRECTIVE_NAMES = new Set(["live", "connection", "refetchable"])
 
 /** graphql-orm's connection and keyset field names. */
 const DEFAULT_CONNECTION = {
@@ -91,7 +95,7 @@ const DEFAULT_CONNECTION = {
 function stripClientDirectives<T extends import("graphql").ASTNode>(node: T): T {
   return visit(node, {
     Directive(directive) {
-      return directive.name.value === "live" || directive.name.value === "connection" ? null : undefined
+      return CLIENT_DIRECTIVE_NAMES.has(directive.name.value) ? null : undefined
     },
   }) as T
 }
@@ -118,14 +122,15 @@ export function compile(
   sources: readonly (string | DocumentNode)[],
   options: CompileOptions = {}
 ): CompileResult {
-  return compileDocuments(schema, sources, options, true)
+  return compileDocuments(schema, sources, options, false)
 }
 
+/** `nested`: compiling a generated live or refetch operation, which gets no live or refetch artifacts of its own. */
 function compileDocuments(
   schema: GraphQLSchema,
   sources: readonly (string | DocumentNode)[],
   options: CompileOptions,
-  withLive: boolean
+  nested: boolean
 ): CompileResult {
   const clientSchema = extendSchema(schema, CLIENT_DIRECTIVES)
   const documents = sources.map((source) => (typeof source === "string" ? parse(source) : source))
@@ -212,9 +217,69 @@ function compileDocuments(
       fragments: Object.fromEntries([...used].sort().map((fragment) => [fragment, fragments[fragment]!])),
     }
   }
-  if (!withLive) return { operations, fragments, live: {}, liveUnavailable: [] }
+  if (nested) return { operations, fragments, live: {}, liveUnavailable: [] }
   const { live, liveUnavailable } = compileLive(schema, fragments, fragmentNodes, options)
-  return { operations, fragments, live, liveUnavailable }
+  const refetchable = compileRefetch(schema, fragments, fragmentNodes, operationNames, options)
+  return { operations, fragments: { ...fragments, ...refetchable }, live, liveUnavailable }
+}
+
+/**
+ * A fragment marked `@refetchable` gets a query that reads it again through the router's
+ * `node(NodeId)` lookup: `query <Fragment>Refetch($NodeId: ID!) { node(NodeId: $NodeId) { ...F } }`.
+ * The fragment's type must implement `Node`, and the fragment can't use operation variables.
+ */
+function compileRefetch(
+  schema: GraphQLSchema,
+  fragments: Readonly<Record<string, FragmentArtifact>>,
+  fragmentNodes: ReadonlyMap<string, FragmentDefinitionNode>,
+  operationNames: ReadonlySet<string>,
+  options: CompileOptions
+): Record<string, FragmentArtifact> {
+  const result: Record<string, FragmentArtifact> = {}
+  const problems: string[] = []
+  const queryNames = new Set<string>()
+  for (const [name, node] of fragmentNodes) {
+    const directive = (node.directives ?? []).find((entry) => entry.name.value === "refetchable")
+    if (!directive) continue
+    const nameArg = directive.arguments?.find((arg) => arg.name.value === "queryName")
+    const queryName = nameArg?.value.kind === Kind.STRING ? nameArg.value.value : `${name}Refetch`
+    const nodeField = schema.getQueryType()?.getFields()["node"]
+    const nodeInterface = schema.getType("Node")
+    const type = schema.getType(fragments[name]!.typeCondition)
+    if (!nodeField || !nodeField.args.some((arg) => arg.name === "NodeId") || !nodeInterface || !isInterfaceType(nodeInterface)) {
+      problems.push(`Fragment ${name} is @refetchable, but the schema has no node(NodeId) lookup`)
+      continue
+    }
+    const implementsNode =
+      type === nodeInterface ||
+      (type && isObjectType(type) && type.getInterfaces().includes(nodeInterface)) ||
+      (type && isAbstractType(type) && schema.getPossibleTypes(type).every((entry) => entry.getInterfaces().includes(nodeInterface)))
+    if (!implementsNode) {
+      problems.push(`Fragment ${name} is @refetchable, but ${type?.name ?? "its type"} does not implement Node`)
+      continue
+    }
+    if (operationNames.has(queryName) || queryNames.has(queryName)) {
+      problems.push(`Fragment ${name}'s refetch query ${queryName} has the name of another operation`)
+      continue
+    }
+    queryNames.add(queryName)
+    const text = `query ${queryName}($NodeId: ID!) { node(NodeId: $NodeId) { ...${name} } }`
+    const document: DocumentNode = {
+      kind: Kind.DOCUMENT,
+      definitions: [...parse(text).definitions, ...fragmentNodes.values()],
+    }
+    let compiled: CompileResult
+    try {
+      compiled = compileDocuments(schema, [document], options, true)
+    } catch (error) {
+      const detail = error instanceof CompileError ? error.problems.join("; ") : String(error)
+      problems.push(`Fragment ${name} can't be @refetchable (a refetchable fragment can't use operation variables): ${detail}`)
+      continue
+    }
+    result[name] = { ...fragments[name]!, refetch: compiled.operations[queryName]! }
+  }
+  if (problems.length) throw new CompileError(problems)
+  return result
 }
 
 function compileLive(
@@ -262,7 +327,7 @@ function compileLive(
       kind: Kind.DOCUMENT,
       definitions: [...parse(text).definitions, ...fragmentNodes.values()],
     }
-    const compiled = compileDocuments(schema, [document], options, false)
+    const compiled = compileDocuments(schema, [document], options, true)
     live[typename] = {
       typename,
       mode,

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- `@refetchable` fragments. The compiler adds a `node(NodeId)` query to the fragment artifact
+  (`fragment.refetch`, named `<Fragment>Refetch` or `queryName`). `client.refetchFragment` and
+  `useRefetchableFragment` read one record again; a null result without errors removes it. The
+  compiler refuses a type that doesn't implement `Node`, a schema without `node(NodeId)`,
+  fragments that use operation variables, and name clashes. Needs graphql-orm 0.86.0 and
+  graphql-orm-router 0.8.0.
+
 ## 0.1.0-alpha.0 (2026-10-30)
 
 First alpha. Install from the GitHub release archive:
