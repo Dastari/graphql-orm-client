@@ -1,6 +1,14 @@
 # Design
 
-Status: proposed. Nothing here is implemented yet; code samples show the intended API.
+Status: partly built. Implemented and tested:
+- the compiler (`compile` from `graphql-orm-client/compiler`);
+- NodeId;
+- the store: normalisation, version ordering, masked reads, subscriptions, retention and garbage collection, disposal;
+- `Client`: `execute`, `watchQuery`, `preload` and `mutate`;
+- `readFragment`;
+- React: `ClientProvider`, `useQuery`, `useFragment` and `useFragmentList`.
+
+Proposed, not built: the live layer, `usePagination`, optimistic updates, persistence, the codegen preset, and per-type `staleMs`/`expiresField` policy.
 
 ## Goals
 

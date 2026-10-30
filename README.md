@@ -6,9 +6,9 @@ step combines those fragments into one query per route, and a normalised store k
 record once. Generated `Changed` subscriptions update the store while the records are on
 screen.
 
-> **Status: design.** This repository holds the design, the graphql-orm contract it depends
-> on and the agent guidance. There is no runtime code yet, and APIs shown here are proposals.
-> See the [roadmap](docs/roadmap.md).
+> **Status: early alpha.** The compiler, the normalised store and the React bindings work and
+> are tested. The live layer, pagination helpers, optimistic updates and the codegen preset are
+> not built yet, and APIs may still change. See the [roadmap](docs/roadmap.md).
 
 ## Why not Apollo or Relay
 
