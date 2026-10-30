@@ -466,6 +466,32 @@ export class Client {
     }
   }
 
+  /**
+   * Read a `@refetchable` fragment's record again through the router's `node(NodeId)` lookup and
+   * write it into the store; every view of the record updates. A null result without errors
+   * means the record is now missing or denied, so it is removed, as on a DELETED event. A
+   * failure (errors, a network error) leaves the stored record as it was.
+   */
+  async refetchFragment<N extends string>(
+    fragment: FragmentArtifact<any, N>,
+    ref: FragmentRefFor<N>,
+    options: { signal?: AbortSignal } = {}
+  ): Promise<{ found: boolean; errors: readonly GraphQLErrorLike[] }> {
+    if (!fragment.refetch) throw new Error(`${fragment.name} is not @refetchable`)
+    const { selector } = fragmentSelector(fragment, ref)
+    const { snapshot, errors } = await this.execute(
+      fragment.refetch as OperationArtifact<{ node: unknown }>,
+      { NodeId: selector.id },
+      options.signal ? { signal: options.signal } : {}
+    )
+    const found = snapshot.data.node !== null && snapshot.data.node !== undefined
+    if (!found && errors.length === 0) {
+      this.store.delete(selector.id)
+      this.store.publish()
+    }
+    return { found, errors }
+  }
+
   dispose(): void {
     this.live?.dispose()
     for (const controller of this.controllers) controller.abort()

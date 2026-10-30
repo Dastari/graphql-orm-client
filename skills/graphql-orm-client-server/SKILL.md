@@ -15,8 +15,11 @@ change that breaks one of these leaves the client with stale or duplicated data.
 - Keep `Id` (the complete primary key) stable in format and meaning. The client's `NodeId` is
   the type name plus this key. Ids need only be unique within their type.
 - Declare `federation_key` on every entity the router serves.
-- Add `#[graphql_orm(version)]` (i64) to rows that are rewritten in place while users watch
-  them: sessions, outcomes, snapshots, tickets, state rows.
+- Add a managed version (`#[graphql_orm(version = "managed")]`, i64, from graphql-orm 0.84.0)
+  to rows that are rewritten in place while users watch them: sessions, outcomes, snapshots,
+  tickets, state rows. A bare `#[graphql_orm(version)]` is compare-and-swap only.
+- Add `node_id` (`#[graphql_entity(node_id)]`, graphql-orm 0.86.0) to entities whose fragments
+  should be refetchable on their own.
 - Set `propagate_change = "up"` on relations whose parent views show child state.
 - Write live state through the ORM's write paths (generated mutations, repository writes,
   transaction writes). Only those emit `Changed`.
@@ -25,9 +28,10 @@ change that breaks one of these leaves the client with stale or duplicated data.
 ## Do not
 
 - Add hand-written `NodeId` fields, `node` resolvers, signal subscriptions (`…Updated: Event!`)
-  or multi-key subscriptions. These are planned in graphql-orm; report the need there.
-- Persist heartbeat or connection state only to produce events. In-memory state waits for
-  graphql-orm's volatile source (#223); until then the client polls it.
+  or multi-key subscriptions. graphql-orm generates these; report a gap there.
+- Persist every heartbeat to produce events. Persist the state *transitions* a heartbeat
+  sweep already decides (connected, delayed, offline) when they happen; steady state then
+  writes nothing, and the generated `Changed` carries every transition.
 - Reuse an entity's `Id` for a different record, or change its encoding without coordinating
   with the client's consumers.
 

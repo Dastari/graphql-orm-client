@@ -37,6 +37,16 @@ Status: design stage. Check the installed `docs/design.md` for the current API.
   `loadingMore`/`hasMore`. Pages merge into one list per filter; a refresh keeps the scrolled
   pages.
 
+## Refetching one record
+
+- Mark a fragment `@refetchable` to refresh its record alone (a detail panel's refresh
+  button, after an action whose effects the response doesn't carry). Use
+  `useRefetchableFragment` or `client.refetchFragment`; don't refetch the whole root.
+- It needs the router's `node(NodeId)` lookup and a type that implements `Node`, and the
+  fragment can't use operation variables. The compiler says which is missing.
+- `found: false` means the record is gone or no longer readable; it has been removed from the
+  store. Show that, rather than the stale record.
+
 ## Mutations
 
 - Spread the fragments of the views the mutation affects into its selection, so the response

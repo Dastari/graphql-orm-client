@@ -70,6 +70,10 @@ A query's data shows child fragments as references. `readFragment`, `useFragment
 module also exports `live`, to pass to `createClient({ live: { artifacts: live, subscribe } })`,
 and `liveUnavailable`, which lists the types that have no usable `Changed` subscription.
 
+A fragment marked `@refetchable` can read its record again on its own, through the router's
+`node(NodeId)` lookup: `useRefetchableFragment(Fragment, ref)` or
+`client.refetchFragment(Fragment, ref)`. Its type must implement `Node`.
+
 The schema may be router or subgraph SDL; federation directives are accepted.
 
 ## For agents

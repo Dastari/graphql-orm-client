@@ -5,11 +5,12 @@ import {
   useEffect,
   useMemo,
   useRef,
+  useState,
   useSyncExternalStore,
   type ReactNode,
 } from "react"
 import type { FragmentArtifact, FragmentRefFor, OperationArtifact } from "../artifact.js"
-import { fragmentSelector, type Client, type FetchPolicy, type QueryState } from "../client.js"
+import { fragmentSelector, type Client, type FetchPolicy, type GraphQLErrorLike, type QueryState } from "../client.js"
 import { stableStringify, type Variables } from "../store/arguments.js"
 import { recycle, type Snapshot } from "../store/store.js"
 
@@ -115,6 +116,60 @@ export function useFragment<D = Record<string, unknown>, N extends string = stri
 export function useFragment(fragment: FragmentArtifact<any, any>, ref: unknown): unknown {
   const snapshot = useFragmentSnapshot(fragment, ref)
   return snapshot?.data ?? null
+}
+
+export interface RefetchState {
+  /** True while a refetch is in flight. */
+  readonly refetching: boolean
+  /** The last refetch's failure: a thrown error, or the GraphQL errors it returned. */
+  readonly error: Error | null
+  /** False once a refetch found the record missing or denied (it is then removed). */
+  readonly found: boolean
+}
+
+/**
+ * `useFragment` for a `@refetchable` fragment, plus `refetch()`, which reads this record again
+ * through `node(NodeId)` without refetching the query that produced it.
+ */
+export function useRefetchableFragment<D = Record<string, unknown>, N extends string = string>(
+  fragment: FragmentArtifact<D, N>,
+  ref: FragmentRefFor<N>
+): RefetchState & { data: D; refetch: () => Promise<void> }
+export function useRefetchableFragment<D = Record<string, unknown>, N extends string = string>(
+  fragment: FragmentArtifact<D, N>,
+  ref: FragmentRefFor<N> | null | undefined
+): RefetchState & { data: D | null; refetch: () => Promise<void> }
+export function useRefetchableFragment(
+  fragment: FragmentArtifact<any, string>,
+  ref: unknown
+): RefetchState & { data: unknown; refetch: () => Promise<void> } {
+  const client = useClient()
+  const snapshot = useFragmentSnapshot(fragment, ref)
+  const [state, setState] = useState<RefetchState>({ refetching: false, error: null, found: true })
+  const mounted = useRef(true)
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+    }
+  }, [])
+  const refetch = useCallback(async () => {
+    if (ref === null || ref === undefined) return
+    setState((previous) => ({ ...previous, refetching: true }))
+    let next: RefetchState
+    try {
+      const { found, errors } = await client.refetchFragment(fragment, ref)
+      next = { refetching: false, error: errors.length ? graphQLError(fragment.name, errors) : null, found }
+    } catch (error) {
+      next = { refetching: false, error: error instanceof Error ? error : new Error(String(error)), found: true }
+    }
+    if (mounted.current) setState(next)
+  }, [client, fragment, ref])
+  return { ...state, data: snapshot?.data ?? null, refetch }
+}
+
+function graphQLError(name: string, errors: readonly GraphQLErrorLike[]): Error {
+  return new Error(`${name}: ${errors.map((error) => error.message).join("; ")}`)
 }
 
 /**

@@ -12,7 +12,8 @@ Status: partly built. Implemented and tested:
   reference types, the `live` artifacts and an overloaded `graphql()`.
 
 - pagination: `@connection`, `loadMore`, `hasMore` and `loadingMore`;
-- optimistic mutations, interval polling, and the live polling fallback.
+- optimistic mutations, interval polling, and the live polling fallback;
+- `@refetchable` fragments: `client.refetchFragment` and `useRefetchableFragment`.
 
 Proposed, not built: offset (page-number) navigation, automatic list insertion after mutations, persistence, and per-type `staleMs`/`expiresField` policy.
 
@@ -259,8 +260,30 @@ query FleetScroll($Where: DeviceWhereInput, $Page: KeysetPageInput) {
 
 ## Refetching a fragment
 
-A fragment can be refetched on its own through the router's `node(NodeId)` lookup, once that
-lookup exists. Until then, a fragment can only be refetched through its root.
+Mark a fragment `@refetchable` to read its record again without refetching the root that
+produced it:
+
+```graphql
+fragment DeviceCard on Device @refetchable {
+  Name
+  Hostname
+}
+```
+
+- **Query.** The compiler adds `query DeviceCardRefetch($NodeId: ID!) { node(NodeId: $NodeId) { ...DeviceCard } }`
+  to the fragment artifact (`fragment.refetch`). `@refetchable(queryName: "...")` renames it.
+  The directive isn't sent to the server.
+- **Requirements.** The schema needs the router's `node(NodeId)` lookup, and the fragment's
+  type must implement `Node` (graphql-orm's `#[graphql_entity(node_id)]`). The fragment can't
+  use operation variables. The compiler refuses each of these with a message.
+- **Calling it.** `client.refetchFragment(Fragment, ref)` sends the query with the reference's
+  `NodeId` and writes the result, so every view of the record updates.
+  `useRefetchableFragment(Fragment, ref)` is `useFragment` plus `refetch`, `refetching`, `error`
+  and `found`.
+- **Missing or denied.** A null `node` without errors means the record is missing or no longer
+  readable: the store removes it, as for a `DELETED` event. A null with errors, or a failed
+  request, leaves the stored record as it was.
+- **Not yet.** Batching several refetches into one `nodes(NodeIds)` request.
 
 ## Security
 

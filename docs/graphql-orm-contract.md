@@ -4,23 +4,23 @@ What the client needs from graphql-orm and its router, and where each item stand
 addition to graphql-orm is opt-in and ships through graphql-orm's normal release process. The
 client never works around a missing item by guessing.
 
-Status as of 2026-10-30, against graphql-orm `main`.
+Status as of 2026-10-30, against graphql-orm `main` (0.82.0).
 
 | Need | Why the client needs it | Status |
 | --- | --- | --- |
 | Complete key on every entity | The store's `NodeId` is built from it | Exists. Every generated entity has a primary key, possibly composite |
 | `federation_key` on every routed entity | Records can be looked up by key across subgraphs; basis for `node` | Exists, opt-in per entity |
-| Global `NodeId` and a router `node(NodeId)` lookup | Refetch one fragment; one identity across subgraphs | Proposed in graphql-orm #260: a generated `NodeId` field and `@key(fields: "NodeId")` per entity, plus a built-in router `Node` subgraph with `node`/`nodes`. Encoding: opaque base64url of `[typename, ...keyParts]`; no hand-written `NodeId` fields in services |
-| Record version | Drop an older poll result that arrives after a newer event | Bare `#[graphql_orm(version)]` is compare-and-swap only, so ordinary writes don't advance it. Managed versions (`version = "managed"`, advanced by every generated write) and an optional `ExpectedVersion` are in progress (graphql-orm #259). Planned: expose the version to clients under one name |
+| Global `NodeId` and a router `node(NodeId)` lookup | Refetch one fragment (`@refetchable`); one identity across subgraphs | In review for graphql-orm 0.86.0 and graphql-orm-router 0.8.0 (#260): `#[graphql_entity(node_id)]` generates `NodeId: ID!` and `@key(fields: "NodeId")`; the router hosts `interface Node`, `node(NodeId)` and `nodes(NodeIds)` (default bound 100). Encoding: base64url of `[typename, ...keyParts]`; no hand-written `NodeId` fields in services |
+| Record version | Drop an older poll result that arrives after a newer event | Bare `#[graphql_orm(version)]` is compare-and-swap only, so ordinary writes don't advance it. Managed versions (`version = "managed"`, advanced by every generated write) and an optional `ExpectedVersion` are in review for graphql-orm 0.84.0 (#259). Planned: expose the version to clients under one name |
 | `<Entity>Changed` subscriptions carrying the entity | Write changes into the store without a refetch | Exists for write-capable entities. Filters: `Actions` and one exact key |
-| `Changed` for a list of keys | One subscription per type, not one per record | Proposed in graphql-orm #261: a bounded `Keys` argument, default maximum 500. Continuity after resubscribing is #225 |
+| `Changed` for a list of keys | One subscription per type, not one per record | In review for graphql-orm 0.85.0 (#261): a bounded `Keys` argument, default maximum 500. The client uses it automatically. Continuity after resubscribing is #225 |
 | Upward change propagation | Parent views update when a child changes | Exists, opt-in per relation: `propagate_change = "up"`. Cross-crate propagation is in progress (#249) |
 | Sequence numbers and replay | Recover missed events after a reconnect without refetching everything | Planned |
 | One connection shape | Generic pagination | Planned. Offset connections and keyset lists both exist today; the client supports both until they are unified |
 | Persisted operations | Smaller requests; an allow-list of compiled operations at the router | Planned. The operation catalogue exists |
 | Shareable shared objects | Two subgraphs must compose | `PageInfo` is shareable. The aggregate result objects are fixed in 0.81.2 |
 | Lifetime metadata in the schema | The compiler can configure expiry without hand-written policy | Planned |
-| Volatile entity sources | In-memory server state (connection, heartbeat) through the generated entity, policy and `Changed` surface | Planned; tracked in graphql-orm #223 |
+| In-memory server state | Connection and liveness changes reach the client as `Changed` | Not needed as an ORM feature for now: a service persists state *transitions* (connected, delayed, offline), not heartbeats, so the generated `Changed` covers them. A field overlay for exact in-memory values may follow if a consumer needs it (#223) |
 
 ## Rules for services
 

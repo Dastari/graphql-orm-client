@@ -92,6 +92,8 @@ export interface FragmentArtifact<TData = unknown, TName extends string = string
   readonly selections: readonly Selection[]
   /** Whether the fragment is marked `@live`. */
   readonly live: boolean
+  /** For a `@refetchable` fragment: the query that reads it again by `NodeId`. */
+  readonly refetch?: OperationArtifact
 }
 
 export interface OperationArtifact<TData = unknown, TVariables = Record<string, unknown>> {
