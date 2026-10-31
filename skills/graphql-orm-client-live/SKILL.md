@@ -18,7 +18,10 @@ Status: design stage. Check the installed `docs/design.md` and `docs/graphql-orm
   `polling.liveFallbackMs` (default 30 s), and so do records beyond the per-record cap. Record
   the gap rather than adding a hand-written subscription.
 - Without a record version, the last write to arrive wins. For a row that is rewritten while
-  users watch it, ask the backend to add `#[graphql_orm(version)]`.
+  users watch it, ask the backend for a managed version (`#[graphql_orm(version = "managed")]`).
+  The client then selects and orders by the generated `RecordVersion` with no configuration.
+  When the version field has a read policy some users fail, or isn't available to
+  subscriptions, set `versions: { Type: null }` so selecting it doesn't fail their reads.
 
 ## Cache policy
 

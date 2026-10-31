@@ -129,7 +129,10 @@ aggregate row) is stored inside its parent.
 - A response is split into records using the root's normalisation map. Each field is merged
   into the stored record.
 - When the type exposes a version, a write carrying an older version than the stored record
-  is dropped. Without a version, the last write to arrive wins.
+  is dropped. Without a version, the last write to arrive wins. The compiler selects
+  graphql-orm's `RecordVersion: Int!` wherever a type has it and uses it as the version, so
+  managed versions need no configuration. `versions` names another field for a type, or
+  `null` to turn it off.
 - A `Changed` event with action `DELETED` removes the record and every list entry that points
   to it.
 - Writes are batched per tick. Subscribers are notified once per batch, and only those whose
