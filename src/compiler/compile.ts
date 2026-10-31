@@ -19,6 +19,7 @@ import {
   type FieldNode,
   type FragmentDefinitionNode,
   type GraphQLCompositeType,
+  type GraphQLObjectType,
   type GraphQLOutputType,
   type GraphQLSchema,
   type OperationDefinitionNode,
@@ -42,10 +43,11 @@ export interface CompileOptions {
    */
   readonly keys?: Readonly<Record<string, readonly string[] | null>>
   /**
-   * The record-version field per type (a managed graphql-orm version). A write carrying an older
-   * version never replaces a newer stored record.
+   * The record-version field per type. A write carrying an older version never replaces a newer
+   * stored record. Types not listed use graphql-orm's `RecordVersion` when they have it, and the
+   * compiler selects it; `null` turns that off for a type.
    */
-  readonly versions?: Readonly<Record<string, string>>
+  readonly versions?: Readonly<Record<string, string | null>>
   /** The generated subscription field for a type. Default `${typename}Changed`. */
   readonly liveField?: (typename: string) => string
   /** Connection field names, when they differ from graphql-orm's PascalCase defaults. */
@@ -110,6 +112,19 @@ function hasNodeId(type: GraphQLCompositeType): boolean {
   if (!isObjectType(type) && !isInterfaceType(type)) return false
   const nodeId = type.getFields()[NODE_ID]
   return nodeId !== undefined && getNamedType(nodeId.type).name === "ID"
+}
+
+const RECORD_VERSION = "RecordVersion"
+
+/**
+ * The record-version field of a type: explicit configuration, else graphql-orm's generated
+ * `RecordVersion: Int!` for a managed version.
+ */
+function versionFieldOf(type: GraphQLObjectType, options: CompileOptions): string | null {
+  const configured = options.versions?.[type.name]
+  if (configured !== undefined) return configured
+  const recordVersion = type.getFields()[RECORD_VERSION]
+  return recordVersion !== undefined && getNamedType(recordVersion.type).name === "Int" ? RECORD_VERSION : null
 }
 
 /** Key fields of a type: explicit configuration, else `Id` when the type has it. */
@@ -457,6 +472,9 @@ function augmentSelectionSet(
     for (const key of keyFieldsOf(schema, parent.name, options) ?? []) {
       if (!present.has(key)) additions.push(field(key))
     }
+    if (versionFieldOf(parent, options) === RECORD_VERSION && !present.has(RECORD_VERSION)) {
+      additions.push(field(RECORD_VERSION))
+    }
   }
   return { ...selectionSet, selections: [...additions, ...selections] }
 }
@@ -493,7 +511,7 @@ function typeMetadata(
     if (!isObjectType(type) || type.name.startsWith("__")) continue
     const fields = keyFieldsOf(schema, type.name, options)
     if (fields) keys[type.name] = fields
-    const version = options.versions?.[type.name]
+    const version = versionFieldOf(type, options)
     if (version) versions[type.name] = version
   }
   return { keys, versions }

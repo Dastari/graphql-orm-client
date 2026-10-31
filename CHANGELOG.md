@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- The compiler selects graphql-orm's `RecordVersion: Int!` (graphql-orm 0.87.0) on every type
+  that has it, and the store orders writes by it, so managed versions need no `versions`
+  configuration. `versions` still names another field for a type, and `null` turns it off.
+
 ## 0.1.0-alpha.1 (2026-10-31)
 
 Install from the GitHub release archive:

@@ -50,8 +50,7 @@ then generate a typed module:
   "documents": ["src"],
   "out": "src/graphql/generated.ts",
   "scalars": { "DateTime": "string", "UUID": "string", "JSON": "unknown" },
-  "keys": { "Slot": ["Site", "Name"] },
-  "versions": { "Ticket": "RowVersion" }
+  "keys": { "Slot": ["Site", "Name"] }
 }
 ```
 
