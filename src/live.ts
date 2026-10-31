@@ -21,6 +21,11 @@ export interface LiveOptions {
   readonly maxKeys?: number
   /** Delay before changes to the held records reach the server. Default 50 ms. */
   readonly debounceMs?: number
+  /**
+   * Longest random delay before resubscribing and refetching after a subscription lost events.
+   * Spreads the load when one burst ends every client's subscription at once. Default 1000 ms.
+   */
+  readonly resyncJitterMs?: number
   readonly setTimeout?: (callback: () => void, ms: number) => unknown
   readonly clearTimeout?: (handle: unknown) => void
 }
@@ -42,6 +47,16 @@ interface ActiveType {
 }
 
 /**
+ * graphql-orm (0.88) ends a generated `Changed` stream with one of these codes when events were
+ * lost: the subscriber fell behind the event channel, or the channel closed.
+ */
+const CONTINUITY_CODES = new Set(["SUBSCRIPTION_CONTINUITY_LOST", "SUBSCRIPTION_SOURCE_CLOSED"])
+
+function lostContinuity(response: GraphQLResponse): boolean {
+  return (response.errors ?? []).some((error) => CONTINUITY_CODES.has(String(error.extensions?.code)))
+}
+
+/**
  * Keeps generated `<Type>Changed` subscriptions open for exactly the records that readers of
  * `@live` fragments currently hold, and writes each event's entity into the store.
  */
@@ -51,10 +66,16 @@ export class LiveManager {
   private timer: unknown = null
   private disposed = false
   private subscriptionCount = 0
+  private readonly resyncs = new Map<string, unknown>()
 
+  /**
+   * `resync` receives the holders that show records of a type whose events were lost, after the
+   * type's subscriptions have been started again; the client refetches them.
+   */
   constructor(
     private readonly store: Store,
-    private readonly options: LiveOptions
+    private readonly options: LiveOptions,
+    private readonly resync: (holders: ReadonlySet<string>) => void = () => {}
   ) {}
 
   /** Whether a type has a usable live subscription. */
@@ -105,6 +126,8 @@ export class LiveManager {
   dispose(): void {
     this.disposed = true
     if (this.timer !== null) (this.options.clearTimeout ?? clearTimeout)(this.timer as ReturnType<typeof setTimeout>)
+    for (const handle of this.resyncs.values()) (this.options.clearTimeout ?? clearTimeout)(handle as ReturnType<typeof setTimeout>)
+    this.resyncs.clear()
     for (const active of this.active.values()) for (const stop of active.subscriptions.values()) stop()
     this.active.clear()
     this.holders.clear()
@@ -163,21 +186,53 @@ export class LiveManager {
       }
       for (const [key, variables] of wanted) {
         if (active.subscriptions.has(key)) continue
-        active.subscriptions.set(key, this.start(artifact, variables))
+        this.start(artifact, active, key, variables)
       }
     }
   }
 
-  private start(artifact: LiveArtifact, variables: Record<string, unknown>): () => void {
+  private start(artifact: LiveArtifact, active: ActiveType, key: string, variables: Record<string, unknown>): void {
     const { operation } = artifact
-    return this.options.subscribe(
+    let ended = false
+    let dispose: (() => void) | null = null
+    const stop = () => dispose?.()
+    // The stream ended from the server's side. It is started again only when events were lost;
+    // after any other end, the next change to the held records starts it.
+    const end = (lost: boolean) => {
+      if (ended) return
+      ended = true
+      if (active.subscriptions.get(key) === stop) active.subscriptions.delete(key)
+      stop()
+      if (lost) this.scheduleResync(artifact.typename)
+    }
+    active.subscriptions.set(key, stop)
+    dispose = this.options.subscribe(
       { kind: "subscription", name: operation.name, text: operation.text, hash: operation.hash, variables },
       {
-        next: (response) => this.receive(artifact, response, variables),
-        error: () => {},
-        complete: () => {},
+        next: (response) => (lostContinuity(response) ? end(true) : this.receive(artifact, response, variables)),
+        error: () => end(false),
+        complete: () => end(false),
       }
     )
+    if (ended) dispose()
+  }
+
+  /**
+   * Events of a type were lost. Subscribe again first, then refetch what shows the type, so no
+   * change falls between the two. A random delay spreads clients that lost events together.
+   */
+  private scheduleResync(typename: string): void {
+    if (this.disposed || this.resyncs.has(typename)) return
+    const set = this.options.setTimeout ?? ((callback: () => void, ms: number) => setTimeout(callback, ms))
+    const handle = set(() => {
+      this.resyncs.delete(typename)
+      if (this.disposed) return
+      this.reconcile()
+      const holders = new Set<string>()
+      for (const [holder, targets] of this.holders) if (targets.get(typename)?.size) holders.add(holder)
+      if (holders.size) this.resync(holders)
+    }, Math.random() * (this.options.resyncJitterMs ?? 1000))
+    this.resyncs.set(typename, handle)
   }
 
   private receive(artifact: LiveArtifact, response: GraphQLResponse, variables: Record<string, unknown>): void {

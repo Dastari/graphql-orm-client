@@ -127,6 +127,90 @@ describe("live layer", () => {
     expect(list.getState().data!.Devices.Edges).toHaveLength(1)
   })
 
+  it("after lost events, subscribes again and then refetches what shows the type", async () => {
+    const order: string[] = []
+    let name = "first"
+    const { network } = mockNetwork(({ name: operation }) => {
+      order.push(operation)
+      return { data: fleet([device("d1", { Name: name })]) }
+    })
+    const subscriptions = mockSubscriptions()
+    const timers: { callback: () => void; ms: number }[] = []
+    const client = createClient({
+      network,
+      live: {
+        artifacts: compiled.live,
+        subscribe: (request, sink) => {
+          order.push(request.name)
+          return subscriptions.subscribe(request, sink)
+        },
+        debounceMs: 0,
+        resyncJitterMs: 400,
+        setTimeout: (callback, ms) => timers.push({ callback, ms }),
+        clearTimeout: () => {},
+      },
+    })
+    const list = client.watchQuery<FleetData>(ops.FleetPage, {})
+    list.open()
+    await list.refetch()
+    client.live!.flush()
+    timers.length = 0
+    order.length = 0
+
+    const device1 = subscriptions.find("LiveDevice")[0]!
+    device1.sink.next({ data: null, errors: [{ message: "lost", extensions: { code: "SUBSCRIPTION_CONTINUITY_LOST" } }] })
+    device1.sink.complete()
+    // The ended stream is released at once; recovery waits for a random delay below the jitter.
+    expect(client.live!.status().Device?.subscriptions).toBe(0)
+    expect(timers).toHaveLength(1)
+    expect(timers[0]!.ms).toBeLessThan(400)
+
+    name = "second"
+    timers[0]!.callback()
+    await list.refetch()
+    expect(order.slice(0, 2)).toEqual(["LiveDevice", "FleetPage"])
+    expect(subscriptions.find("LiveDevice")).toHaveLength(1)
+    expect(readFragment<{ Name: string }>(frags.DeviceRow, list.getState().data!.Devices.Edges[0]!.Node).Name).toBe("second")
+    client.dispose()
+  })
+
+  it("recovers from SUBSCRIPTION_SOURCE_CLOSED too; any other end waits for the next change", () => {
+    const subscriptions = mockSubscriptions()
+    const timers: (() => void)[] = []
+    const { network } = mockNetwork(() => ({ data: fleet([device("d1")]) }))
+    const client = createClient({
+      network,
+      live: {
+        artifacts: compiled.live,
+        subscribe: subscriptions.subscribe,
+        debounceMs: 0,
+        setTimeout: (callback) => timers.push(callback),
+        clearTimeout: () => {},
+      },
+    })
+    const live = client.live!
+    live.hold("q", new Map([["Device", new Set([encodeNodeId("Device", ["d1"])])]]))
+    live.flush()
+    timers.length = 0
+
+    // A transport error ends the stream without a resync, so a failing server isn't retried in a loop.
+    subscriptions.find("LiveDevice")[0]!.sink.error(new Error("socket gone"))
+    expect(subscriptions.find("LiveDevice")).toHaveLength(0)
+    expect(timers).toHaveLength(0)
+    live.flush()
+    expect(subscriptions.find("LiveDevice")).toHaveLength(1)
+
+    subscriptions.find("LiveDevice")[0]!.sink.next({
+      data: null,
+      errors: [{ message: "closed", extensions: { code: "SUBSCRIPTION_SOURCE_CLOSED" } }],
+    })
+    expect(subscriptions.find("LiveDevice")).toHaveLength(0)
+    expect(timers).toHaveLength(1)
+    timers[0]!()
+    expect(subscriptions.find("LiveDevice")).toHaveLength(1)
+    client.dispose()
+  })
+
   it("disposing the client closes every subscription", async () => {
     const { client, subscriptions } = setup(() => ({ data: fleet([device("d1")]) }))
     const list = client.watchQuery(ops.FleetPage, {})

@@ -190,8 +190,14 @@ hold scope (a new search term on the same organisation) keeps the previous resul
 3. **Write.** It writes each event's entity into the store, ordered by version. An
    upward-propagated event (`ChangeKind: PROPAGATED`) updates the parent record and refetches
    any of the parent's fields that are computed from its children.
-4. **Recover.** After a reconnect, it replays from the last sequence number when the server
-   supports replay. Otherwise it refetches the active roots.
+4. **Recover.** graphql-orm (0.88) ends a `Changed` stream that lost events with one error,
+   `SUBSCRIPTION_CONTINUITY_LOST` (the subscriber fell behind the event channel) or
+   `SUBSCRIPTION_SOURCE_CLOSED`. After a random delay below `live.resyncJitterMs` (default
+   1 s), the live layer subscribes again, then refetches the roots that show that type. Any
+   other end of a stream (a transport error, a plain `complete`) releases it without a retry;
+   the next change to the held records starts it again. After a socket reconnect the
+   application calls `client.refetchActive()`, until the server supports replay from a sequence
+   number.
 5. **Release.** When records are released, it narrows or ends the subscriptions.
 
 Polling remains for state that emits no events (in-memory server state) and when the number

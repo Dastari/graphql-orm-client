@@ -347,7 +347,13 @@ export class Client {
     this.network = options.network
     this.polling = options.polling ?? {}
     this.store = new Store(options.store)
-    this.live = options.live ? new LiveManager(this.store, options.live) : null
+    this.live = options.live
+      ? new LiveManager(this.store, options.live, (holders) => {
+          for (const resource of this.resources.values()) {
+            if (resource.users > 0 && holders.has(resource.key)) void resource.fetch()
+          }
+        })
+      : null
   }
 
   /** Refetch every open query; call after a subscription reconnect may have missed events. */
