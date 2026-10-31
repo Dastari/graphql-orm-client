@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- The live layer recovers from lost events. When graphql-orm (0.88.0) ends a `Changed` stream with
+  `SUBSCRIPTION_CONTINUITY_LOST` or `SUBSCRIPTION_SOURCE_CLOSED`, it subscribes again after a
+  random delay below `live.resyncJitterMs` (default 1 s), then refetches the queries that show
+  that type. A stream that ends any other way is released and starts again on the next change to
+  the held records; it used to stay counted as open.
+
 - The compiler selects graphql-orm's `RecordVersion: Int!` (graphql-orm 0.87.0) on every type
   that has it, and the store orders writes by it, so managed versions need no `versions`
   configuration. `versions` still names another field for a type, and `null` turns it off.

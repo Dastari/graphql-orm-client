@@ -37,4 +37,6 @@ Status: design stage. Check the installed `docs/design.md` and `docs/graphql-orm
 2. Does the server emit `Changed` for that write? (Check that the write path goes through the
    ORM and that the relation propagates `up` if the change is on a child.)
 3. Is an older poll result overwriting a newer event? That requires a record version.
-4. After a reconnect, did the client replay or refetch?
+4. After a reconnect, did the client replay or refetch? After `SUBSCRIPTION_CONTINUITY_LOST`, the
+   client resubscribes and refetches by itself; if that happens often, a bulk writer is
+   outrunning the server's `event_channel_capacity`.
