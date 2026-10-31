@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.1.0-alpha.1 (2026-10-31)
+
+Install from the GitHub release archive:
+`pnpm add https://github.com/Dastari/graphql-orm-client/releases/download/v0.1.0-alpha.1/graphql-orm-client-0.1.0-alpha.1.tgz`.
+`@refetchable` needs graphql-orm 0.86.0 and graphql-orm-router 0.8.0 (workspace release
+`workspace-2026.10.30.4`); everything else works with earlier versions.
+
 - Built-in transport: `createHttpNetwork({ url, headers, fetch, credentials })` sends GraphQL
   over HTTP and throws `HttpError` for a response without a GraphQL body.
   `graphqlWsSubscribe(ws)` adapts a graphql-ws client for `live.subscribe`. graphql-ws stays
