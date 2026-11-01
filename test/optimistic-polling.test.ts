@@ -123,7 +123,7 @@ describe("polling", () => {
       network,
       polling: { ...clock, liveFallbackMs: 15_000 },
       live: {
-        artifacts: compiled.live,
+        artifacts: { ...compiled.live, Device: { ...compiled.live.Device!, keyOptional: false } },
         subscribe: subscriptions.subscribe,
         maxKeyedSubscriptions: 2,
         setTimeout: () => 0,

@@ -139,6 +139,8 @@ export interface LiveArtifact {
   readonly keyArgument: string | null
   /** The key fields in primary-key order; composite keys are sent as input objects. */
   readonly keyFields: readonly string[]
+  /** The field also works without a key: past the `key`-mode limit, use one stream of the type. */
+  readonly keyOptional?: boolean
   /** The subscription to run, selecting every `@live` fragment on the type. */
   readonly operation: OperationArtifact
 }

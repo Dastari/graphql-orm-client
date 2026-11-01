@@ -363,6 +363,7 @@ function compileLive(
       actionField: action.name,
       keyArgument: arg?.name ?? null,
       keyFields,
+      keyOptional: arg !== undefined && !isNonNullType(arg.type),
       operation: compiled.operations[operationName]!,
     }
   }

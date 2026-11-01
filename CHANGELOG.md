@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.0-alpha.3 (2026-11-01)
+
+Install from the GitHub release archive:
+`pnpm add https://github.com/Dastari/graphql-orm-client/releases/download/v0.1.0-alpha.3/graphql-orm-client-0.1.0-alpha.3.tgz`.
+Regenerate artifacts to use the new stream; older artifacts keep the previous behaviour.
+
+- In `key` mode, a type holding more records than `maxKeyedSubscriptions` uses one stream of the
+  type when the field's `Key` is optional, as graphql-orm generates it, instead of polling the
+  rest. `maxKeyedSubscriptions: 0` always uses that stream.
+
 ## 0.1.0-alpha.2 (2026-11-01)
 
 Install from the GitHub release archive:
