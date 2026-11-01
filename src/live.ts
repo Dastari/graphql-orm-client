@@ -15,7 +15,10 @@ export interface LiveOptions {
   readonly artifacts: Readonly<Record<string, LiveArtifact>>
   /** Start a subscription (for example through graphql-ws); returns its disposer. */
   readonly subscribe: (request: OperationRequest, sink: SubscriptionSink) => () => void
-  /** Per-record subscriptions allowed per type in `key` mode before the rest overflow. Default 50. */
+  /**
+   * Per-record subscriptions allowed per type in `key` mode. Past it, a field whose key is
+   * optional uses one stream of the type; otherwise the rest overflow. Default 50.
+   */
   readonly maxKeyedSubscriptions?: number
   /** Largest `Keys` list per subscription in `keys` mode. Default 500. */
   readonly maxKeys?: number
@@ -86,7 +89,7 @@ export class LiveManager {
   /** Whether some held records of a type have no subscription (beyond the per-record cap). */
   overflows(typename: string): boolean {
     const artifact = this.options.artifacts[typename]
-    if (artifact?.mode !== "key") return false
+    if (artifact?.mode !== "key" || artifact.keyOptional) return false
     return (this.held().get(typename)?.size ?? 0) > (this.options.maxKeyedSubscriptions ?? 50)
   }
 
@@ -168,8 +171,12 @@ export class LiveManager {
           wanted.set("all", {})
         } else if (artifact.mode === "key") {
           const max = this.options.maxKeyedSubscriptions ?? 50
-          for (const id of ids.slice(0, max)) wanted.set(id, { [artifact.keyArgument!]: keyValue(artifact, id) })
-          active.overflow = Math.max(0, ids.length - max)
+          if (ids.length > max && artifact.keyOptional) {
+            wanted.set("all", {})
+          } else {
+            for (const id of ids.slice(0, max)) wanted.set(id, { [artifact.keyArgument!]: keyValue(artifact, id) })
+            active.overflow = Math.max(0, ids.length - max)
+          }
         } else {
           const max = this.options.maxKeys ?? 500
           for (let start = 0; start < ids.length; start += max) {
@@ -242,8 +249,8 @@ export class LiveManager {
     if (!payload || !entity) return
     const id = identify(entity, artifact.operation.keys)
     if (id === null) return
-    // An unkeyed stream carries every record of the type; only held records are written.
-    if (artifact.mode === "unkeyed" && !this.held().get(artifact.typename)?.has(id)) return
+    // A stream without keys carries every record of the type; only held records are written.
+    if (!this.held().get(artifact.typename)?.has(id)) return
     if (payload[artifact.actionField] === "DELETED") {
       this.store.delete(id)
     } else {

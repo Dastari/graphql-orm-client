@@ -1,6 +1,6 @@
 {
   "name": "graphql-orm-client",
-  "version": "0.1.0-alpha.2",
+  "version": "0.1.0-alpha.3",
   "description": "A GraphQL client for graphql-orm APIs: colocated fragments, compiled route queries, a normalised store and live Changed subscriptions.",
   "type": "module",
   "license": "MIT",

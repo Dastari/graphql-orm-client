@@ -5,7 +5,10 @@ import { compiled, device, fleet, frags, mockNetwork, mockSubscriptions, ops } f
 
 type FleetData = { Devices: { Edges: { Node: object }[] } }
 
-function setup(responder: Parameters<typeof mockNetwork>[0], live: { maxKeyedSubscriptions?: number } = {}) {
+function setup(
+  responder: Parameters<typeof mockNetwork>[0],
+  live: { maxKeyedSubscriptions?: number; artifacts?: typeof compiled.live } = {}
+) {
   const { network } = mockNetwork(responder)
   const subscriptions = mockSubscriptions()
   const client = createClient({
@@ -100,9 +103,10 @@ describe("live layer", () => {
     expect(stream!.request.variables).toEqual({ Keys: [{ Site: "north", Name: "a" }] })
   })
 
-  it("caps per-record subscriptions and reports the overflow", async () => {
+  it("caps per-record subscriptions and reports the overflow when a key is required", async () => {
     const { client, subscriptions } = setup(() => ({ data: fleet([device("d1"), device("d2"), device("d3")]) }), {
       maxKeyedSubscriptions: 2,
+      artifacts: { ...compiled.live, Device: { ...compiled.live.Device!, keyOptional: false } },
     })
     const list = client.watchQuery(ops.FleetPage, {})
     list.open()
@@ -110,6 +114,30 @@ describe("live layer", () => {
     client.live!.flush()
     expect(subscriptions.find("LiveDevice")).toHaveLength(2)
     expect(client.live!.status().Device).toMatchObject({ mode: "key", held: 3, subscriptions: 2, overflow: 1 })
+  })
+
+  it("past the cap, an optional key uses one stream that writes only held records", async () => {
+    const { client, subscriptions } = setup(() => ({ data: fleet([device("d1"), device("d2"), device("d3")]) }), {
+      maxKeyedSubscriptions: 2,
+    })
+    const list = client.watchQuery<FleetData>(ops.FleetPage, {})
+    list.open()
+    await list.refetch()
+    client.live!.flush()
+    const streams = subscriptions.find("LiveDevice")
+    expect(streams).toHaveLength(1)
+    expect(streams[0]!.request.variables).toEqual({})
+    expect(client.live!.status().Device).toMatchObject({ mode: "key", held: 3, subscriptions: 1, overflow: 0 })
+    expect(client.live!.overflows("Device")).toBe(false)
+
+    streams[0]!.sink.next({
+      data: { DeviceChanged: { __typename: "DeviceChangedEvent", Action: "UPDATED", Device: device("elsewhere") } },
+    })
+    expect(client.store.get(encodeNodeId("Device", ["elsewhere"]))).toBeUndefined()
+    streams[0]!.sink.next({
+      data: { DeviceChanged: { __typename: "DeviceChangedEvent", Action: "UPDATED", Device: { ...device("d2"), Name: "Renamed" } } },
+    })
+    expect(client.store.get(encodeNodeId("Device", ["d2"]))?.fields.get("Name")).toBe("Renamed")
   })
 
   it("a DELETED event removes the record, and the query reads again", async () => {

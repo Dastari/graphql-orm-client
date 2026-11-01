@@ -211,7 +211,7 @@ how to narrow it:
 | Mode | When | Subscriptions |
 | --- | --- | --- |
 | `keys` | the field has a `Keys` argument (graphql-orm #261) | one per type, in chunks of up to 500 keys |
-| `key` | the field has a `Key` argument | one per held record, up to `maxKeyedSubscriptions` (50) |
+| `key` | the field has a `Key` argument | one per held record, up to `maxKeyedSubscriptions` (50). Past that, one per type if `Key` is optional; otherwise the rest overflow and their holders poll |
 | `unkeyed` | neither | one per type; events for records nobody holds are dropped |
 
 The payload's entity field is found by type (`Device` in `DeviceChangedEvent`), and its action
