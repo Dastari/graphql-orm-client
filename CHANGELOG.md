@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.1.0-alpha.2 (2026-11-01)
+
+Install from the GitHub release archive:
+`pnpm add https://github.com/Dastari/graphql-orm-client/releases/download/v0.1.0-alpha.2/graphql-orm-client-0.1.0-alpha.2.tgz`.
+`RecordVersion` detection needs graphql-orm 0.87.0, and continuity recovery needs graphql-orm 0.88.0
+(`workspace-2026.10.31.2`). With an earlier server both are inactive and everything else works.
 
 - The live layer recovers from lost events. When graphql-orm (0.88.0) ends a `Changed` stream with
   `SUBSCRIPTION_CONTINUITY_LOST` or `SUBSCRIPTION_SOURCE_CLOSED`, it subscribes again after a
