@@ -4,8 +4,8 @@ What the client needs from graphql-orm and its router, and where each item stand
 addition to graphql-orm is opt-in and ships through graphql-orm's normal release process. The
 client never works around a missing item by guessing.
 
-Status as of 2026-10-31: graphql-orm 0.86.0 and graphql-orm-router 0.8.0 are released
-(workspace release `workspace-2026.10.30.4`).
+Status as of 2026-11-01: graphql-orm 0.89.0 and graphql-orm-router 0.8.1 are released
+(workspace release `workspace-2026.11.01.1`).
 
 | Need | Why the client needs it | Status |
 | --- | --- | --- |
