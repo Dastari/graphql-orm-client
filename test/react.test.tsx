@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { act, render, screen } from "@testing-library/react"
+import { StrictMode } from "react"
 import { describe, expect, it } from "vitest"
 import { createClient } from "../src/client.js"
 import { ClientProvider, useFragment, useFragmentList, useQuery } from "../src/react/index.js"
@@ -61,6 +62,20 @@ describe("React bindings", () => {
     expect(screen.getByText("renamed online")).toBeTruthy()
     expect(renders.get("page")).toBe(pageRenders)
     expect(renders.get("row:device-d2")).toBe(d2Renders)
+  })
+
+  it("loads under StrictMode, which closes and reopens the query in one commit", async () => {
+    const { network, requests } = mockNetwork(() => ({ data: fleet([device("d1")]) }))
+    const client = createClient({ network })
+    render(
+      <StrictMode>
+        <ClientProvider client={client}>
+          <FleetPage where={{}} />
+        </ClientProvider>
+      </StrictMode>
+    )
+    await screen.findByText("device-d1 online")
+    expect(requests).toHaveLength(2)
   })
 
   it("skips the query when variables are null", () => {
