@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.0-alpha.4 (2026-11-03)
+
+Install from the GitHub release archive:
+`pnpm add https://github.com/Dastari/graphql-orm-client/releases/download/v0.1.0-alpha.4/graphql-orm-client-0.1.0-alpha.4.tgz`.
+No artifact or API change.
+
+- A query closed and reopened in the same tick fetches again. `close()` aborted the request but
+  kept it as in flight, so the reopen waited on it and the query stayed `loading` with no error.
+  React's StrictMode closes and reopens every effect on mount, so `useQuery` hung in development.
+  A late result of an aborted request also no longer clears a newer request.
+
 ## 0.1.0-alpha.3 (2026-11-01)
 
 Install from the GitHub release archive:

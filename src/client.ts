@@ -202,7 +202,11 @@ class QueryResource<T> implements WatchedQuery<T> {
     if (this.users > 0) return
     this.users = 0
     this.schedulePoll()
+    // Forget the request as well: a reopen in the same tick (React's StrictMode replays effects)
+    // must start a new one, not wait on this one, whose result is dropped.
     this.controller?.abort()
+    this.controller = null
+    this.inflight = null
     this.unsubscribeStore?.()
     this.unsubscribeStore = null
     this.client.live?.hold(this.key, new Map())
@@ -280,8 +284,9 @@ class QueryResource<T> implements WatchedQuery<T> {
         this.set({ ...this.state, status: "error", error: error instanceof Error ? error : new Error(String(error)) })
       })
       .finally(() => {
+        if (this.controller !== controller) return
+        this.controller = null
         this.inflight = null
-        if (this.controller === controller) this.controller = null
       })
     return this.inflight
   }
