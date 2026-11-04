@@ -4,20 +4,23 @@ Status: partly built. Implemented and tested:
 - the compiler (`compile` from `graphql-orm-client/compiler`);
 - NodeId;
 - the store: normalisation, version ordering, masked reads, subscriptions, retention and garbage collection, disposal;
-- `Client`: `execute`, `watchQuery`, `preload` and `mutate`;
+- `Client`: `execute`, `watchQuery`, `watchPagedQuery`, `preload`, `query`, `mutate`, `subscribe`
+  and `refetchQueries`;
 - transport: `createHttpNetwork` (GraphQL over HTTP) and `graphqlWsSubscribe` (a graphql-ws
   client for the live layer);
 - `readFragment`;
-- React: `ClientProvider`, `useQuery`, `useFragment`, `useFragmentList` and `useMutation`;
+- React: `ClientProvider`, `useQuery`, `usePagedQuery`, `useFragment`, `useFragmentList`,
+  `useMutation` and `useSubscription`;
 - the live layer: `compile(...).live`, `LiveManager`, and `createClient({ live })`;
 - the generator: `graphql-orm-client generate` with `--check`. It emits typed artifacts, masked
   reference types, the `live` artifacts and an overloaded `graphql()`.
 
-- pagination: `@connection`, `loadMore`, `hasMore` and `loadingMore`;
+- pagination: `@connection` (keyset or offset), `loadMore`, `hasMore` and `loadingMore`;
+- page-number navigation: `@paged`, `watchPagedQuery` and `usePagedQuery`;
 - optimistic mutations, interval polling, and the live polling fallback;
 - `@refetchable` fragments: `client.refetchFragment` and `useRefetchableFragment`.
 
-Proposed, not built: offset (page-number) navigation, automatic list insertion after mutations, persistence, and per-type `staleMs`/`expiresField` policy.
+Proposed, not built: automatic list insertion after mutations, persistence, and per-type `staleMs`/`expiresField` policy.
 
 ## Goals
 
@@ -175,8 +178,9 @@ const client = createClient({
 
 ### Query states
 
-A root reports `loading`, `ready`, `refreshing` or `error`. Changing variables within the same
-hold scope (a new search term on the same organisation) keeps the previous result as
+A root reports `idle` (skipped), `loading`, `ready`, `refreshing` or `error`. `usePagedQuery` and
+`watchPagedQuery` keep the previous page while another page loads, and keep it across new
+variables within the same hold scope (a new search term on the same organisation), as
 `refreshing` instead of blanking. A different scope never shows another scope's records.
 
 ## Live layer
@@ -237,13 +241,25 @@ await client.mutate(RenameDeviceMutation, { Id: id, Name: name }, {
   the real response or an error arrives, the layer is rolled back field by field, and the real
   response is written. A field that changed since (from a live event or another response) is not
   rolled back.
-- **Lists.** Inserting into or removing from a list is not automatic. Refetch the affected query,
-  or rely on the live layer.
+- **Lists.** Inserting into or removing from a list is not automatic. Refetch the affected query
+  (`refetchQueries`), or rely on the live layer.
+- **Refetching after.** `mutate(..., { refetchQueries: [TicketsPageQuery, "FleetPage"] })` reads
+  those open queries again once the mutation succeeds, and resolves after them.
+  `client.refetchQueries([...])` does the same at any time, and `"active"` refetches every open query.
+- **Cancelling.** `mutate(..., { signal })` cancels the request and rolls back the optimistic layer.
+- **Results without a key.** A result type without a key (a hand-written `…Result` object, a list of
+  rows, a scalar) is stored inside the mutation's own root, so it never collides with another
+  mutation's result; keyed records inside it are normalised as usual. Fragment references in the
+  returned `data` keep working until garbage collection.
+- **Errors.** When the server returns GraphQL errors, with or without data, `useMutation`'s `error`
+  is an `OperationError`, so `error.errors[i].extensions.code` is available. A transport failure
+  is the error the network threw.
 
 ## Polling
 
 - **Fixed intervals.** `watchQuery(..., { pollMs })` and `useQuery(..., { pollMs })` refetch on
-  an interval while the query is open.
+  an interval while that handle is open. Each handle's interval lasts until it closes, and the
+  shortest open interval wins; in React, a new `pollMs` (or none) replaces the old one.
 - **Live fallback.** A query that shows `@live` records no subscription covers polls every
   `polling.liveFallbackMs` (default 30 s; `null` turns it off). That covers types with no usable
   `Changed` subscription, records beyond the per-record cap in `key` mode, and every `@live`
@@ -272,8 +288,71 @@ query FleetScroll($Where: DeviceWhereInput, $Page: KeysetPageInput) {
 - **State.** `hasMore` and `loadingMore` are in the query state.
 - **Refreshing.** Refetching the first page (a refresh or poll) replaces the head and keeps the
   pages loaded after it. The end cursor stays at the last loaded page.
+- **Offset input.** When the paging argument is graphql-orm's offset `PageInput` (`Limit`,
+  `Offset`, no `after`), the compiler records it and `loadMore()` asks for `Offset` = the number of
+  rows loaded. A first-page refresh keeps the later rows, as for keyset lists; rows that moved
+  between pages can be missed or shown once, so give the root an order with a unique last key
+  (`OrderBy: [..., { Id: ASC }]`).
 - **Field names** default to graphql-orm's: `Edges`, `Node`, `Cursor`, `PageInfo`, `EndCursor`,
-  `HasNextPage` and `Page.after`. Change them with the `connection` compile option.
+  `HasNextPage`, `Page.after` and `Page.Offset`. Change them with the `connection` compile option.
+
+### Page-number navigation
+
+A table that pages by number marks its list field `@paged` and passes graphql-orm's `PageInput` as
+a variable:
+
+```graphql
+query TicketsPage($Where: TicketWhereInput, $Page: PageInput) {
+  Tickets(Where: $Where, Page: $Page, OrderBy: [{ Opened: DESC }, { Id: ASC }]) @paged {
+    Edges { Node { ...TicketRow } }
+  }
+}
+```
+
+```tsx
+function TicketTable({ where }: { where: TicketWhereInput }) {
+  const [pageIndex, setPageIndex] = useState(0)
+  const [pageSize, setPageSize] = useState(25)
+  const page = usePagedQuery(TicketsPageQuery, { Where: where }, { pageIndex, pageSize, scope: organisationId })
+  const rows = useFragmentList(TicketRowFragment, page.data?.Tickets.Edges.map((edge) => edge.Node))
+  return (
+    <Table rows={rows} busy={page.placeholder} pageIndex={pageIndex} pageSize={pageSize}
+      total={page.totalCount} onPageChange={setPageIndex} onPageSizeChange={setPageSize} />
+  )
+}
+```
+
+- **Compiler.** `@paged` (optionally `@paged(paging: "Page")`) records where the field sits, its page
+  variable, and the `PageInput` and `PageInfo` field names in `artifact.paged`. It adds
+  `PageInfo { TotalCount HasNextPage HasPreviousPage }` when not selected and strips the directive.
+  It refuses a field that is in a fragment, inside a list, also a `@connection`, or whose page
+  argument isn't a variable of an input with `Limit` and `Offset`; one `@paged` field per operation.
+- **Pages.** `pageIndex` counts from 0 and `pageSize` defaults to the page variable's `Limit`, else
+  50 (graphql-orm's default). The client sets the page variable to
+  `{ ...Page, Limit: pageSize, Offset: pageIndex * pageSize }`. Unlike a `@connection`, every page is
+  stored under its own arguments, so going back to a page seen before shows it at once (and refreshes
+  it per the fetch policy). Records stay normalised: an edit or `Changed` event on one page shows on
+  every page and view of that record.
+- **State.** `PagedState` is a `QueryState` plus `pageIndex`, `pageSize`, `totalCount`,
+  `pageCount` (`ceil(totalCount / pageSize)`, null without a total), `hasNextPage`,
+  `hasPreviousPage` and `placeholder`. While a page loads, the previous page stays in `data` with
+  `placeholder: true` and status `refreshing`; its next/previous flags are then estimated from the
+  previous total. A page that fails shows `error`, not the previous page.
+- **Hold scope.** A change of page or page size always keeps the previous page on screen. New
+  variables keep it only when `scope` is unchanged (`usePagedQuery`), or with
+  `setVariables(variables, { hold: true })`; otherwise the table shows `loading`. `scope: null`
+  never holds.
+- **Live and polling.** Each page is an ordinary watched query, so `@live` fragments on the visible
+  page subscribe for that page's rows, `pollMs` and the live polling fallback apply to the visible
+  page only, and a deleted row makes the page read again.
+- **Outside React.** `client.watchPagedQuery(Query, variables, { pageIndex, pageSize, policy, pollMs })`
+  returns a `PagedQuery` with `getState`, `subscribe`, `open`, `close`, `refetch`, `setPage`,
+  `setPageSize` (which keeps the first row of the page in view) and `setVariables`. `pageVariables`
+  and `pagedState` are exported for code that pages by hand.
+- **Not done by the client.** It doesn't move to the last page when the total shrinks below the
+  current page; compare `pageIndex` with `pageCount`. graphql-orm clamps an explicit `Limit` to its
+  maximum (100 by default) without saying so in `PageInfo`, so `pageCount` is only right for page
+  sizes within that maximum (see the contract).
 
 ## Refetching a fragment
 
@@ -301,6 +380,53 @@ fragment DeviceCard on Device @refetchable {
   readable: the store removes it, as for a `DELETED` event. A null with errors, or a failed
   request, leaves the stored record as it was.
 - **Not yet.** Batching several refetches into one `nodes(NodeIds)` request.
+
+## Imperative reads
+
+`client.query(Query, variables, { policy, signal })` reads a query outside React and resolves with
+`{ data, errors }`. `store-or-network` (the default) answers from complete stored data without a
+request; `store-and-network` and `network-only` always fetch. What it read stays for the retention
+period, like a preload. It rejects with `OperationError` when the server returns no data.
+`client.store.lookup(selectorOf(Query, variables))` reads only the store.
+
+## Plain subscriptions
+
+Subscriptions that aren't the live layer's, such as an operation's own
+`subscription FileOperations { FameFileOperationChanged(...) { ... } }`, run through the same
+`live.subscribe` transport. `live.artifacts` can be left out when an application has no `@live`
+fragments.
+
+- `client.subscribe(Subscription, variables, { next, error, complete })` returns the function that
+  stops it. Each event is written into the store first, so keyed records it carries update every
+  view, then passed to `next` as `{ data, errors }` with masked references. An event's objects
+  without a key are kept until the next event.
+- An event with errors and no data goes to `error` as an `OperationError` with its codes.
+  graphql-orm ends a stream that lost events with `SUBSCRIPTION_CONTINUITY_LOST` or
+  `SUBSCRIPTION_SOURCE_CLOSED`; subscribe again and refetch what the stream fed.
+- `useSubscription(Subscription, variables | null, { skip, onData, onError })` runs it while
+  mounted and returns the latest `data`, `errors` and `error`.
+- The client interprets nothing in the payload: a `DELETED` action is the consumer's to handle.
+  Use `@live` fragments when the aim is to keep records on screen current.
+
+## Coming from Apollo
+
+| Apollo | graphql-orm-client |
+| --- | --- |
+| `useQuery(Q, { variables, skip })` | `useQuery(Q, variables, { skip })`; `variables: null` also skips. Status `idle` |
+| `refetch(newVariables)` | `refetch(newVariables)`: merged into the current variables, and the hook switches to them until the `variables` argument changes |
+| `fetchPolicy: "cache-first"` / `"cache-and-network"` / `"network-only"` | `policy: "store-or-network"` / `"store-and-network"` (the default) / `"network-only"` |
+| `fetchPolicy: "no-cache"` | Not provided: every result is normalised. Use `network-only` |
+| `pollInterval`, `startPolling` | `pollMs`, per hook or handle, alongside the client's live polling fallback |
+| `context: { fetchOptions: { signal } }` | `signal` on `client.query`, `client.execute`, `client.mutate` and `client.refetchFragment`. Watched queries cancel their own request when closed |
+| `errorPolicy: "all"` | The behaviour: data with `errors`, each with `extensions.code`. For `"none"`, treat `errors.length` as a failure |
+| `client.query` | `client.query(Q, variables, { policy, signal })` |
+| `client.subscribe`, `useSubscription` | `client.subscribe` and `useSubscription`, through `live.subscribe` |
+| `refetchQueries` (client or mutation option) | `client.refetchQueries([...])`, `mutate(..., { refetchQueries })` |
+| `fetchMore` with a field policy | `@connection` and `loadMore()`, keyset or offset |
+| Offset pages with `previousData` | `@paged` and `usePagedQuery` |
+| `useLazyQuery` | `useQuery` with `skip`, or `client.query` |
+| `cache.writeQuery`, `cache.modify`, `cache.evict` | Not provided. Spread the views' fragments into the mutation, refetch, or rely on live events; garbage collection drops what no query retains |
+| `client.clearStore`, `resetStore` | Dispose the client and create one for the next identity |
 
 ## Security
 

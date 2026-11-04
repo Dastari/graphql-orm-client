@@ -7,15 +7,20 @@ export type {
   LiveArtifact,
   LiveMode,
   OperationArtifact,
+  PagedSpec,
   Selection,
 } from "./artifact.js"
 export { LiveManager } from "./live.js"
 export type { LiveOptions, LiveTypeStatus, SubscriptionSink } from "./live.js"
 export {
   Client,
+  DEFAULT_PAGE_SIZE,
   OperationError,
   createClient,
   fragmentSelector,
+  pageSizeOf,
+  pageVariables,
+  pagedState,
   readFragment,
   selectorOf,
 } from "./client.js"
@@ -26,8 +31,13 @@ export type {
   GraphQLResponse,
   Network,
   OperationRequest,
+  PagedQuery,
+  PagedState,
+  PollingOptions,
   QueryState,
   QueryStatus,
+  SubscriptionObserver,
+  WatchOptions,
   WatchedQuery,
 } from "./client.js"
 export { HttpError, createHttpNetwork, graphqlWsSubscribe } from "./transport.js"

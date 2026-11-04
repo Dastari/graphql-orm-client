@@ -85,7 +85,7 @@ describe("React bindings", () => {
         <FleetPage where={null} />
       </ClientProvider>
     )
-    expect(screen.getByText("loading")).toBeTruthy()
+    expect(screen.getByText("idle")).toBeTruthy()
     expect(requests).toHaveLength(0)
   })
 

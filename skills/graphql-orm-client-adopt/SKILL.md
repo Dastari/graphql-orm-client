@@ -1,12 +1,12 @@
 ---
 name: graphql-orm-client-adopt
-description: Install graphql-orm-client in an application, configure the network, store and identity scope, run the codegen preset and wire route loaders.
+description: Install graphql-orm-client in an application, configure the network, store and identity scope, run the codegen preset, wire route loaders and move an Apollo application across route by route.
 ---
 
 # Adopt graphql-orm-client
 
-Status: design stage. The APIs below are proposed; check the installed package's
-`docs/design.md` and changelog before writing code, and do not invent APIs it does not list.
+Status: early alpha. Check the installed package's `docs/design.md` and changelog before
+writing code, and do not invent APIs it does not list.
 
 Install a versioned GitHub release archive (`pnpm add https://github.com/Dastari/graphql-orm-client/releases/download/v<version>/graphql-orm-client-<version>.tgz`), and keep the lockfile. Then read the installed `README.md`, `docs/design.md` and `docs/graphql-orm-contract.md`.
 The client only works against graphql-orm services and their router.
@@ -30,7 +30,10 @@ The client only works against graphql-orm services and their router.
 6. **Routes.** Each route that shows data owns one root query. Start it in the route loader
    with `client.preload(Query, variables)` and read it in the component with `useQuery`.
 7. **Migrate gradually.** An application already on Apollo can move one route at a time.
-   Move the fragments next to their components first (see `graphql-orm-client-data`).
+   Move the fragments next to their components first (see `graphql-orm-client-data`, which maps
+   Apollo's options). The installed `docs/design.md` has a table under "Coming from Apollo".
+   Offset tables become `@paged` queries with `usePagedQuery`; plain subscriptions need
+   `live: { subscribe }` even without `@live` fragments.
 
 Verify: the route makes one request on first load, a second visit within the retention
 period makes none, and signing out clears every record.
