@@ -7,8 +7,8 @@ record once. Generated `Changed` subscriptions update the store while the record
 screen.
 
 > **Status: early alpha.** The compiler, the normalised store, the React bindings and the live
-> layer, cursor pagination, optimistic mutations, polling and the generator with TypeScript types
-> all work and are tested. It has not yet run in a production application, and APIs may still
+> layer, cursor and offset pagination, page-number navigation, optimistic mutations, polling, plain
+> subscriptions and the generator with TypeScript types all work and are tested. It has not yet run in a production application, and APIs may still
 > change. See the [roadmap](docs/roadmap.md).
 
 ## Why not Apollo or Relay
@@ -93,6 +93,28 @@ client = createClient({
 `credentials`. A response with GraphQL errors is returned whatever its HTTP status; one without
 a GraphQL body throws `HttpError`. Commit mutations with `client.mutate`, or `useMutation` in
 React.
+
+A table that pages by number marks its list `@paged` and passes graphql-orm's `PageInput` as a
+variable. `usePagedQuery` sets its `Limit` and `Offset` from a zero-based page index and size,
+keeps the previous page on screen while the next one loads, and reports `totalCount` and
+`pageCount`:
+
+```tsx
+const TicketsPage = graphql(`
+  query TicketsPage($Where: TicketWhereInput, $Page: PageInput) {
+    Tickets(Where: $Where, Page: $Page, OrderBy: [{ Opened: DESC }, { Id: ASC }]) @paged {
+      Edges { Node { ...TicketRow } }
+    }
+  }
+`)
+
+const page = usePagedQuery(TicketsPage, { Where: where }, { pageIndex, pageSize: 25 })
+// page.data (the page, or the previous one while `page.placeholder`), page.totalCount, page.pageCount
+```
+
+An application coming from Apollo will find `skip`, `refetch(variables)`, fetch policies, `pollMs`,
+abort signals, `client.query`, `client.subscribe`, `useSubscription` and `refetchQueries`; the
+[design](docs/design.md#coming-from-apollo) maps each Apollo option.
 
 A fragment marked `@refetchable` can read its record again on its own, through the router's
 `node(NodeId)` lookup: `useRefetchableFragment(Fragment, ref)` or

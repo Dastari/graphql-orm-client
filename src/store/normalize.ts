@@ -7,6 +7,8 @@ export interface NormalizeContext {
   readonly keys: Readonly<Record<string, readonly string[]>>
   readonly versions: Readonly<Record<string, string>>
   readonly variables: Variables
+  /** Collects the ids of objects stored under a path because they have no key. */
+  readonly embedded?: Set<string>
 }
 
 export function contextOf(artifact: OperationArtifact, variables: Variables): NormalizeContext {
@@ -134,6 +136,7 @@ function writeObject(
   if (typeof typename !== "string")
     throw new Error(`The response object at ${path} has no __typename; was it compiled?`)
   const id = identify(value, context.keys) ?? path
+  if (id === path) context.embedded?.add(id)
   const record = store.getOrCreate(id, typename)
   const write = accepts(record, value, context.versions[typename])
   // Older data never replaces newer data, but nested records carry their own versions.
@@ -159,9 +162,13 @@ function writeConnection(
   const spec = selection.connection!
   const typename = value.__typename
   if (typeof typename !== "string") throw new Error(`The connection at ${id} has no __typename; was it compiled?`)
+  context.embedded?.add(id)
   const record = store.getOrCreate(id, typename)
   const page = argumentValue(selection.args, spec.paging[0] ?? "", context.variables) as Record<string, unknown> | null | undefined
-  const appending = page?.[spec.after] !== undefined && page?.[spec.after] !== null
+  const offset = spec.offset ? page?.[spec.offset] : undefined
+  const appending = spec.offset
+    ? typeof offset === "number" && offset > 0
+    : page?.[spec.after] !== undefined && page?.[spec.after] !== null
 
   const edgesSelection = findLink(selection.selections, spec.edges)
   const pageInfoSelection = findLink(selection.selections, spec.pageInfo)

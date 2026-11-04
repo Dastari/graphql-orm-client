@@ -31,6 +31,31 @@ export interface ConnectionSpec {
   readonly hasNextPage: string
   /** The field of the paging argument that carries the cursor to continue after. */
   readonly after: string
+  /**
+   * Set when the paging argument is graphql-orm's offset `PageInput`: the field that carries the
+   * offset. `loadMore` then continues at the number of rows loaded, not after a cursor.
+   */
+  readonly offset?: string
+}
+
+/**
+ * A list field marked `@paged`: shown one page at a time. Each page is stored under its own
+ * arguments; the client sets the page variable's limit and offset from a page index and size.
+ */
+export interface PagedSpec {
+  /** Response keys from the operation's data to the paged field. */
+  readonly path: readonly string[]
+  /** The operation variable that holds the page input (`$Page`). */
+  readonly variable: string
+  /** Page-input fields for the page size and the offset (`Limit`, `Offset`). */
+  readonly limit: string
+  readonly offset: string
+  readonly edges: string
+  readonly pageInfo: string
+  readonly totalCount: string
+  readonly hasNextPage: string
+  /** Null when the schema's page info has no such field. */
+  readonly hasPreviousPage: string | null
 }
 
 export interface LinkSelection {
@@ -116,6 +141,8 @@ export interface OperationArtifact<TData = unknown, TVariables = Record<string, 
   readonly versions: Readonly<Record<string, string>>
   /** Fragments referenced anywhere in this operation, by name. */
   readonly fragments: Readonly<Record<string, FragmentArtifact>>
+  /** The operation's `@paged` list field, when it has one. */
+  readonly paged?: PagedSpec
 }
 
 /**

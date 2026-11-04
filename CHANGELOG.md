@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.1.0-alpha.5 (2026-11-04)
+
+Install from the GitHub release archive:
+`pnpm add https://github.com/Dastari/graphql-orm-client/releases/download/v0.1.0-alpha.5/graphql-orm-client-0.1.0-alpha.5.tgz`.
+Regenerate the typed module (`graphql-orm-client generate`): artifacts gain `paged` and
+`connection.offset`.
+
+- Page-number navigation for offset connections. Mark a list field that takes graphql-orm's
+  `PageInput` `@paged` and read it with `usePagedQuery(Query, variables, { pageIndex, pageSize,
+  scope })`, or `client.watchPagedQuery` outside React. The client sets `Limit` and `Offset`,
+  stores each page under its own variables, keeps records normalised across pages, and reports
+  `totalCount`, `pageCount`, `hasNextPage`, `hasPreviousPage` and `placeholder`. The previous page
+  stays on screen (`refreshing`) while another loads. Live events and polling update the visible
+  page. `pageVariables` and `pagedState` are exported.
+- `@connection` on an offset `PageInput` continues at the number of rows loaded.
+- `client.query(Query, variables, { policy, signal })` reads a query outside React; complete stored
+  data answers `store-or-network` without a request.
+- Plain subscriptions: `client.subscribe` and `useSubscription` run an application's own
+  subscription documents through `live.subscribe`, writing each event into the store.
+  `live.artifacts` is now optional. An event without data reports an `OperationError` with its codes.
+- `client.refetchQueries([...] | "active")`, and `mutate(..., { refetchQueries, signal })`.
+- `useQuery`: `skip`, `refetch(variables)` (merged, and the query switches to them), and a new
+  `idle` status for skipped queries (previously `loading`).
+- Poll intervals belong to the handle that asked for them: a new `pollMs`, or none, replaces the
+  old interval, and closing the handle stops it. Previously the shortest interval ever requested
+  stayed for the query's lifetime.
+- `useMutation` and `useRefetchableFragment` report GraphQL errors as `OperationError`, so
+  `extensions.code` is available.
+- Each `watchQuery` handle opens and closes at most once at a time.
+- A request whose signal is already aborted is not sent.
+- A live event's payload object is no longer left in the store until garbage collection.
+- Documentation: a "Coming from Apollo" mapping in the design, and the effective-page-size gap in
+  the graphql-orm contract.
+
 ## 0.1.0-alpha.4 (2026-11-03)
 
 Install from the GitHub release archive:

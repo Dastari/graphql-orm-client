@@ -7,6 +7,7 @@ import {
   isCompositeType,
   isInterfaceType,
   isListType,
+  isInputObjectType,
   isNonNullType,
   isObjectType,
   parse,
@@ -33,6 +34,7 @@ import type {
   LiveArtifact,
   LiveMode,
   OperationArtifact,
+  PagedSpec,
   Selection,
 } from "../artifact.js"
 
@@ -52,6 +54,8 @@ export interface CompileOptions {
   readonly liveField?: (typename: string) => string
   /** Connection field names, when they differ from graphql-orm's PascalCase defaults. */
   readonly connection?: Partial<Omit<ConnectionSpec, "key">>
+  /** `@paged` field names, when they differ from graphql-orm's `PageInput` and `PageInfo`. */
+  readonly paged?: Partial<Omit<PagedSpec, "path" | "variable">>
 }
 
 export interface CompileResult {
@@ -77,9 +81,10 @@ const CLIENT_DIRECTIVES = parse(`
   directive @live on FRAGMENT_DEFINITION
   directive @connection(key: String!, paging: [String!]) on FIELD
   directive @refetchable(queryName: String) on FRAGMENT_DEFINITION
+  directive @paged(paging: String) on FIELD
 `)
 
-const CLIENT_DIRECTIVE_NAMES = new Set(["live", "connection", "refetchable"])
+const CLIENT_DIRECTIVE_NAMES = new Set(["live", "connection", "refetchable", "paged"])
 
 /** graphql-orm's connection and keyset field names. */
 const DEFAULT_CONNECTION = {
@@ -92,6 +97,28 @@ const DEFAULT_CONNECTION = {
   hasNextPage: "HasNextPage",
   after: "after",
 } as const
+
+/** graphql-orm's offset `PageInput` and `PageInfo` field names, for `@paged`. */
+const DEFAULT_PAGED = {
+  limit: "Limit",
+  offset: "Offset",
+  totalCount: "TotalCount",
+  hasPreviousPage: "HasPreviousPage",
+} as const
+
+type PagedNames = { readonly [K in keyof Omit<PagedSpec, "path" | "variable">]: string }
+
+function pagedNames(options: CompileOptions): PagedNames {
+  const connection = { ...DEFAULT_CONNECTION, ...options.connection }
+  return {
+    edges: connection.edges,
+    pageInfo: connection.pageInfo,
+    hasNextPage: connection.hasNextPage,
+    ...DEFAULT_PAGED,
+    ...options.paged,
+    hasPreviousPage: options.paged?.hasPreviousPage ?? DEFAULT_PAGED.hasPreviousPage,
+  }
+}
 
 /** Remove client-only directives from what is sent to the server. */
 function stripClientDirectives<T extends import("graphql").ASTNode>(node: T): T {
@@ -192,6 +219,10 @@ function compileDocuments(
   // Fragments may be compiled without an operation that uses them.
   const rules = specifiedRules.filter((rule) => rule.name !== "NoUnusedFragmentsRule")
   for (const error of validate(clientSchema, combined, rules)) problems.push(error.message)
+  for (const [name, node] of fragmentNodes) {
+    if (hasDirective(node.selectionSet, "paged"))
+      problems.push(`Fragment ${name} uses @paged; mark the list field in the operation that shows the pages`)
+  }
   if (problems.length) throw new CompileError(problems)
 
   const augment = (selectionSet: SelectionSetNode, parent: GraphQLCompositeType): SelectionSetNode =>
@@ -231,6 +262,7 @@ function compileDocuments(
       .map((definition) => print(stripClientDirectives(definition)))
       .join("\n\n")
     const reachable = reachableTypes(convert(schema, augmented.selectionSet, rootType, augmentedFragments, true, options))
+    const paged = pagedSpecOf(schema, node, rootType, options)
     operations[name] = {
       kind: node.operation,
       keys: pick(metadata.keys, reachable),
@@ -242,6 +274,7 @@ function compileDocuments(
       selections: convert(schema, augmented.selectionSet, rootType, fragmentNodes, false, options),
       normalization: convert(schema, augmented.selectionSet, rootType, augmentedFragments, true, options),
       fragments: Object.fromEntries([...used].sort().map((fragment) => [fragment, fragments[fragment]!])),
+      ...(paged ? { paged } : {}),
     }
   }
   if (nested) return { operations, fragments, live: {}, liveUnavailable: [] }
@@ -409,7 +442,11 @@ function ensureConnectionFields(
   return ensure(ensure(selectionSet, names.edges, [names.cursor]), names.pageInfo, [names.hasNextPage, names.endCursor])
 }
 
-function connectionSpec(node: FieldNode, options: CompileOptions): ConnectionSpec | undefined {
+function connectionSpec(
+  node: FieldNode,
+  options: CompileOptions,
+  fieldDef?: { readonly args: readonly { readonly name: string; readonly type: import("graphql").GraphQLInputType }[] }
+): ConnectionSpec | undefined {
   const directive = (node.directives ?? []).find((entry) => entry.name.value === "connection")
   if (!directive) return undefined
   const keyArg = directive.arguments?.find((arg) => arg.name.value === "key")
@@ -419,7 +456,125 @@ function connectionSpec(node: FieldNode, options: CompileOptions): ConnectionSpe
     pagingArg?.value.kind === Kind.LIST
       ? pagingArg.value.values.flatMap((value) => (value.kind === Kind.STRING ? [value.value] : []))
       : undefined
-  return { ...DEFAULT_CONNECTION, ...options.connection, key, ...(paging ? { paging } : {}) }
+  const spec: ConnectionSpec = { ...DEFAULT_CONNECTION, ...options.connection, key, ...(paging ? { paging } : {}) }
+  // graphql-orm's offset PageInput (Limit, Offset) has no cursor: continue at the rows loaded.
+  const pagingType = fieldDef?.args.find((arg) => arg.name === spec.paging[0])?.type
+  const pagingInput = pagingType ? getNamedType(pagingType) : undefined
+  const offset = options.connection?.offset ?? DEFAULT_PAGED.offset
+  if (pagingInput && isInputObjectType(pagingInput)) {
+    const fields = pagingInput.getFields()
+    if (offset in fields && !(spec.after in fields)) return { ...spec, offset }
+  }
+  return spec
+}
+
+/** A `@paged` list needs its page info: the total, and whether there are pages either side. */
+function ensurePagedFields(
+  selectionSet: SelectionSetNode,
+  connection: GraphQLCompositeType,
+  names: PagedNames
+): SelectionSetNode {
+  const pageInfoField = "getFields" in connection ? connection.getFields()[names.pageInfo] : undefined
+  const pageInfoType = pageInfoField ? getNamedType(pageInfoField.type) : undefined
+  if (!pageInfoType || !isObjectType(pageInfoType)) return selectionSet
+  const available = pageInfoType.getFields()
+  const wanted = [names.totalCount, names.hasNextPage, names.hasPreviousPage].filter((name) => name in available)
+  const index = selectionSet.selections.findIndex(
+    (entry) => entry.kind === Kind.FIELD && entry.name.value === names.pageInfo && !entry.alias
+  )
+  const existing = index >= 0 ? (selectionSet.selections[index] as FieldNode) : field(names.pageInfo)
+  const inner = existing.selectionSet ?? { kind: Kind.SELECTION_SET, selections: [] }
+  const present = new Set(inner.selections.flatMap((entry) => (entry.kind === Kind.FIELD && !entry.alias ? [entry.name.value] : [])))
+  const updated: FieldNode = {
+    ...existing,
+    selectionSet: { ...inner, selections: [...inner.selections, ...wanted.filter((name) => !present.has(name)).map(field)] },
+  }
+  const selections = [...selectionSet.selections]
+  if (index >= 0) selections[index] = updated
+  else selections.push(updated)
+  return { ...selectionSet, selections }
+}
+
+function hasDirective(selectionSet: SelectionSetNode, name: string): boolean {
+  let found = false
+  visit(selectionSet, {
+    Directive(directive) {
+      if (directive.name.value === name) found = true
+    },
+  })
+  return found
+}
+
+/**
+ * The operation's `@paged` field: where it sits in the data, and the page variable it takes. The
+ * field must be in the operation itself, under no list, and take graphql-orm's offset page input
+ * (`Limit`, `Offset`) as a variable.
+ */
+function pagedSpecOf(
+  schema: GraphQLSchema,
+  operation: OperationDefinitionNode,
+  rootType: GraphQLObjectType,
+  options: CompileOptions
+): PagedSpec | undefined {
+  const names = pagedNames(options)
+  const name = operation.name?.value ?? "operation"
+  const found: { node: FieldNode; path: string[]; parent: GraphQLCompositeType; underList: boolean }[] = []
+  const walk = (set: SelectionSetNode, parent: GraphQLCompositeType, path: string[], underList: boolean) => {
+    for (const selection of set.selections) {
+      if (selection.kind === Kind.INLINE_FRAGMENT) {
+        const target = selection.typeCondition
+          ? (schema.getType(selection.typeCondition.name.value) as GraphQLCompositeType)
+          : parent
+        walk(selection.selectionSet, target, path, underList)
+        continue
+      }
+      if (selection.kind !== Kind.FIELD || !selection.selectionSet) continue
+      const fieldDef = "getFields" in parent ? parent.getFields()[selection.name.value] : undefined
+      if (!fieldDef) continue
+      const next = [...path, selection.alias?.value ?? selection.name.value]
+      if ((selection.directives ?? []).some((directive) => directive.name.value === "paged"))
+        found.push({ node: selection, path: next, parent, underList })
+      walk(selection.selectionSet, getNamedType(fieldDef.type) as GraphQLCompositeType, next, underList || isPlural(fieldDef.type))
+    }
+  }
+  walk(operation.selectionSet, rootType, [], false)
+  if (found.length === 0) return undefined
+  const problems: string[] = []
+  if (found.length > 1) problems.push(`${name} marks more than one field @paged`)
+  const [{ node, path, parent, underList }] = found as [(typeof found)[number]]
+  const at = `${name}'s @paged field ${path.join(".")}`
+  if (underList) problems.push(`${at} is inside a list`)
+  if ((node.directives ?? []).some((directive) => directive.name.value === "connection"))
+    problems.push(`${at} can't also be a @connection`)
+  const directive = node.directives!.find((entry) => entry.name.value === "paged")!
+  const pagingArg = directive.arguments?.find((arg) => arg.name.value === "paging")
+  const paging = pagingArg?.value.kind === Kind.STRING ? pagingArg.value.value : "Page"
+  const argument = node.arguments?.find((arg) => arg.name.value === paging)
+  const fieldDef = (parent as GraphQLObjectType).getFields()[node.name.value]!
+  const inputType = fieldDef.args.find((arg) => arg.name === paging)?.type
+  const input = inputType ? getNamedType(inputType) : undefined
+  if (!input || !isInputObjectType(input) || !(names.limit in input.getFields()) || !(names.offset in input.getFields()))
+    problems.push(`${at} needs a ${paging} argument with ${names.limit} and ${names.offset} (graphql-orm's PageInput)`)
+  if (argument?.value.kind !== Kind.VARIABLE)
+    problems.push(`${at} must take its ${paging} argument as a variable, for example ${paging}: $${paging}`)
+  const connection = getNamedType(fieldDef.type)
+  const connectionFields = isObjectType(connection) ? connection.getFields() : {}
+  const pageInfo = connectionFields[names.pageInfo] ? getNamedType(connectionFields[names.pageInfo]!.type) : undefined
+  const pageInfoFields = pageInfo && isObjectType(pageInfo) ? pageInfo.getFields() : {}
+  if (!(names.edges in connectionFields) || !(names.totalCount in pageInfoFields) || !(names.hasNextPage in pageInfoFields))
+    problems.push(`${at} must return a connection with ${names.edges} and ${names.pageInfo} { ${names.totalCount} ${names.hasNextPage} }`)
+  if (problems.length) throw new CompileError(problems)
+  return {
+    path,
+    variable: (argument!.value as import("graphql").VariableNode).name.value,
+    limit: names.limit,
+    offset: names.offset,
+    edges: names.edges,
+    pageInfo: names.pageInfo,
+    totalCount: names.totalCount,
+    hasNextPage: names.hasNextPage,
+    hasPreviousPage: names.hasPreviousPage in pageInfoFields ? names.hasPreviousPage : null,
+  }
 }
 
 function field(name: string): FieldNode {
@@ -444,9 +599,12 @@ function augmentSelectionSet(
       const named = fieldDef ? getNamedType(fieldDef.type) : undefined
       if (!named || !isCompositeType(named)) return selection
       const isConnection = (selection.directives ?? []).some((directive) => directive.name.value === "connection")
+      const isPaged = (selection.directives ?? []).some((directive) => directive.name.value === "paged")
       const selectionSet = isConnection
         ? ensureConnectionFields(selection.selectionSet, { ...DEFAULT_CONNECTION, ...options.connection })
-        : selection.selectionSet
+        : isPaged
+          ? ensurePagedFields(selection.selectionSet, named, pagedNames(options))
+          : selection.selectionSet
       return { ...selection, selectionSet: augmentSelectionSet(schema, selectionSet, named, options) }
     }
     if (selection.kind === Kind.INLINE_FRAGMENT) {
@@ -581,7 +739,7 @@ function convert(
         plural: isPlural(fieldDef.type),
         types: possibleTypes(schema, named),
         selections: convert(schema, selection.selectionSet, named, fragments, inlineSpreads, options),
-        ...(connectionSpec(selection, options) ? { connection: connectionSpec(selection, options)! } : {}),
+        ...(connectionSpec(selection, options, fieldDef) ? { connection: connectionSpec(selection, options, fieldDef)! } : {}),
       })
     } else if (selection.kind === Kind.INLINE_FRAGMENT) {
       const typeCondition = selection.typeCondition?.name.value ?? null

@@ -47,7 +47,7 @@ describe("generate", () => {
     const fleetSource = documents.find((document) => document.startsWith("query FleetPage"))!
     writeFileSync(
       join(outDir, "usage.ts"),
-      `import { DeviceDetailFragment, DeviceRowFragment, FleetPageQuery, OrganisationBadgeFragment, SearchPageQuery, graphql } from "./graphql.js"
+      `import { DeviceDetailFragment, DeviceRowFragment, FleetPageQuery, OrganisationBadgeFragment, SearchPageQuery, TicketRowFragment, TicketsPageQuery, graphql } from "./graphql.js"
 import { readFragment, type Client } from "../../src/index.js"
 
 declare const client: Client
@@ -78,7 +78,15 @@ export async function usage() {
       void orgName
     }
   }
-  return [cursor, total, name, display]
+  // A @paged query takes its variables without the page; the client sets Limit and Offset.
+  const paged = client.watchPagedQuery(TicketsPageQuery, { Where: { State: { Eq: "open" } } }, { pageSize: 25 })
+  const pageState = paged.getState()
+  const pageCount: number | null = pageState.pageCount
+  const firstTitle: string | undefined = pageState.data
+    ? readFragment(TicketRowFragment, pageState.data.Tickets.Edges[0]!.Node).Title
+    : undefined
+  const pagedTotal: number | null | undefined = pageState.data?.Tickets.PageInfo.TotalCount
+  return [cursor, total, name, display, pageCount, firstTitle, pagedTotal]
 }
 `
     )

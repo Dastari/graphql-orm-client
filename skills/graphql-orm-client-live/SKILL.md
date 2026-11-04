@@ -5,7 +5,7 @@ description: Keep graphql-orm-client data live with generated Changed subscripti
 
 # Live data and cache policy
 
-Status: design stage. Check the installed `docs/design.md` and `docs/graphql-orm-contract.md`.
+Status: early alpha. Check the installed `docs/design.md` and `docs/graphql-orm-contract.md`.
 
 ## Making data live
 
@@ -22,6 +22,13 @@ Status: design stage. Check the installed `docs/design.md` and `docs/graphql-orm
   The client then selects and orders by the generated `RecordVersion` with no configuration.
   When the version field has a read policy some users fail, or isn't available to
   subscriptions, set `versions: { Type: null }` so selecting it doesn't fail their reads.
+
+- A subscription document of the application's own (not a `@live` fragment's) runs through
+  `client.subscribe` or `useSubscription`, on the same `live.subscribe` transport. Its events are
+  written into the store, but the client doesn't resubscribe for it: on
+  `SUBSCRIPTION_CONTINUITY_LOST`, subscribe again and refetch.
+- Paged tables (`usePagedQuery`) keep only the visible page live; changing page moves the
+  subscription to the new page's rows.
 
 ## Cache policy
 

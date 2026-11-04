@@ -11,9 +11,15 @@ export interface SubscriptionSink {
 }
 
 export interface LiveOptions {
-  /** Compiled live artifacts per type (`compile(...).live`). */
-  readonly artifacts: Readonly<Record<string, LiveArtifact>>
-  /** Start a subscription (for example through graphql-ws); returns its disposer. */
+  /**
+   * Compiled live artifacts per type (`compile(...).live`). Leave it out to use `subscribe` only
+   * for plain subscriptions (`client.subscribe`).
+   */
+  readonly artifacts?: Readonly<Record<string, LiveArtifact>>
+  /**
+   * Start a subscription (for example through graphql-ws); returns its disposer. The live layer
+   * and `client.subscribe` both use it.
+   */
   readonly subscribe: (request: OperationRequest, sink: SubscriptionSink) => () => void
   /**
    * Per-record subscriptions allowed per type in `key` mode. Past it, a field whose key is
@@ -70,6 +76,7 @@ export class LiveManager {
   private disposed = false
   private subscriptionCount = 0
   private readonly resyncs = new Map<string, unknown>()
+  private readonly artifacts: Readonly<Record<string, LiveArtifact>>
 
   /**
    * `resync` receives the holders that show records of a type whose events were lost, after the
@@ -79,16 +86,18 @@ export class LiveManager {
     private readonly store: Store,
     private readonly options: LiveOptions,
     private readonly resync: (holders: ReadonlySet<string>) => void = () => {}
-  ) {}
+  ) {
+    this.artifacts = options.artifacts ?? {}
+  }
 
   /** Whether a type has a usable live subscription. */
   covers(typename: string): boolean {
-    return typename in this.options.artifacts
+    return typename in this.artifacts
   }
 
   /** Whether some held records of a type have no subscription (beyond the per-record cap). */
   overflows(typename: string): boolean {
-    const artifact = this.options.artifacts[typename]
+    const artifact = this.artifacts[typename]
     if (artifact?.mode !== "key" || artifact.keyOptional) return false
     return (this.held().get(typename)?.size ?? 0) > (this.options.maxKeyedSubscriptions ?? 50)
   }
@@ -104,7 +113,7 @@ export class LiveManager {
   status(): Readonly<Record<string, LiveTypeStatus>> {
     const held = this.held()
     return Object.fromEntries(
-      Object.values(this.options.artifacts).map((artifact) => {
+      Object.values(this.artifacts).map((artifact) => {
         const active = this.active.get(artifact.typename)
         return [
           artifact.typename,
@@ -160,7 +169,7 @@ export class LiveManager {
   private reconcile(): void {
     if (this.disposed) return
     const held = this.held()
-    for (const artifact of Object.values(this.options.artifacts)) {
+    for (const artifact of Object.values(this.artifacts)) {
       const ids = [...(held.get(artifact.typename) ?? [])].sort()
       const active = this.active.get(artifact.typename) ?? { subscriptions: new Map(), overflow: 0 }
       this.active.set(artifact.typename, active)
@@ -255,8 +264,12 @@ export class LiveManager {
       this.store.delete(id)
     } else {
       const root = `client:subscription:${++this.subscriptionCount}`
-      normalize(this.store, artifact.operation.normalization, response.data!, contextOf(artifact.operation, variables), root, "Subscription")
+      // The event payload has no key and nothing reads it afterwards, so it isn't kept. Objects
+      // embedded in the changed entity stay with it.
+      const embedded = new Set<string>()
+      normalize(this.store, artifact.operation.normalization, response.data!, { ...contextOf(artifact.operation, variables), embedded }, root, "Subscription")
       this.store.delete(root)
+      for (const embeddedId of embedded) if (embeddedId.startsWith(`${root}.`)) this.store.delete(embeddedId)
     }
     this.store.publish()
   }

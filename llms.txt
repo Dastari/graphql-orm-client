@@ -2,8 +2,7 @@
 
 A GraphQL client for graphql-orm APIs: fragments colocated with components, compiled route
 queries, a normalised store and live updates from generated Changed subscriptions. Status:
-design stage; APIs in these documents are proposals. Read the installed docs, which match the
-installed version.
+early alpha; APIs may still change. Read the installed docs, which match the installed version.
 
 - [README](README.md)
 - [Design](docs/design.md)
