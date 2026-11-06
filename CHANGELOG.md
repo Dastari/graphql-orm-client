@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- R14: `client.readAll` traverses a compiled root connection with a required limit, exact last-page total, truncation and abort support. Select TotalCount; unknown totals fail. Pages have no shared snapshot.
+
+## Unreleased
+
 - R3: generated `OperationArtifact.lists` enables one un-narrowed stream per open list type,
   including empty and count-only lists. Events invalidate membership, order and totals through
   the existing re-read limiter. Unheld rows are not stored. List interest opens before the read;

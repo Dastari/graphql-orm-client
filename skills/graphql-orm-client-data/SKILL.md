@@ -1,6 +1,6 @@
 ---
 name: graphql-orm-client-data
-description: Keep regenerated lists and counts current with list streams and bounded loaded-page refresh; use full/thin stream projections and bounded holder re-reads (minRereadMs); Write components with graphql-orm-client fragments and route roots, page through tables by number (@paged, usePagedQuery), load more (@connection), refetch, run mutations (including one-time secrets with `no-store`) and plain subscriptions, and port Apollo queries without request waterfalls or over-fetching, and test components against a mock network, scripted streams and a controllable clock (graphql-orm-client/test).
+description: Use bounded readAll with exact totals; keep regenerated lists and counts current with list streams and bounded loaded-page refresh; use full/thin stream projections and bounded holder re-reads (minRereadMs); Write components with graphql-orm-client fragments and route roots, page through tables by number (@paged, usePagedQuery), load more (@connection), refetch, run mutations (including one-time secrets with `no-store`) and plain subscriptions, and port Apollo queries without request waterfalls or over-fetching, and test components against a mock network, scripted streams and a controllable clock (graphql-orm-client/test).
 ---
 
 # Fragments, roots, pagination and mutations
@@ -149,3 +149,15 @@ may be stale: draw `QueryState.listRefreshTruncated` and health `list-refresh-tr
 No server snapshot across keyset pages is promised. Without a delete preimage grant, the server
 sends no DELETED event; only the next event or poll repairs the list. Do not promise immediate
 delete visibility when polling is disabled. See docs/design.md, List streams (R3), for validation.
+
+## Bounded read-all (R14)
+
+`client.readAll(Query, variables, { limit, pageSize?, signal? })` returns `{ rows, total, truncated }`.
+Use exactly one root `@connection`, a variable page input and select `Edges { Node { ...Row } }`
+and `PageInfo { TotalCount }`. The positive integer limit is required; optional positive `pageSize` caps each request. Missing metadata or
+an absent/null total throws; totals are never inferred. Rows are normalised and deduplicated
+by opaque identity. Offset traversal advances by returned edge count; keyset traversal follows
+`PageInfo.EndCursor` while `HasNextPage` is true. Empty continuing pages or repeated cursors
+fail rather than loop. Pages have no shared snapshot: concurrent movement may omit rows.
+`total` is the exact total returned by the last page, not a snapshot-wide guarantee.
+Abort and identity disposal cancel traversal. This is a one-time read; watch a root for freshness.

@@ -808,3 +808,15 @@ list used 1 stream with 0 capacity refusals; a legacy artifact hit 32 streams wi
 SUBSCRIPTION_LIMIT_EXCEEDED refusals. Mocks cover bursts, inactive reads, version conflicts,
 identity disposal, collection, overlap, reconnect recovery and a load-more race. No browser or
 server-main run was performed for R3.
+
+## Bounded read-all (R14)
+
+`client.readAll(Query, variables, { limit, pageSize?, signal? })` returns `{ rows, total, truncated }`.
+Use exactly one root `@connection`, a variable page input and select `Edges { Node { ...Row } }`
+and `PageInfo { TotalCount }`. The positive integer limit is required; optional positive `pageSize` caps each request. Missing metadata or
+an absent/null total throws; totals are never inferred. Rows are normalised and deduplicated
+by opaque identity. Offset traversal advances by returned edge count; keyset traversal follows
+`PageInfo.EndCursor` while `HasNextPage` is true. Empty continuing pages or repeated cursors
+fail rather than loop. Pages have no shared snapshot: concurrent movement may omit rows.
+`total` is the exact total returned by the last page, not a snapshot-wide guarantee.
+Abort and identity disposal cancel traversal. This is a one-time read; watch a root for freshness.

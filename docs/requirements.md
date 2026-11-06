@@ -152,6 +152,9 @@ code.
 
 **R14. Bounded read-all.** For roots that only filter on a key, `readAll` pages to a stated limit and
 reports whether it truncated, along with the exact total. Consumers have written this several times.
+*Built:* `client.readAll` requires a limit, compiled root connection and selected TotalCount.
+It normalises and deduplicates rows, honours cancellation, and rejects unknown totals.
+Pages have no shared snapshot; see the design for concurrent-write limits.
 
 **R15. Counts and aggregates.** Typed results for generated aggregates, and aliased count reads, stay
 current under R3.

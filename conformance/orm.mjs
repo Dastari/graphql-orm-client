@@ -15,7 +15,7 @@ import { createClient, createHttpNetwork, graphqlWsTransport, encodeNodeId } fro
 
 const scratch = process.env.CONFORMANCE_SCRATCH
 const base = Number(process.env.PORT_BASE ?? 42000)
-assert(base >= 42000 && base + 4 <= 42099)
+assert((base >= 42000 && base + 4 <= 42099) || (base >= 41700 && base + 4 <= 41799))
 const serviceUrl = `http://127.0.0.1:${base+1}`
 const routerUrl = `http://127.0.0.1:${base+2}/graphql`
 const frontUrl = `http://127.0.0.1:${base+3}`
@@ -193,6 +193,15 @@ try {
  const old = (await post('{ Widget(Id: "w1") { __typename Id Name NodeId RecordVersion } }')).data.Widget
  const newer = await update('Newest')
  assert(newer.RecordVersion > old.RecordVersion)
+ const readAllArtifact = compile(schema, [`query Bounded($Page: PageInput) {
+   Widgets(Page: $Page) @connection(key: "bounded") { Edges { Node { Id Name } } PageInfo { TotalCount } }
+ }`]).operations.Bounded
+ const boundedClient = createClient({ network: createHttpNetwork({ url: routerUrl }) })
+ const bounded = await boundedClient.readAll(readAllArtifact, {}, { limit: 1 })
+ assert.equal(bounded.rows.length, 1); assert(bounded.total > 1); assert.equal(bounded.truncated, true)
+ const complete = await boundedClient.readAll(readAllArtifact, {}, { limit: 100, pageSize: 1 })
+ assert.equal(complete.rows.length, complete.total); assert.equal(complete.truncated, false)
+ boundedClient.dispose(); pass('R14 bounded readAll: real offset pages, exact total and truncation')
  const compiled = compile(schema,[`fragment Row on Widget @live { Name }`,`query One { Widget(Id: "w1") { ...Row } }`])
  // A generated stream is admitted as it stands, and doesn't select what the server refuses.
  assert(!/\bNodeId\b/.test(compiled.live.Widget.operation.text))
