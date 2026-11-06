@@ -14,24 +14,26 @@ import type { LiveEnd, LiveTypeStatus } from "./live.js"
 export type LiveState = "live" | "unconfirmed" | "connecting" | "polling" | "refused" | "unavailable" | "idle"
 
 /**
- * Why a type isn't `live`.
+ * Why coverage is degraded (thin fallback can still deliver live events).
  * - `no-live-layer`: the client was created without `live`.
  * - `no-stream`: a `@live` fragment's type has no usable `Changed` subscription.
  * - `selection-refused`: the server refused the stream with `INVALID_INPUT`, the code it gives for a
  *   selection a stream can't carry. It can mean other invalid input too.
  * - `refused`: the server refused the stream with another code.
+ * - `identity-mismatch`: the server's `NodeId` isn't what the key fields encode to in any order, so events couldn't
+ *   reach the records. Check `keys`, and the types of the key fields.
  * - `over-cap`: more streams or records than a limit allows, on the client or the router.
  * - `socket-down`: the socket failed, or the router answered `SERVICE_UNAVAILABLE`.
  * - `stream-ended`: the stream ended for another reason.
  * - `schema-reload`: the router retired its graph.
  */
-export type LiveReason = "no-live-layer" | "no-stream" | "selection-refused" | "refused" | "over-cap" | "socket-down" | "stream-ended" | "schema-reload"
+export type LiveReason = "no-live-layer" | "no-stream" | "selection-refused" | "refused" | "identity-mismatch" | "over-cap" | "socket-down" | "stream-ended" | "schema-reload"
 
 export type LiveSocketState = "connected" | "connecting" | "closed" | "unknown"
 
 export interface LiveTypeHealth {
   readonly state: LiveState
-  /** Null when `live`, `unconfirmed` or `idle`, or for a stream simply starting up. */
+  /** Null when coverage has no known limitation, or when idle/starting. Thin retains selection-refused. */
   readonly reason: LiveReason | null
   /** The server's `extensions.code` behind `reason`, when it gave one. Null when there's no `reason`. */
   readonly code: string | null
@@ -128,6 +130,7 @@ export function typeHealth(status: LiveTypeStatus | undefined, holdings: readonl
   })
   if (held === 0) return { ...base, state: "idle", reason: null }
   if (!status) return withPoll("unavailable", options.hasLiveLayer ? "no-stream" : "no-live-layer")
+  if (status.identityMismatch) return withPoll("unavailable", "identity-mismatch", null)
   const reason = reasonOfEnd(status.lastEnd)
   if (status.backedOff) return withPoll("refused", reasonOfEnd(status.lastRefusal), status.lastRefusal?.code ?? null)
   if (status.restarting) {
@@ -142,7 +145,7 @@ export function typeHealth(status: LiveTypeStatus | undefined, holdings: readonl
     return { ...base, state: "connecting", reason: null }
   }
   if (options.socket === "closed" || options.socket === "connecting") return { ...base, state: "connecting", reason: "socket-down" }
-  return { ...base, state: status.confirmed ? "live" : "unconfirmed", reason: null }
+  return { ...base, state: status.confirmed ? "live" : "unconfirmed", reason: status.selectionRefused ? "selection-refused" : null }
 }
 
 export const IDLE_TYPE_HEALTH: LiveTypeHealth = {

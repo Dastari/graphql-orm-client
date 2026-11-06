@@ -39,9 +39,13 @@ import type {
 } from "../artifact.js"
 
 export interface CompileOptions {
+  /** Stream projection; as-written preserves legacy fragment spreading. */
+  readonly liveSelection?: "full" | "as-written"
+  /** Reports fields omitted from generated stream projections. */
+  readonly onWarning?: (message: string) => void
   /**
    * Key fields per type, in primary-key order. `null` marks a type without a key (its records
-   * are stored inside their parent). Types not listed use `Id` when they have that field.
+   * are stored inside their parent). Types not listed use `<Type>KeyInput` field order, else `Id` when present.
    */
   readonly keys?: Readonly<Record<string, readonly string[] | null>>
   /**
@@ -129,6 +133,8 @@ function stripClientDirectives<T extends import("graphql").ASTNode>(node: T): T 
   }) as T
 }
 
+type ProjectionOptions = CompileOptions & { readonly streamProjection?: boolean }
+
 const NODE_ID = "NodeId"
 
 /**
@@ -162,6 +168,12 @@ export function keyFieldsOf(
 ): readonly string[] | null {
   if (options.keys && typename in options.keys) return options.keys[typename] ?? null
   const type = schema.getType(typename)
+  const input = schema.getType(`${typename}KeyInput`)
+  if (input && isInputObjectType(input) && type && isObjectType(type)) {
+    // An unrelated input can share the name, as `ApiKeyInput` for a type `Api`: its fields must be the type's.
+    const fields = Object.keys(input.getFields())
+    if (fields.length && fields.every((field) => field in type.getFields())) return fields
+  }
   if (type && isObjectType(type) && "Id" in type.getFields()) return ["Id"]
   return null
 }
@@ -279,6 +291,38 @@ function compileDocuments(
   }
   if (nested) return { operations, fragments, live: {}, liveUnavailable: [] }
   const { live, liveUnavailable } = compileLive(schema, fragments, fragmentNodes, options)
+  if (options.liveSelection !== "as-written") {
+    const scalars = (selections: readonly Selection[]): string[] => selections.flatMap((selection) =>
+      selection.kind === "scalar" ? [selection.fieldName] : selection.kind === "inline" ? scalars(selection.selections) : [])
+    const entitySelection = (selections: readonly Selection[], typename: string): readonly Selection[] => {
+      for (const selection of selections) {
+        if (selection.kind === "link") {
+          if (selection.types.includes(typename)) return selection.selections
+          const nested = entitySelection(selection.selections, typename)
+          if (nested.length) return nested
+        }
+      }
+      return []
+    }
+    const carries = new Map(Object.values(live).map((artifact) => [artifact.typename, new Set(scalars(entitySelection(artifact.operation.normalization, artifact.typename)))]))
+    for (const [name, operation] of Object.entries(operations)) {
+      const stale = new Set<string>()
+      const compare = (selections: readonly Selection[], typename: string) => {
+        const carried = carries.get(typename)
+        for (const selection of selections) {
+          if (selection.kind === "inline") compare(selection.selections, typename)
+          if (selection.kind === "scalar" && carried && selection.fieldName !== NODE_ID &&
+            (selection.args.length || !carried.has(selection.fieldName))) stale.add(typename)
+          if (selection.kind === "link") {
+            if (carried) stale.add(typename)
+            for (const type of selection.types) compare(selection.selections, type)
+          }
+        }
+      }
+      compare(operation.normalization, operation.rootType)
+      operations[name] = { ...operation, liveReread: [...stale].sort() }
+    }
+  }
   const refetchable = compileRefetch(schema, fragments, fragmentNodes, operationNames, options)
   return { operations, fragments: { ...fragments, ...refetchable }, live, liveUnavailable }
 }
@@ -348,6 +392,9 @@ function compileLive(
   fragmentNodes: ReadonlyMap<string, FragmentDefinitionNode>,
   options: CompileOptions
 ): { live: Record<string, LiveArtifact>; liveUnavailable: string[] } {
+  if (options.liveSelection === "as-written" && options.onWarning) {
+    compileLive(schema, fragments, fragmentNodes, { ...options, liveSelection: "full" })
+  }
   const byType = new Map<string, string[]>()
   for (const fragment of Object.values(fragments)) {
     if (!fragment.live) continue
@@ -387,7 +434,56 @@ function compileLive(
       kind: Kind.DOCUMENT,
       definitions: [...parse(text).definitions, ...fragmentNodes.values()],
     }
-    const compiled = compileDocuments(schema, [document], options, true)
+    let operation: OperationArtifact
+    let thinOperation: OperationArtifact | undefined
+    const rereadFragments: string[] = []
+    if (options.liveSelection === "as-written") {
+      operation = compileDocuments(schema, [document], options, true).operations[operationName]!
+    } else {
+      const carried = new Set(keyFields)
+      const type = schema.getType(typename) as GraphQLObjectType
+      const version = versionFieldOf(type, options)
+      if (version) carried.add(version)
+      const inspect = (set: SelectionSetNode, fragment: string, stack = new Set<string>()) => {
+        for (const selection of set.selections) {
+          if (selection.kind === Kind.FRAGMENT_SPREAD) {
+            if (!stack.has(selection.name.value)) {
+              const next = new Set(stack).add(selection.name.value)
+              inspect(fragmentNodes.get(selection.name.value)!.selectionSet, fragment, next)
+            }
+          } else if (selection.kind === Kind.INLINE_FRAGMENT) inspect(selection.selectionSet, fragment, stack)
+          else {
+            const name = selection.name.value
+            const def = type.getFields()[name]
+            const excluded = name === NODE_ID || !!selection.selectionSet || !!selection.arguments?.length || !!def?.args.length
+            if (excluded) {
+              if (name !== NODE_ID) rereadFragments.push(fragment)
+              options.onWarning?.(`Fragment ${fragment}: stream excludes ${typename}.${name}`)
+            } else if (name !== "__typename") carried.add(name)
+          }
+        }
+      }
+      for (const name of names) inspect(fragmentNodes.get(name)!.selectionSet, name)
+      // Other fragments on a held record may ask for fields absent from the live union.
+      const compare = (set: SelectionSetNode, fragment: string, seen = new Set<string>()) => {
+        for (const selection of set.selections) {
+          if (selection.kind === Kind.FRAGMENT_SPREAD) {
+            if (!seen.has(selection.name.value)) compare(fragmentNodes.get(selection.name.value)!.selectionSet, fragment, new Set(seen).add(selection.name.value))
+          } else if (selection.kind === Kind.INLINE_FRAGMENT) compare(selection.selectionSet, fragment, seen)
+          else if (selection.name.value !== NODE_ID && selection.name.value !== "__typename" &&
+            (selection.selectionSet || selection.arguments?.length || !carried.has(selection.name.value))) rereadFragments.push(fragment)
+        }
+      }
+      for (const fragment of Object.values(fragments)) {
+        if (fragment.typeCondition === typename) compare(fragmentNodes.get(fragment.name)!.selectionSet, fragment.name)
+      }
+      const build = (fields: readonly string[]) => {
+        const source = `subscription ${operationName}${variables} { ${fieldName}${argumentUse} { ${action.name} ${entity.name} { ${fields.join(" ")} } } }`
+        return compileDocuments(schema, [source], { ...options, streamProjection: true } as ProjectionOptions, true).operations[operationName]!
+      }
+      operation = build([...carried])
+      thinOperation = build(keyFields)
+    }
     live[typename] = {
       typename,
       mode,
@@ -397,7 +493,8 @@ function compileLive(
       keyArgument: arg?.name ?? null,
       keyFields,
       keyOptional: arg !== undefined && !isNonNullType(arg.type),
-      operation: compiled.operations[operationName]!,
+      operation,
+      ...(thinOperation ? { thinOperation, rereadFragments: [...new Set(rereadFragments)] } : {}),
     }
   }
   return { live, liveUnavailable }
@@ -626,12 +723,12 @@ function augmentSelectionSet(
   )
   const additions: FieldNode[] = []
   if (!present.has("__typename")) additions.push(field("__typename"))
-  if (hasNodeId(parent) && !present.has(NODE_ID)) additions.push(field(NODE_ID))
+  if (!(options as ProjectionOptions).streamProjection && hasNodeId(parent) && !present.has(NODE_ID)) additions.push(field(NODE_ID))
   if (isObjectType(parent)) {
     for (const key of keyFieldsOf(schema, parent.name, options) ?? []) {
       if (!present.has(key)) additions.push(field(key))
     }
-    if (versionFieldOf(parent, options) === RECORD_VERSION && !present.has(RECORD_VERSION)) {
+    if (!(options as ProjectionOptions).streamProjection && versionFieldOf(parent, options) === RECORD_VERSION && !present.has(RECORD_VERSION)) {
       additions.push(field(RECORD_VERSION))
     }
   }

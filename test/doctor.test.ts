@@ -346,3 +346,19 @@ describe("the doctor command", () => {
     expect(execFileSync(process.execPath, ["bin/graphql-orm-client.mjs"], { encoding: "utf8" })).toContain("doctor --url")
   })
 })
+
+it("reports working thin fallback separately, retaining strict uncertainty and unknown failures", async () => {
+  for (const thin of ["event", "quiet", "unavailable"] as const) {
+    let probes = 0
+    const fake = router({ script: (_name, send) => {
+      probes++
+      if (probes === 1) send({ type: "error", payload: [{ message: "unsupported", extensions: { code: "INVALID_INPUT" } }] })
+      else if (thin === "event") send({ type: "next", payload: { data: { TicketChanged: { Ticket: { Id: "a" } } } } })
+      else if (thin === "unavailable") send({ type: "error", payload: [{ extensions: { code: "SERVICE_UNAVAILABLE" } }] })
+    } })
+    const only = compile(snapshot, documents.filter((document) => /Ticket/.test(document)))
+    const report = await runDoctor({ url: "http://router.test/graphql", compiled: only, ...fake, streamMs: 5 })
+    expect(report.streams[0]!.verdict).toBe(thin === "event" ? "fallback-admitted" : thin === "quiet" ? "fallback-not-refused" : "unknown")
+    expect(report.passed).toBe(thin !== "unavailable")
+  }
+})

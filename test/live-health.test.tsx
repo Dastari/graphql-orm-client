@@ -24,7 +24,7 @@ const compiled = compile(schema, [
   `fragment NoteBody on Note @live { Body }`,
   `query TicketPage($Id: ID!) { Ticket(Id: $Id) { ...TicketTitle } }`,
   `query NotePage($Id: ID!) { Note(Id: $Id) { ...NoteBody } }`,
-])
+], { liveSelection: "as-written" })
 const TicketPage = compiled.operations.TicketPage!
 const NotePage = compiled.operations.NotePage!
 const ticket = (Title: string, RecordVersion = 1, Id = "t1") => ({ __typename: "Ticket", Id, Title, RecordVersion })

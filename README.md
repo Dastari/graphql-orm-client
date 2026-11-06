@@ -50,8 +50,7 @@ then generate a typed module:
   "schema": "schema/router.graphql",
   "documents": ["src"],
   "out": "src/graphql/generated.ts",
-  "scalars": { "DateTime": "string", "UUID": "string", "JSON": "unknown" },
-  "keys": { "Slot": ["Site", "Name"] }
+  "scalars": { "DateTime": "string", "UUID": "string", "JSON": "unknown" }
 }
 ```
 
@@ -86,6 +85,11 @@ const client = createClient({
   live: { artifacts: live, ...graphqlWsTransport(ws) },
 })
 ```
+
+Generated streams omit relations, argument scalars and `NodeId`. Unsupported scalars trigger a
+keys-only fallback; events re-read holders to refresh omitted fields, including changed relation links.
+Automatic re-reads are limited per query by `live.minRereadMs` (default 2000). Generator setting
+`liveSelection: "as-written"` preserves legacy selections; old generated modules keep working.
 
 Live queries read once more after their records gain a stream (default `live.settleMs: 250`).
 This adds a request on first load and narrows the read/subscribe gap; without a server subscribe

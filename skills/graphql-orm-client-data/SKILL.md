@@ -1,11 +1,15 @@
 ---
 name: graphql-orm-client-data
-description: Write components with graphql-orm-client fragments and route roots, page through tables by number (@paged, usePagedQuery), load more (@connection), refetch, run mutations (including one-time secrets with `no-store`) and plain subscriptions, and port Apollo queries without request waterfalls or over-fetching, and test components against a mock network, scripted streams and a controllable clock (graphql-orm-client/test).
+description: Use full/thin stream projections and bounded holder re-reads (minRereadMs); Write components with graphql-orm-client fragments and route roots, page through tables by number (@paged, usePagedQuery), load more (@connection), refetch, run mutations (including one-time secrets with `no-store`) and plain subscriptions, and port Apollo queries without request waterfalls or over-fetching, and test components against a mock network, scripted streams and a controllable clock (graphql-orm-client/test).
 ---
 
 # Fragments, roots, pagination and mutations
 
 Status: early alpha. Check the installed `docs/design.md` for the current API.
+
+Composite keys are inferred from `<Type>KeyInput`, and need no `keys` setting. Queries
+can include relation/computed fields in `@live` fragments: omitted stream fields refresh through
+bounded holder re-reads. `liveSelection: "as-written"` preserves legacy stream text.
 
 ## Components declare their own data
 

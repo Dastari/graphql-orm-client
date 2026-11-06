@@ -1,7 +1,7 @@
 # Live by default: design for requirement groups 1 and 2
 
 Status: **proposed; the owner approved the direction on 2026-11-06. Built so far: the restart of ended
-streams (fact 4), in 0.1.0-alpha.7; R20 and R7, in 0.1.0-alpha.8; R8 and R6, in 0.1.0-alpha.9. R4's client-side overlap and confirming reads are built; true gap closure still needs a server started signal. Group 1 is built.** Requirement numbers refer to [requirements.md](../requirements.md).
+streams (fact 4), in 0.1.0-alpha.7; R20 and R7, in 0.1.0-alpha.8; R8 and R6, in 0.1.0-alpha.9. R4's client-side overlap and confirming reads are built; true gap closure still needs a server started signal. Group 1 and R2 are built.** Requirement numbers refer to [requirements.md](../requirements.md).
 Unless noted, server facts were read from graphql-orm `main` at `9d1a482` and not run against a live
 router; R21 is what will prove them. The large application's backend is on graphql-orm 0.90.1.
 
@@ -9,7 +9,7 @@ router; R21 is what will prove them. The large application's backend is on graph
 
 1. **A stream is admitted or refused whole.** `validate_subscription_selection` refuses a `Changed`
    subscription if any selected entity field isn't a persisted, subscribable column, with the generic
-   `INVALID_INPUT`. Today the compiler spreads `@live` fragments unchanged, so one relation or computed
+   `INVALID_INPUT`. Legacy generation spreads `@live` fragments unchanged, so one relation or computed
    field in one fragment stops every fragment of that type. `NodeId` is refused too on 0.91.1.
 2. **Nothing confirms a subscribe.** graphql-transport-ws has no per-operation acknowledgement, and
    `Changed` sends nothing until an event. A quiet admitted stream looks the same as an unanswered
@@ -108,7 +108,7 @@ subscriptions, and one code path refuses any other operation, with a test.
 1. Introspect the served schema and validate every compiled document against it.
 2. Open each live operation with `Keys: []` where possible, which admission checks and which matches no
    rows, for `--stream-ms` (default 3000).
-3. Print `admitted`, `not-refused`, `refused <code>`, `missing` or `invalid`, for the identity used.
+3. Print `admitted`, `not-refused`, `fallback-admitted`, `fallback-not-refused`, `refused <code>`, `missing` or `invalid`, for the identity used.
 
 `not-refused` is a separate word because of fact 2. Exit is non-zero for refused, missing or invalid.
 `--strict` adds `not-refused`. A type that can't be tested reports `unknown`, never `ok`. It speaks
@@ -166,7 +166,7 @@ scenario. These runs do not prove subscription admission or general gap-free del
 
 ### R2. What goes in a stream
 
-The compiler stops spreading fragments and builds the selection:
+**Built.** The compiler builds flattened projections by default; `liveSelection: "as-written"` retains legacy spreading:
 
 | Selected in a fragment | In the stream | Keeps it current |
 | --- | --- | --- |
@@ -180,12 +180,26 @@ The compiler stops spreading fragments and builds the selection:
 Without a server marker a scalar can't be classified, so each type compiles to two selections:
 **full** (keys, version and scalars) and **thin** (keys only). The client tries full. If the server
 refuses it with `INVALID_INPUT`, or a future dedicated code, it uses thin for the life of the client, and
-health shows `selection-refused`. Every event then means a re-read. This costs one doomed subscribe per
-type per client and never guesses: the server decides. `doctor` reports which types fall back, so a team
+health shows `selection-refused`. Every event then means a re-read. The type switches once per client and never guesses: the server decides. Concurrent full streams
+already sent before the refusal can also be refused; there is no admission acknowledgement to serialize
+them without delaying coverage. No further full streams are sent after the switch. `doctor` reports which types fall back, so a team
 can see and fix them. A marker removes the fallback and tells the compiler up front.
 
-Also fixed here: composite keys come from `<Type>KeyInput`, so a composite type needs no `keys`
-configuration, and `key` mode reads key fields from the stored record, not by decoding the `NodeId`.
+Server source checked in both 0.90.1 and main `9d1a482`: generated `RecordVersion` maps to the
+managed persisted column and its subscription policy. It is not refused on every entity. A computed
+hand-written version is refused, and relations lack the generated version on these versions.
+
+Holder stale marks and R4 confirming reads share `live.minRereadMs` (default 2000). They follow a
+read in flight, pause while inactive, and catch up once on return. 100 events in a second schedule
+two automatic reads. List membership invalidation remains R3, proposed.
+
+Validation: 16/16 acceptance runs against generated graphql-orm 0.90.1 and real router 0.8.1,
+8 per `ws` synchronous-event setting. Actual `INVALID_INPUT` full refusal, thin event, computed-field
+refresh, changed relation link, managed-version full event and composite key stream were exercised.
+Main was source-read, not run. Doctor fallback passes normally; strict mode fails a quiet thin probe.
+
+Also fixed here: a composite key's field names come from `<Type>KeyInput` and its order from a held record's
+server `NodeId`, by exact match, so a composite type needs no `keys` configuration, and `key` mode reads key fields from the stored record, not by decoding the `NodeId`.
 
 ### R3. Lists stay correct
 

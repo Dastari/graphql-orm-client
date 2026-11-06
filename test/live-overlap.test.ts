@@ -1,3 +1,4 @@
+import { seedManualHolds } from "./fixtures.js"
 import { describe, expect, it } from "vitest"
 import { createClient, type GraphQLResponse } from "../src/client.js"
 import { encodeNodeId } from "../src/node-id.js"
@@ -12,7 +13,7 @@ function setup(settleMs?: number | false, maxKeys = 2, limit = Infinity) {
   let response: (() => GraphQLResponse | Promise<GraphQLResponse>) | undefined
   const { network } = mockNetwork(() => response ? response() : { data: ticketPage(rows) })
   const client = createClient({ network, store: { ...clock.store, retainMs: 10 }, polling: clock.polling,
-    live: { artifacts: { Ticket: compiled.live.Ticket! }, subscribe: (request, sink) => {
+    live: { minRereadMs: 1, artifacts: { Ticket: compiled.live.Ticket! }, subscribe: (request, sink) => {
       if (streams.open.size >= limit) {
         sink.error([{ message: "connection full", extensions: { code: "SUBSCRIPTION_LIMIT_EXCEEDED" } }])
         return () => {}
@@ -21,6 +22,7 @@ function setup(settleMs?: number | false, maxKeys = 2, limit = Infinity) {
     }, ...clock.live,
       connection: { state: () => "connected", subscribe: (listener) => streams.onReconnect(() => listener({ reconnected: true })) },
       debounceMs: 0, resyncJitterMs: 0, maxKeys, settleMs, onDiagnostic: null } })
+  seedManualHolds(client)
   const hold = (keys: string[], holder = "manual") => {
     client.live!.hold(holder, keys.length ? new Map([["Ticket", new Set(keys.map(id))]]) : new Map())
     client.live!.flush()
@@ -41,7 +43,7 @@ describe("R4 overlap and confirming reads", () => {
     const streams = createMockStreams()
     const { network } = mockNetwork(() => ({ data: catalog([widget("b")]) }))
     const client = createClient({ network, polling: clock.polling, store: clock.store,
-      live: { artifacts: compiled.live, subscribe: streams.subscribe, debounceMs: 0, ...clock.live } })
+      live: { minRereadMs: 1, artifacts: compiled.live, subscribe: streams.subscribe, debounceMs: 0, ...clock.live } })
     const query = client.watchQuery(ops.CatalogPage, {})
     query.open()
     await clock.tick(250)
@@ -60,11 +62,12 @@ describe("R4 overlap and confirming reads", () => {
     const value = { __typename: "Slot", Site: "north", Name: "a", State: "free" }
     const { network } = mockNetwork(() => ({ data: { Slot: value } }))
     const client = createClient({ network, polling: clock.polling, store: clock.store,
-      live: { artifacts: compiled.live, subscribe: streams.subscribe, debounceMs: 0, ...clock.live } })
+      live: { minRereadMs: 1, artifacts: compiled.live, subscribe: streams.subscribe, debounceMs: 0, ...clock.live } })
     const query = client.watchQuery(ops.SlotPage, { Site: "north", Name: "a" })
     query.open()
     await clock.tick(250)
     const old = streams.one("LiveSlot")
+    seedManualHolds(client)
     client.live!.hold("extra", new Map([["Slot", new Set([encodeNodeId("Slot", ["north", "z"])])]]))
     client.live!.flush()
     const candidate = [...streams.open].find((stream) => stream !== old)!
@@ -171,13 +174,14 @@ describe("R4 overlap and confirming reads", () => {
     const streams = createMockStreams()
     const { network } = mockNetwork(() => ({ data: catalog([]) }))
     const client = createClient({ network, polling: clock.polling, store: clock.store,
-      live: { artifacts: { Widget: compiled.live.Widget! }, subscribe: (request, sink) => {
+      live: { minRereadMs: 1, artifacts: { Widget: compiled.live.Widget! }, subscribe: (request, sink) => {
         if (request.variables.Key === "refused") {
           sink.error([{ message: "no", extensions: { code: "INVALID_INPUT" } }])
           return () => {}
         }
         return streams.subscribe(request, sink)
       }, debounceMs: 0, ...clock.live, onDiagnostic: null } })
+    seedManualHolds(client)
     client.live!.hold("manual", new Map([["Widget", new Set(["refused", "a", "b"].map((key) => encodeNodeId("Widget", [key])))]]))
     client.live!.flush()
     const opened = [...streams.open]
@@ -289,7 +293,7 @@ describe("R4 overlap and confirming reads", () => {
     const reads = c.network.requests.length
     finish({ data: ticketPage([ticket("b", { Title: "stale", RecordVersion: 2 })]) })
     await fetching
-    await c.clock.tick()
+    await c.clock.tick(1)
     expect(c.network.requests.length).toBe(reads + 1)
     expect(c.title()).toBe("new event")
     c.client.dispose()

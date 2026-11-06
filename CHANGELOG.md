@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- Generate flattened full/thin live projections. Unsupported full selections fall back to keys only;
+  events re-read holders for omitted fields and changed relation links. Health retains
+  `selection-refused`, and doctor distinguishes admitted/quiet fallback. Quiet fallback fails strict
+  mode; working fallback otherwise passes.
+- Automatic stale, restart and R4 confirming reads share `live.minRereadMs` (default 2000). Repeated
+  confirmations from changing query membership are bounded, and inactive queries catch up on return.
+- Infer composite keys from `<Type>KeyInput` and build key arguments from stored fields.
+
+Migration: before regeneration, set `liveSelection: "as-written"` to retain previous stream text,
+then review generator warnings naming excluded fragment fields. Existing generated modules keep
+legacy behavior without a version bump. To adopt projections, remove the setting and regenerate.
+Composite keys need no `keys` setting and no particular snapshot order: the client finds the order from a
+record's server `NodeId`. If no order matches, health shows `identity-mismatch`: that type opens no stream and
+polls, rather than dropping every event. Review `live.minRereadMs` if automatic re-read timing matters, and run
+doctor against the deployed identity. Managed RecordVersion remains in full; thin streams carry no
+version and use last-arrival-wins when neither write carries one.
+
 - Add `pnpm budgets` and a separate CI job for R22: store, live-event notifications, large-schema
   compilation, built entry sizes and real Chromium pop-out windows. No runtime API change.
 - R4: stable key chunks, bounded stream overlap, and confirming reads for newly subscribed records.
