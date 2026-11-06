@@ -158,6 +158,9 @@ Pages have no shared snapshot; see the design for concurrent-write limits.
 
 **R15. Counts and aggregates.** Typed results for generated aggregates, and aliased count reads, stay
 current under R3.
+*Built:* aliases retain generated types; aggregate source entities derive from a unique schema
+input/connection match and use R3 refresh only when the project made that type live.
+Ambiguous SDL needs explicit polling; no source is guessed.
 
 **R16. Deleted records.** The live layer removes a deleted record from lists and the store. A
 component holding one gets a defined deleted state and doesn't crash. Confirm today's behaviour.

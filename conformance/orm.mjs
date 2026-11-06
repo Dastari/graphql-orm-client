@@ -193,10 +193,31 @@ try {
  const old = (await post('{ Widget(Id: "w1") { __typename Id Name NodeId RecordVersion } }')).data.Widget
  const newer = await update('Newest')
  assert(newer.RecordVersion > old.RecordVersion)
+ const counts = compile(schema, [
+   `fragment CountLive on Widget @live { Name }`,
+   `query Counts { first: Widgets { PageInfo { n: TotalCount } } second: Widgets { PageInfo { TotalCount } }
+     summary: WidgetsAggregate(GroupBy: [], Metrics: [{Operator: COUNT}], GroupLimit: 1) { Metrics { Kind Value } } }`
+ ])
+ assert.deepEqual(counts.operations.Counts.lists, ['Widget'])
+ const countWs = createWs({ url: routerUrl.replace('http:', 'ws:'), webSocketImpl: WebSocket, connectionParams: {authorization: `Bearer ${token}`}, retryAttempts: Infinity })
+ const countClient = createClient({ network: createHttpNetwork({url:routerUrl,headers}), live: { artifacts: counts.live, ...graphqlWsTransport(countWs), minRereadMs: 0, debounceMs: 0, settleMs: false, onDiagnostic: null } })
+ const countQuery = countClient.watchQuery(counts.operations.Counts, {})
+ countQuery.open()
+ await until('initial counts', () => countQuery.getState().data?.first.PageInfo.n != null)
+ await sleep(300)
+ const beforeCount = countQuery.getState().data.first.PageInfo.n
+ await create('count-new', 'Count new')
+ await until('aliased count and aggregate creation', () => {
+   const data = countQuery.getState().data
+   return data?.first.PageInfo.n === beforeCount + 1 && data.second.PageInfo.TotalCount === beforeCount + 1 && data.summary[0].Metrics[0].Value === String(beforeCount + 1)
+ })
+ countQuery.close(); countClient.dispose(); await countWs.dispose()
+ await post('mutation { DeleteWidget(Id: "count-new") { Success } }')
+ pass('R15 aliased counts and generated aggregate refresh after external creation')
  const readAllArtifact = compile(schema, [`query Bounded($Page: PageInput) {
    Widgets(Page: $Page) @connection(key: "bounded") { Edges { Node { Id Name } } PageInfo { TotalCount } }
  }`]).operations.Bounded
- const boundedClient = createClient({ network: createHttpNetwork({ url: routerUrl }) })
+ const boundedClient = createClient({ network: createHttpNetwork({ url: routerUrl, headers }) })
  const bounded = await boundedClient.readAll(readAllArtifact, {}, { limit: 1 })
  assert.equal(bounded.rows.length, 1); assert(bounded.total > 1); assert.equal(bounded.truncated, true)
  const complete = await boundedClient.readAll(readAllArtifact, {}, { limit: 100, pageSize: 1 })

@@ -100,3 +100,18 @@ by opaque identity. Offset traversal advances by returned edge count; keyset tra
 fail rather than loop. Pages have no shared snapshot: concurrent movement may omit rows.
 `total` is the exact total returned by the last page, not a snapshot-wide guarantee.
 Abort and identity disposal cancel traversal. This is a one-time read; watch a root for freshness.
+
+## Generated aggregates and counts (R15)
+
+Aliased count-only connections and multiple counts in one document use the same R3 list
+refresh path. Generated aggregates return arrays of `GraphqlAggregateResultRow`, with
+`Groups` and `Metrics` containing nullable `Field`, `Operator`, `Value` strings and a
+non-null `Kind` enum. Values stay exact strings; the generator preserves aliases and nullability.
+Read from graphql-orm tags 0.90.1 and 0.93.0: aggregate roots are opt-in (`aggregate = true`),
+accept generated Where, GroupBy, Metrics and GroupLimit inputs, and read their declared entity.
+The compiler matches the aggregate's input object types to connection-root inputs and derives
+the entity from `Edges.Node`. Exactly one candidate is required, and only project-live types
+enter `OperationArtifact.lists`. Shared result type or operation naming alone cannot establish
+entity ownership. With no matching connection, missing filter inputs, or several candidate
+entities, SDL is insufficient: no aggregate stream coverage is claimed. Poll explicitly.
+Proposed server contract: publish aggregate source entity metadata in the served schema.

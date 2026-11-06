@@ -1,6 +1,6 @@
 ---
 name: graphql-orm-client-data
-description: Use bounded readAll with exact totals; keep regenerated lists and counts current with list streams and bounded loaded-page refresh; use full/thin stream projections and bounded holder re-reads (minRereadMs); Write components with graphql-orm-client fragments and route roots, page through tables by number (@paged, usePagedQuery), load more (@connection), refetch, run mutations (including one-time secrets with `no-store`) and plain subscriptions, and port Apollo queries without request waterfalls or over-fetching, and test components against a mock network, scripted streams and a controllable clock (graphql-orm-client/test).
+description: Use bounded readAll with exact totals and schema-derived live aggregates; keep regenerated lists and counts current with list streams and bounded loaded-page refresh; use full/thin stream projections and bounded holder re-reads (minRereadMs); Write components with graphql-orm-client fragments and route roots, page through tables by number (@paged, usePagedQuery), load more (@connection), refetch, run mutations (including one-time secrets with `no-store`) and plain subscriptions, and port Apollo queries without request waterfalls or over-fetching, and test components against a mock network, scripted streams and a controllable clock (graphql-orm-client/test).
 ---
 
 # Fragments, roots, pagination and mutations
@@ -161,3 +161,18 @@ by opaque identity. Offset traversal advances by returned edge count; keyset tra
 fail rather than loop. Pages have no shared snapshot: concurrent movement may omit rows.
 `total` is the exact total returned by the last page, not a snapshot-wide guarantee.
 Abort and identity disposal cancel traversal. This is a one-time read; watch a root for freshness.
+
+## Generated aggregates and counts (R15)
+
+Aliased count-only connections and multiple counts in one document use the same R3 list
+refresh path. Generated aggregates return arrays of `GraphqlAggregateResultRow`, with
+`Groups` and `Metrics` containing nullable `Field`, `Operator`, `Value` strings and a
+non-null `Kind` enum. Values stay exact strings; the generator preserves aliases and nullability.
+Read from graphql-orm tags 0.90.1 and 0.93.0: aggregate roots are opt-in (`aggregate = true`),
+accept generated Where, GroupBy, Metrics and GroupLimit inputs, and read their declared entity.
+The compiler matches the aggregate's input object types to connection-root inputs and derives
+the entity from `Edges.Node`. Exactly one candidate is required, and only project-live types
+enter `OperationArtifact.lists`. Shared result type or operation naming alone cannot establish
+entity ownership. With no matching connection, missing filter inputs, or several candidate
+entities, SDL is insufficient: no aggregate stream coverage is claimed. Poll explicitly.
+Proposed server contract: publish aggregate source entity metadata in the served schema.
