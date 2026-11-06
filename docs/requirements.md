@@ -106,6 +106,7 @@ It reports what is admitted, refused and missing, for the identity used. Only su
 run, never a mutation. Admission can't be known at build time, and it is the commonest cause of
 silently stale data.
 *Acceptance:* it names a refused stream and a document that no longer validates, with a non-zero exit.
+*Built, unreleased.* It runs introspection and subscriptions only, with no reads of application data.
 
 **R23. Schema pull with drift detection.** `graphql-orm-client schema pull` writes the snapshot and
 its hash. `generate --check` fails when generated output doesn't match. Consumers currently write

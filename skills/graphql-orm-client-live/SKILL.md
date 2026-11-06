@@ -1,6 +1,6 @@
 ---
 name: graphql-orm-client-live
-description: Keep graphql-orm-client data live with @live fragments and generated Changed subscriptions, back off from refused streams, order writes by record version, use polling fallbacks, draw live status (useLiveHealth, liveHealth) and diagnose stale data.
+description: Keep graphql-orm-client data live with @live fragments and generated Changed subscriptions, back off from refused streams, order writes by record version, use polling fallbacks, draw live status (useLiveHealth, liveHealth), check streams against a real router (doctor) and diagnose stale data.
 ---
 
 # Live data and cache policy
@@ -70,6 +70,26 @@ Status: early alpha. Check the installed `docs/design.md` and `docs/graphql-orm-
   with the clock itself.
 
 ## Diagnosing stale data
+
+Start with the doctor, which needs no code. Put the credential in an environment variable, then:
+
+```sh
+pnpm exec graphql-orm-client doctor --url https://router.example/graphql --token-env ROUTER_TOKEN
+```
+
+It checks every document against the served schema and opens each live stream for up to `--stream-ms` (3000), for
+that token's identity. It runs introspection and subscriptions only.
+
+| Verdict | Meaning | Exit |
+| --- | --- | --- |
+| `admitted` | An event arrived | 0 |
+| `not-refused` | No error and no event. A quiet stream looks the same as an unanswered one | 0; 1 with `--strict` |
+| `refused <code>` | The server said no. Usually a relation or computed field in a `@live` fragment | 1 |
+| `missing` | The type has `@live` fragments and no `Changed` subscription | 1 |
+| `invalid` | The document no longer validates against the served schema | 1 |
+| `unknown` | It couldn't be tested: a required `Key`, an outage, or a socket that failed | 1 |
+
+`--json` prints the report as JSON. Exit 2 means bad usage. Then, in a running application:
 
 1. Is the fragment marked `@live` and is the record retained?
 2. Does the server emit `Changed` for that write? (Check that the write path goes through the

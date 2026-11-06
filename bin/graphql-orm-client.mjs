@@ -4,12 +4,15 @@ import { fileURLToPath } from "node:url"
 import { dirname, extname, join, relative, resolve } from "node:path"
 
 const usage = `graphql-orm-client generate [--config graphql-orm-client.config.json] [--check]
+graphql-orm-client doctor --url <router> [--ws-url <url>] [--token-env NAME] [--header-env name=NAME]
+                          [--stream-ms 3000] [--strict] [--json] [--config graphql-orm-client.config.json]
 graphql-orm-client skills list
 graphql-orm-client skills install --target agents|codex|claude [--update]`
 
 const [command, ...rest] = process.argv.slice(2)
 
 if (command === "generate") await generateCommand(rest)
+else if (command === "doctor") await doctorCommand(rest)
 else if (command === "skills") skillsCommand(rest)
 else {
   console.log(usage)
@@ -25,6 +28,27 @@ else {
  *   keys, versions, scalars, importFrom, functionName   see GenerateOptions
  */
 async function generateCommand(args) {
+  const { config, base, schema, sources, files, out } = await loadProject(args)
+  const { generate } = await import("../dist/compiler/index.js")
+  let generated
+  try {
+    generated = generate(schema, sources, config)
+  } catch (error) {
+    fail(error.message)
+  }
+  if (args.includes("--check")) {
+    const current = existsSync(out) ? readFileSync(out, "utf8") : ""
+    if (current !== generated) fail(`${relative(base, out)} is out of date; run graphql-orm-client generate`)
+    console.log(`${relative(base, out)} is current (${sources.length} documents)`)
+    return
+  }
+  mkdirSync(dirname(out), { recursive: true })
+  writeFileSync(out, generated)
+  console.log(`Wrote ${relative(base, out)} (${sources.length} documents from ${files.length} files)`)
+}
+
+/** The config, its schema snapshot and the documents it names, for generate and doctor. */
+async function loadProject(args) {
   const configIndex = args.indexOf("--config")
   const configPath = resolve(configIndex >= 0 ? args[configIndex + 1] : "graphql-orm-client.config.json")
   if (!existsSync(configPath)) fail(`No config at ${configPath}`)
@@ -32,7 +56,7 @@ async function generateCommand(args) {
   const base = dirname(configPath)
   if (!config.schema || !config.out) fail("The config needs `schema` and `out`")
   const { buildSchema } = await import("graphql")
-  const { extractDocuments, generate } = await import("../dist/compiler/index.js")
+  const { extractDocuments } = await import("../dist/compiler/index.js")
   const out = resolve(base, config.out)
   const extensions = config.extensions ?? [".ts", ".tsx"]
   const files = (config.documents ?? ["src"]).flatMap((entry) => walk(resolve(base, entry), extensions, out))
@@ -50,21 +74,48 @@ async function generateCommand(args) {
   } catch (error) {
     fail(`${config.schema}: ${error.message}`)
   }
-  let generated
+  return { config, base, schema, sources, files, out }
+}
+
+/**
+ * Credentials come only from named environment variables, so they stay out of shell history and process
+ * lists. Exit 0 when everything passed, 1 when something didn't or couldn't be tested, 2 for bad usage.
+ */
+async function doctorCommand(args) {
+  const values = (flag) => args.flatMap((arg, index) => (arg === flag ? [args[index + 1]] : []))
+  const value = (flag) => values(flag)[0]
+  for (const refused of ["--token", "--header", "--password"]) {
+    if (args.includes(refused)) fail(`${refused} isn't accepted: put the credential in an environment variable and name it with ${refused === "--header" ? "--header-env name=NAME" : "--token-env NAME"}`, 2)
+  }
+  const url = value("--url")
+  if (!url) fail("doctor needs --url <router>", 2)
+  const headers = {}
+  const tokenEnv = value("--token-env")
+  if (tokenEnv) {
+    if (!process.env[tokenEnv]) fail(`The environment variable ${tokenEnv} is empty`, 2)
+    headers.authorization = `Bearer ${process.env[tokenEnv]}`
+  }
+  for (const entry of values("--header-env")) {
+    const at = entry?.indexOf("=") ?? -1
+    if (at <= 0) fail("--header-env takes name=NAME", 2)
+    const name = entry.slice(at + 1)
+    if (!process.env[name]) fail(`The environment variable ${name} is empty`, 2)
+    headers[entry.slice(0, at)] = process.env[name]
+  }
+  const streamMs = value("--stream-ms") === undefined ? 3000 : Number(value("--stream-ms"))
+  if (!Number.isFinite(streamMs) || streamMs < 0) fail("--stream-ms takes a number of milliseconds", 2)
+  const { config, schema, sources } = await loadProject(args)
+  const { compile } = await import("../dist/compiler/index.js")
+  const { formatDoctorReport, runDoctor } = await import("../dist/doctor/index.js")
+  let compiled
   try {
-    generated = generate(schema, sources, config)
+    compiled = compile(schema, [...new Set(sources)], config)
   } catch (error) {
-    fail(error.message)
+    fail(`The documents don't compile against the schema snapshot:\n${error.message}`)
   }
-  if (args.includes("--check")) {
-    const current = existsSync(out) ? readFileSync(out, "utf8") : ""
-    if (current !== generated) fail(`${relative(base, out)} is out of date; run graphql-orm-client generate`)
-    console.log(`${relative(base, out)} is current (${sources.length} documents)`)
-    return
-  }
-  mkdirSync(dirname(out), { recursive: true })
-  writeFileSync(out, generated)
-  console.log(`Wrote ${relative(base, out)} (${sources.length} documents from ${files.length} files)`)
+  const report = await runDoctor({ url, wsUrl: value("--ws-url"), headers, compiled, streamMs, strict: args.includes("--strict") })
+  console.log(args.includes("--json") ? JSON.stringify(report, null, 2) : formatDoctorReport(report))
+  process.exit(report.passed ? 0 : 1)
 }
 
 function walk(path, extensions, exclude) {
@@ -102,7 +153,7 @@ function skillsCommand([action, ...args]) {
   console.log(`Installed ${names.length} graphql-orm-client skills into ${destination}. Existing project instructions were not changed.`)
 }
 
-function fail(message) {
+function fail(message, code = 1) {
   console.error(message)
-  process.exit(1)
+  process.exit(code)
 }

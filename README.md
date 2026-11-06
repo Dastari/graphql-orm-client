@@ -121,6 +121,10 @@ A fragment marked `@refetchable` can read its record again on its own, through t
 
 The schema may be router or subgraph SDL; federation directives are accepted.
 
+`graphql-orm-client doctor --url <router> --token-env TOKEN` checks every document against the schema the router
+serves, and opens each live stream briefly to see whether it's admitted for that identity. What a router admits
+can't be known at build time. It runs introspection and subscriptions only. Use it in a deploy check.
+
 `graphql-orm-client/test` has a mock network keyed by operation name, scripted streams with the router's
 real frames (refusal, lost events, schema reload, socket failure) and a clock the test drives, so an
 application can test its own freshness with no server. See the

@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- `graphql-orm-client doctor --url <router>` (R8) checks every document against the schema the router serves and
+  opens each live stream briefly, for the identity whose credential you name. It prints `admitted`, `not-refused`,
+  `refused <code>`, `missing`, `invalid` or `unknown` per type, and exits non-zero for all but the first two.
+  `--strict` fails `not-refused` too. Credentials come only from named environment variables (`--token-env`,
+  `--header-env`). It runs introspection and subscriptions only, never a query for data or a mutation.
+
 ## 0.1.0-alpha.8 (2026-11-06)
 
 Install from the GitHub release archive:
