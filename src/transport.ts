@@ -1,4 +1,4 @@
-import { WriteNotSentError } from "./outcome.js"
+import { markNotSent } from "./outcome.js"
 import type { GraphQLResponse, Network, OperationRequest } from "./client.js"
 import type { LiveSocketState } from "./health.js"
 import type { LiveConnection, SubscriptionSink } from "./live.js"
@@ -39,7 +39,7 @@ export function createHttpNetwork(options: HttpNetworkOptions): Network {
       try {
         extra = typeof options.headers === "function" ? await options.headers() : options.headers
         if (signal?.aborted) throw signal.reason
-      } catch (error) { throw new WriteNotSentError(error) }
+      } catch (error) { throw markNotSent(error) }
       const bounds = request.kind === "mutation" ? options.writes : options.reads
       const boundedSignal = bounds?.deadlineMs === undefined ? signal
         : signal ? AbortSignal.any([signal, AbortSignal.timeout(bounds.deadlineMs)]) : AbortSignal.timeout(bounds.deadlineMs)

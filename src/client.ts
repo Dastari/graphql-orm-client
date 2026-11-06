@@ -1,5 +1,5 @@
 import { withoutErrorNulls } from "./partial.js"
-import { WriteNotSentError, writeStatus, type WriteOutcome } from "./outcome.js"
+import { wasNotSent, writeStatus, type WriteOutcome } from "./outcome.js"
 import type { ConnectionSpec, FragmentArtifact, FragmentRefFor, LinkSelection, OperationArtifact, PagedSpec, Selection } from "./artifact.js"
 import { fieldStorageKey, stableStringify, type Variables } from "./store/arguments.js"
 import { contextOf, normalize } from "./store/normalize.js"
@@ -1160,7 +1160,7 @@ export class Client {
     } finally {
       rollback()
       const status = response ? writeStatus(response)
-        : failure instanceof WriteNotSentError || !sent ? "failed" : "unconfirmed"
+        : wasNotSent(failure) || !sent ? "failed" : "unconfirmed"
       let reconciliation: WriteOutcome["reconciliation"] = status === "unconfirmed" ? "unavailable" : "not-needed"
       if (status === "unconfirmed" && options.reconcile && !this.store.isDisposed) {
         try { await options.reconcile(); reconciliation = "reread" }

@@ -49,7 +49,7 @@ export type { KeyPart, NodeId } from "./node-id.js"
 export { ROOT_ID, Store } from "./store/store.js"
 export type { Selector, Snapshot, StoreOptions } from "./store/store.js"
 
-export { WriteNotSentError } from "./outcome.js"
+export { markNotSent } from "./outcome.js"
 export type { WriteOutcome, WriteStatus } from "./outcome.js"
 
 export { errorsAtPath } from "./partial.js"

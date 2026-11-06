@@ -773,7 +773,7 @@ A re-read observes current state; it does not prove this write committed.
 The classifier requires evidence: all selected root results with `Success: true` and no errors
 confirm a write. Explicit server `extensions.outcome: "refused"` / `"failed"` distinguish those
 outcomes; these two signals are proposed server contract additions and tested with mocks.
-Transport evidence of no send (`WriteNotSentError`) or cancellation before sending is failed.
+A transport can mark an error as coming before the send with `markNotSent`, as `createHttpNetwork` does for a failed `headers()`; that, or cancellation before sending, is failed. The thrown error is unchanged. A response with no `data` key is refused: per GraphQL over HTTP, execution never started.
 Connection loss, cancellation after send, HTTP errors, partial errors and GraphQL `data: null`
 are unconfirmed. Neither HTTP status nor error message text proves a refusal. Missing Success,
 `Success: false`, and mixed multi-root outcomes are conservatively unconfirmed.

@@ -1,6 +1,6 @@
 import { expect, it } from "vitest"
 import { createClient, OperationError } from "../src/client.js"
-import { WriteNotSentError } from "../src/outcome.js"
+import { markNotSent } from "../src/outcome.js"
 import { createHttpNetwork } from "../src/transport.js"
 import { ops, mockNetwork } from "./fixtures.js"
 
@@ -42,11 +42,25 @@ it("lost responses re-read known records, unknown targets say unavailable, never
 })
 
 it("pre-send failure is failed, cancellation after send is unconfirmed", async () => {
-  for (const error of [new WriteNotSentError(new Error("headers")), new DOMException("abort", "AbortError")]) {
+  for (const error of [markNotSent(new Error("headers")), new DOMException("abort", "AbortError")]) {
     const client = createClient({ network: mockNetwork(() => { throw error }).network })
     expect((await client.mutateOutcome(ops.RenameWidget!, {})).outcome.status)
-      .toBe(error instanceof WriteNotSentError ? "failed" : "unconfirmed")
+      .toBe((error as Error).message === "headers" ? "failed" : "unconfirmed")
   }
+})
+
+it("a response with no data key is refused, and Success false stays unconfirmed", async () => {
+  const outcome = async (response: object) => (await createClient({ network: mockNetwork(() => response as never).network }).mutateOutcome(ops.RenameWidget!, {})).outcome.status
+  expect(await outcome({ errors: [{ message: "not valid" }] })).toBe("refused")
+  expect(await outcome({ data: { UpdateWidget: { __typename: "WidgetResult", Success: false, Error: "no" } } })).toBe("unconfirmed")
+})
+
+it("a failed headers function reaches the caller as it was thrown, and counts as not sent", async () => {
+  const thrown = new Error("no token")
+  const network = createHttpNetwork({ url: "http://example.test", headers: () => { throw thrown }, fetch: (async () => { throw new Error("sent") }) as typeof globalThis.fetch })
+  const client = createClient({ network })
+  await expect(client.mutate(ops.RenameWidget!, {})).rejects.toBe(thrown)
+  expect((await client.mutateOutcome(ops.RenameWidget!, {})).outcome.status).toBe("failed")
 })
 
 it("write response bounds are separate from reads", async () => {

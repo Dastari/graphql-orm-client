@@ -48,82 +48,15 @@ These go in each service, not in graphql-orm or the client:
 - Do not add hand-written `NodeId` fields, `node` resolvers or replacement subscriptions.
   Report the gap to graphql-orm instead.
 
-### Sensitive operations (R9)
+### Write outcomes (R10)
 
-Declare `@sensitive` on a query or mutation. Generation records `sensitive: true` and strips
-the directive from the wire document. Results are plain values with fragment selections expanded;
-they carry no fragment references and cannot be opened by `readFragment`. No store (including
-a private store), retention or inspector receives the result. Existing matching entities remain
-unchanged, just as with mutation `policy: "no-store"`. That older option still supports private
-fragment reads. Sensitive queries use imperative `client.query`; watched queries and preload
-reject them because those retain results. Sensitive mutations reject optimistic responses.
-Live fragments anywhere in a sensitive operation, and operation-level `@live`, fail the build.
-Persistence is proposed (R17); it must exclude these results. Callers own the returned values
-and must avoid logging or retaining secrets themselves. No server change is required.
+The client can only prove a write's outcome from what the server says. Today that means:
 
-### Write certainty (R10)
+- `Success: true` on every selected root, with no errors, is `confirmed`.
+- A response with no `data` key is `refused`: per GraphQL over HTTP, execution never started.
+- Anything else stays `unconfirmed`, including `Success: false`, because a generated result can report an error from after a
+  commit.
 
-`client.mutateOutcome` and React `useMutation(...).commitOutcome` return an outcome even
-when legacy `mutate` / `commit` would throw; those existing APIs still return or throw as before.
-Statuses are `confirmed`, `refused`, `failed`, `unconfirmed`. No write is retried.
-After step-up authentication call `commitOutcome` again explicitly with fresh variables;
-the hook queues no replay and holds no credential. Supply `reconcile: () => client.refetchFragment(F, ref)`
-(or an explicit network-only query) for known affected records. Unconfirmed writes await that read
-and report `reread`, `failed`, or `unavailable` when no record/read is known.
-A re-read observes current state; it does not prove this write committed.
+A dedicated `extensions.outcome: "refused" | "failed"` is a proposed addition. The client already reads it, but no graphql-orm
+version sends it (read from `graphql-orm-v0.93.0`). Until one does, a refused write that executed shows as `unconfirmed`.
 
-The classifier requires evidence: all selected root results with `Success: true` and no errors
-confirm a write. Explicit server `extensions.outcome: "refused"` / `"failed"` distinguish those
-outcomes; these two signals are proposed server contract additions and tested with mocks.
-Transport evidence of no send (`WriteNotSentError`) or cancellation before sending is failed.
-Connection loss, cancellation after send, HTTP errors, partial errors and GraphQL `data: null`
-are unconfirmed. Neither HTTP status nor error message text proves a refusal. Missing Success,
-`Success: false`, and mixed multi-root outcomes are conservatively unconfirmed.
-
-Source checked: graphql-orm tag `graphql-orm-v0.90.1`, router 0.8.1:
-runtime/mutation.rs marks post-commit payload denial/failure/timeout with
-`extensions.outcome: "committed", retryable: false`; outcome unknown also forbids automatic retry.
-Generated operations.rs uses boolean Success and free-form Error; these are insufficient for
-uniform refusal classification. No client inference from error text is used.
-
-HTTP limits are opt-in to preserve existing applications: configure
-`createHttpNetwork({ url, writes: { deadlineMs: 15000, maxResponseBytes: 1048576 } })`.
-`reads` has independent bounds; omitted bounds retain unlimited behaviour.
-Limits cover response streaming and are not mutation retries. Custom networks must implement
-their own bounds and must not automatically retry mutations.
-
-### Partial responses (R12)
-
-Already supported: an HTTP GraphQL response with both data and errors is returned; successful
-aliases normalise and render. `QueryState.errors` and `useQuery().errors` preserve every original
-error path (including aliases and list indices). Query state is ready with partial data; React
-also exposes an `OperationError` in `error`. No-data responses still throw. `readFragment` and
-`useFragment` return only masked data, not operation errors. The query owner must pass error
-state to fragment components; use `errorsAtPath(query.errors, ["alias", ...])` to select it.
-Pathless errors apply to every path. Do not render missing data as empty or zero.
-
-Previously (and by default), error-associated nulls overwrite good cached fields. Opt into
-`createClient({ network, partialResults: "preserve-errors" })` to omit null writes at error paths
-or their null-bubbled ancestors. Other aliases still write, and genuine nulls without errors
-still clear values. A refused array position preserves the whole list rather than shifting
-positions or guessing identity. Pathless errors cannot identify refused fields, so their nulls
-retain legacy handling. Missing fields remain missing. Existing values may therefore be stale;
-always render the path error alongside retained data. Fragment readers see retained values;
-they do not independently know whether a root was refused. Version ordering, identity disposal
-and collection still use the existing store rules. Live recovery continues to re-read holders.
-
-Migration: enable `partialResults: "preserve-errors"`, then audit partial views to check
-`errorsAtPath` before displaying retained values. The default remains `"legacy"` so existing
-applications keep their null-clearing behaviour.
-
-Real run: generated conformance service from graphql-orm 0.90.1, router 0.8.1, with a failing
-remote root and a successful entity alias in one document returned
-`data: { bad: null, good: { Id: "w1", Name: "First" } }` and
-`errors: [{ message: "Unexpected error", path: ["bad"], extensions: {
-code: "DOWNSTREAM_SERVICE_ERROR", service: "remote" } }]` (also source locations).
-This confirms the router preserves the good alias for this nullable failing root. A non-null
-root can still bubble to data:null; the client cannot recover data the server did not return.
-The same real run dropped the HTTP socket after a write committed: outcome was unconfirmed,
-reconciliation reread, and a network-only read observed the updated name and version 2.
-No real refused-write signal or committed read-back denial was produced; those classifier
-cases use mocks. The fixture's public mutation succeeded without an authorization header.

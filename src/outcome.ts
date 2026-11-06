@@ -7,16 +7,28 @@ export interface WriteOutcome {
   readonly status: WriteStatus
   readonly reconciliation: "not-needed" | "unavailable" | "reread" | "failed"
 }
-/** Explicit transport evidence that no request was sent. */
-export class WriteNotSentError extends Error {
-  constructor(override readonly cause: unknown) {
-    super("The write was not sent")
-    this.name = "WriteNotSentError"
-  }
+const notSent = new WeakSet<object>()
+
+/**
+ * A transport says this error came before the request was sent. The error itself is left as it is, so what
+ * `mutate` throws doesn't change.
+ */
+export function markNotSent<E>(error: E): E {
+  if (typeof error === "object" && error !== null) notSent.add(error)
+  return error
 }
 
-/** Conservative: null data, HTTP status and free-form error messages prove no write outcome. */
+/** Whether a transport marked this error as coming before the request was sent. */
+export function wasNotSent(error: unknown): boolean {
+  return typeof error === "object" && error !== null && notSent.has(error)
+}
+
+/**
+ * Conservative: null data, HTTP status and free-form error messages prove no write outcome. A response with no
+ * `data` key does: per GraphQL over HTTP, execution never started.
+ */
 export function writeStatus(response: GraphQLResponse): WriteStatus {
+  if (!("data" in response)) return "refused"
   const errors = response.errors ?? []
   if (errors.length) {
     const outcomes = errors.map(e => e.extensions?.outcome)
