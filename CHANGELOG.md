@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add R11 ephemeral streams: `client.stream` and React `useEphemeralStream`, with explicit
+  sequence/resume contracts, bounded volatile buffers, coalesced notifications, reconnect replay
+  and visible gaps/evictions. Additive; no migration. Existing plain subscriptions are unchanged.
+
 - Generate flattened full/thin live projections. Unsupported full selections fall back to keys only;
   events re-read holders for omitted fields and changed relation links. Health retains
   `selection-refused`, and doctor distinguishes admitted/quiet fallback. Quiet fallback fails strict

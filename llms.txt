@@ -12,4 +12,4 @@ early alpha; APIs may still change. Read the installed docs, which match the ins
 - [Contributor guidance](AGENTS.md)
 - [Changelog](CHANGELOG.md)
 - Skills: skills/graphql-orm-client-adopt, skills/graphql-orm-client-data,
-  skills/graphql-orm-client-live, skills/graphql-orm-client-server
+  skills/graphql-orm-client-live, skills/graphql-orm-client-streams, skills/graphql-orm-client-server

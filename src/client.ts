@@ -1,3 +1,4 @@
+import { ephemeral, type EphemeralOptions, type EphemeralStream } from "./ephemeral.js"
 import type { ConnectionSpec, FragmentArtifact, FragmentRefFor, LinkSelection, OperationArtifact, PagedSpec, Selection } from "./artifact.js"
 import { fieldStorageKey, stableStringify, type Variables } from "./store/arguments.js"
 import { contextOf, normalize } from "./store/normalize.js"
@@ -941,6 +942,17 @@ export class Client {
     }
     this.subscriptions.add(stop)
     return stop
+  }
+
+  /** Create a bounded, volatile stream. Call open() to subscribe and dispose() to erase it. */
+  stream<D, T, V extends Variables, C = unknown>(
+    artifact: OperationArtifact<D, V>, variables: V, options: EphemeralOptions<D, T, V, C>
+  ): EphemeralStream<T, C> {
+    if (this.store.isDisposed) throw new Error("This client was disposed with its identity")
+    if (!this.rereadOptions) throw new Error("A stream requires live.subscribe")
+    const stream = ephemeral(artifact, variables, options, this.rereadOptions, () => this.subscriptions.delete(stream.dispose))
+    this.subscriptions.add(stream.dispose)
+    return stream
   }
 
   /** Send an operation and write its response into the store. */

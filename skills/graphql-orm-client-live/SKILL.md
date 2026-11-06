@@ -129,3 +129,7 @@ that token's identity. It runs introspection and subscriptions only.
    `client.refetchActive()` from the `connected` event. After
    `SUBSCRIPTION_CONTINUITY_LOST`, the client resubscribes and refetches by itself; if that happens
    often, a bulk writer is outrunning the server's `event_channel_capacity`.
+
+
+For non-entity progress, AI text deltas and terminal output, use the
+[ephemeral streams skill](../graphql-orm-client-streams/SKILL.md).
