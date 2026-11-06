@@ -311,6 +311,16 @@ with no live layer. `client.subscribeLiveHealth(listener)` and `useLiveHealth(ty
   `process.env.NODE_ENV` is `production`; `null` turns it off. Without `live`, it's the default.
 - Types with no stream are learned from what queries hold, so this needs no regeneration.
 
+### The doctor
+
+`graphql-orm-client doctor --url <router>` compiles the project's documents against its schema snapshot, validates
+each one against the schema the router serves, and opens each stream on one connection for up to `--stream-ms`.
+A `Keys` stream opens with an empty list, which graphql-orm admits and which matches no rows; an optional `Key`
+opens with none, so it can receive events it ignores. A required `Key` can't be opened without naming a record, so
+it reports `unknown`. Only an event earns `admitted`: a quiet stream is `not-refused`. `SUBSCRIPTION_SCHEMA_RELOAD`,
+`SERVICE_UNAVAILABLE` and `SUBSCRIPTION_LIMIT_EXCEEDED` report `unknown`, not `refused`. One function (`assertReadOnly`)
+guards everything it sends. Credentials come only from named environment variables and aren't in its output.
+
 ### Refused streams
 
 By default, a refused stream restarts like any other end, with the back-off above. `live: {

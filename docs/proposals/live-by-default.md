@@ -99,6 +99,9 @@ useLiveHealth(typename?)     // graphql-orm-client/react
 
 ### R8. `graphql-orm-client doctor --url <router>`
 
+**Built, unreleased.** Also added: `--json`, and `unknown` fails the run, because a stream that couldn't be
+tested mustn't pass.
+
 Credentials come from named environment variables, never arguments. It uses only introspection and
 subscriptions, and one code path refuses any other operation, with a test.
 
