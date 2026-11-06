@@ -165,3 +165,7 @@ pnpm exec graphql-orm-client skills install --target claude   # or agents / code
 ## Licence
 
 MIT
+
+Generation enforces explicit live stream availability and declared polling reasons. Optional
+`queryOwners` and `subscriptionPaths` globs enforce project ownership. See the
+[policy settings and migration controls](docs/design.md#project-build-policies-r5).

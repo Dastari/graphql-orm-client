@@ -71,12 +71,12 @@ key-set replacement and between the first snapshot and subscribe. **The first-re
 not eliminated against a real server:** no subscribe acknowledgement exists. R3's list streams open before the read, with a confirming read after settling. At a full router connection, old coverage stays open while replacements retry;
 newly uncovered records poll meanwhile. True gap closure depends on a server started signal.
 
-**R5. Build failures in place of conventions**, each with a small, named escape:
+**R5. Build failures in place of conventions. Built**, with per-rule `strict` error/warn/off settings (see design), each with a small, named escape:
 
 | Rule | Default | Escape |
 | --- | --- | --- |
 | `@live` on a type with no usable stream | Error | Opt out, or `@poll(reason: "...")` |
-| `pollMs` on a query | Error at build | `@poll(reason: "...")`, recorded in generated output |
+| `pollMs` on a query | Runtime error; build validates declared reasons, no call-site scan | `@poll(reason: "...")`, recorded in generated output |
 | Raw subscriptions outside allowed paths | Error when paths are set | The ephemeral stream (R11) |
 | Queries outside query owners | Error when `queryOwners` globs are set | Add the path to the globs |
 

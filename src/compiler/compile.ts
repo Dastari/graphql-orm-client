@@ -38,7 +38,18 @@ import type {
   Selection,
 } from "../artifact.js"
 
+/** Severity of a project policy diagnostic. */
+export type StrictLevel = "error" | "warn" | "off"
+
 export interface CompileOptions {
+  /** Policy severities; each rule defaults to error. */
+  readonly strict?: Partial<Record<"liveWithoutStream" | "pollWithoutReason" | "rawSubscriptions" | "queryOwnership", StrictLevel>>
+  /** Query document owners, relative to the config directory; absent disables ownership checks. */
+  readonly queryOwners?: readonly string[]
+  /** Paths allowed to declare raw subscriptions; absent disables this check. */
+  readonly subscriptionPaths?: readonly string[]
+  /** Source text to all declaring files, relative to the config directory. CLI supplies this. */
+  readonly documentPaths?: Readonly<Record<string, readonly string[]>>
   /** Stream projection; as-written preserves legacy fragment spreading. */
   readonly liveSelection?: "full" | "as-written"
   /** Reports fields omitted from generated stream projections. */
@@ -83,12 +94,13 @@ export class CompileError extends Error {
 
 const CLIENT_DIRECTIVES = parse(`
   directive @live on FRAGMENT_DEFINITION
+  directive @poll(reason: String!) on QUERY | FRAGMENT_DEFINITION
   directive @connection(key: String!, paging: [String!]) on FIELD
   directive @refetchable(queryName: String) on FRAGMENT_DEFINITION
   directive @paged(paging: String) on FIELD
 `)
 
-const CLIENT_DIRECTIVE_NAMES = new Set(["live", "connection", "refetchable", "paged"])
+const CLIENT_DIRECTIVE_NAMES = new Set(["live", "poll", "connection", "refetchable", "paged"])
 
 /** graphql-orm's connection and keyset field names. */
 const DEFAULT_CONNECTION = {
@@ -200,6 +212,15 @@ function compileDocuments(
 ): CompileResult {
   const clientSchema = extendSchema(schema, CLIENT_DIRECTIVES)
   const documents = sources.map((source) => (typeof source === "string" ? parse(source) : source))
+  const paths = new Map<FragmentDefinitionNode | OperationDefinitionNode, readonly string[]>()
+  documents.forEach((document, index) => {
+    const source = sources[index]!
+    const text = typeof source === "string" ? source : source.loc?.source.body ?? print(source)
+    const files = options.documentPaths?.[text] ?? [document.loc?.source.name ?? `<document ${index + 1}>`]
+    for (const node of document.definitions) {
+      if (node.kind === Kind.FRAGMENT_DEFINITION || node.kind === Kind.OPERATION_DEFINITION) paths.set(node, files)
+    }
+  })
   const fragmentNodes = new Map<string, FragmentDefinitionNode>()
   const operationNodes: OperationDefinitionNode[] = []
   const problems: string[] = []
@@ -237,6 +258,25 @@ function compileDocuments(
   }
   if (problems.length) throw new CompileError(problems)
 
+  const policyProblems: string[] = []
+  const report = (rule: keyof NonNullable<CompileOptions["strict"]>, node: FragmentDefinitionNode | OperationDefinitionNode, message: string) => {
+    const level = options.strict?.[rule] ?? "error"
+    const detail = `${node.kind === Kind.FRAGMENT_DEFINITION ? "Fragment" : "Operation"} ${node.name?.value ?? "<anonymous>"} (${paths.get(node)?.join(", ")}): ${message} [strict.${rule}]`
+    if (level === "error") policyProblems.push(detail)
+    if (level === "warn") (options.onWarning ?? console.warn)(detail)
+  }
+  if (!nested) for (const node of [...fragmentNodes.values(), ...operationNodes]) {
+    const poll = node.directives?.find((d) => d.name.value === "poll")
+    if (poll && !pollReason(node)) report("pollWithoutReason", node, '@poll needs a non-empty reason; use @poll(reason: "why polling is needed")')
+    if (node.kind === Kind.OPERATION_DEFINITION) {
+      const allowed = node.operation === "query" ? options.queryOwners : node.operation === "subscription" ? options.subscriptionPaths : undefined
+      if (allowed && paths.get(node)?.some((file) => !allowed.some((glob) => matchesPath(file, glob)))) {
+        report(node.operation === "query" ? "queryOwnership" : "rawSubscriptions", node,
+          node.operation === "query" ? "query is outside queryOwners; add its file path to queryOwners" : "raw subscription is outside subscriptionPaths; add its path, or use the proposed ephemeral client.stream API (R11, not yet built)")
+      }
+    }
+  }
+
   const augment = (selectionSet: SelectionSetNode, parent: GraphQLCompositeType): SelectionSetNode =>
     augmentSelectionSet(schema, selectionSet, parent, options)
 
@@ -252,6 +292,7 @@ function compileDocuments(
     augmentedFragments.set(name, augmented)
     fragments[name] = {
       kind: "fragment",
+      ...(pollReason(node) ? { pollReason: pollReason(node) } : {}),
       name,
       typeCondition: parent.name,
       selections: convert(schema, augmented.selectionSet, parent, fragmentNodes, false, options),
@@ -277,6 +318,8 @@ function compileDocuments(
     const paged = pagedSpecOf(schema, node, rootType, options)
     operations[name] = {
       kind: node.operation,
+      sourcePaths: paths.get(node),
+      ...(pollReason(node) ? { pollReason: pollReason(node) } : {}),
       lists: listTypes(schema, convert(schema, augmented.selectionSet, rootType, augmentedFragments, true, options), rootType, options),
       keys: pick(metadata.keys, reachable),
       versions: pick(metadata.versions, reachable),
@@ -297,6 +340,12 @@ function compileDocuments(
     operations[name] = { ...operation, lists: (operation.lists ?? []).filter((typename) => liveTypes.has(typename)) }
   }
   const { live, liveUnavailable } = compileLive(schema, fragments, fragmentNodes, options)
+  for (const [name, node] of fragmentNodes) {
+    if (fragments[name]?.live && liveUnavailable.includes(fragments[name]!.typeCondition) && !pollReason(node)) {
+      report("liveWithoutStream", node, `${fragments[name]!.typeCondition} has no usable Changed stream; remove @live or add @poll(reason: "why polling is needed")`)
+    }
+  }
+  if (policyProblems.length) throw new CompileError(policyProblems)
   if (options.liveSelection !== "as-written") {
     const scalars = (selections: readonly Selection[]): string[] => selections.flatMap((selection) =>
       selection.kind === "scalar" ? [selection.fieldName] : selection.kind === "inline" ? scalars(selection.selections) : [])
@@ -906,4 +955,26 @@ function listTypes(schema: GraphQLSchema, selections: readonly Selection[], pare
     if (isCompositeType(type)) for (const name of listTypes(schema, selection.selections, type, options)) result.add(name)
   }
   return [...result].sort()
+}
+
+/** Match a config-relative POSIX path using *, ** and ? globs (no brace or extglob syntax). */
+export function matchesPath(path: string, glob: string): boolean {
+  const pattern = glob.replaceAll("\\", "/").replace(/^\.\//, "")
+  let expression = ""
+  for (let i = 0; i < pattern.length; i++) {
+    const c = pattern[i]!
+    if (c === "*" && pattern[i + 1] === "*") {
+      i++
+      if (pattern[i + 1] === "/") { i++; expression += "(?:.*/)?" }
+      else expression += ".*"
+    } else if (c === "*") expression += "[^/]*"
+    else if (c === "?") expression += "[^/]"
+    else expression += c.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  }
+  return new RegExp(`^${expression}$`).test(path.replaceAll("\\", "/").replace(/^\.\//, ""))
+}
+
+function pollReason(node: FragmentDefinitionNode | OperationDefinitionNode): string | undefined {
+  const value = node.directives?.find((d) => d.name.value === "poll")?.arguments?.find((a) => a.name.value === "reason")?.value
+  return value?.kind === Kind.STRING && value.value.trim() ? value.value : undefined
 }

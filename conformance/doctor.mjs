@@ -24,7 +24,7 @@ export async function doctorChecks({schema,scratch,routerUrl,token,post}) {
   await writeFile(`${dir}/graphql-orm-client.config.json`,JSON.stringify({schema:'schema.graphql',documents:['src'],out:'src/generated.ts',...(verdict==='refused'?{liveSelection:'as-written'}:{})}))
   const root=verdict==='missing'?'Vendors { PageInfo { ...Row } }':`${typename}(Id: "${verdict==='fallback-not-refused'?'t1':'v1'}") { ...Row }`
   const selection=verdict==='missing'?'TotalCount':verdict==='fallback-not-refused'?'Title Summary':`Name ${verdict==='invalid'?'Removed':''}`
-  await writeFile(`${dir}/src/app.ts`,'graphql(`fragment Row on '+typename+' @live { '+selection+' }`)\ngraphql(`query One { '+root+' }`)')
+  await writeFile(`${dir}/src/app.ts`,'graphql(`fragment Row on '+typename+' @live '+(verdict==='missing'?'@poll(reason: "No stream") ':'')+'{ '+selection+' }`)\ngraphql(`query One { '+root+' }`)')
   let emissionError
   const emitter=verdict==='admitted'?setInterval(()=>post('mutation { UpdateVendor(Id: "v1", Input: {Name: "Tick"}) { Success } }').catch(e=>{emissionError=e}),100):null
   let result

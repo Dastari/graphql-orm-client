@@ -92,6 +92,8 @@ export interface ClientOptions {
 }
 
 export interface PollingOptions {
+  /** Undeclared pollMs policy. Default error; warn/off ease migration of old artifacts. */
+  readonly undeclared?: "error" | "warn" | "off"
   /**
    * How often a query refetches when it shows `@live` records that no subscription covers: types
    * without a usable Changed subscription, records beyond a per-record cap, or a stream waiting out a
@@ -1107,6 +1109,11 @@ export class Client {
     options: FetchPolicy | WatchOptions = "store-and-network"
   ): WatchedQuery<T> & { open(): void; close(): void } {
     const { policy = "store-and-network", pollMs } = typeof options === "string" ? { policy: options } : options
+    if (pollMs !== undefined && !artifact.pollReason?.trim()) {
+      const message = `Operation ${artifact.name} (${artifact.sourcePaths?.join(", ") ?? "unknown source; regenerate"}): pollMs requires @poll(reason: "why polling is needed") on the query; regenerate its artifact (polling.undeclared controls migration)`
+      if ((this.polling.undeclared ?? "error") === "error") throw new Error(message)
+      if (this.polling.undeclared === "warn") console.warn(message)
+    }
     const key = `${queryKey(artifact, variables)}:${policy}`
     let resource = this.resources.get(key) as QueryResource<T> | undefined
     if (!resource) {

@@ -808,3 +808,27 @@ list used 1 stream with 0 capacity refusals; a legacy artifact hit 32 streams wi
 SUBSCRIPTION_LIMIT_EXCEEDED refusals. Mocks cover bursts, inactive reads, version conflicts,
 identity disposal, collection, overlap, reconnect recovery and a load-more race. No browser or
 server-main run was performed for R3.
+
+## Project build policies (R5)
+
+Built. `strict` in the generator config accepts `liveWithoutStream`, `pollWithoutReason`,
+`rawSubscriptions` and `queryOwnership`, each `"error"` (default), `"warn"` or `"off"`.
+An explicit `@live` fragment with no usable stream must remove `@live` or declare
+`@poll(reason: "why polling is needed")`. Reasons must be non-empty and are recorded on artifacts.
+`liveUnavailable` remains available when a policy is downgraded or polling is declared.
+
+Set `queryOwners: ["src/routes/**", "src/dialogs/**", "src/adapters/**"]` to restrict query documents;
+windows, pickers and other project owners can have their own paths. `subscriptionPaths` similarly
+restricts raw subscription documents. Both checks are disabled when their setting is absent.
+Globs use config-relative source document paths with `/`, `*`, `**` and `?`; brace/extglob syntax
+is unsupported. All files declaring identical text are checked. Programmatic compilation can pass
+`documentPaths` (document text to file paths); without it diagnostics name the GraphQL source or
+`<document N>` and configured path policies cannot match unknown paths.
+
+`pollMs` is a runtime option, including through hooks, so generation does not claim to scan call sites.
+Declare `query Name @poll(reason: "...") { ... }` before passing it. `watchQuery` rejects an undeclared
+interval, including dynamically composed options. `polling.undeclared: "warn" | "off"` on the client
+supports migration (`"error"` by default). `strict.pollWithoutReason` controls empty reason diagnostics
+at build time; GraphQL still rejects missing or incorrectly typed required directive arguments.
+Automatic live fallback polling is justified by its health reason and needs no `@poll` declaration.
+R11's ephemeral `client.stream` exception is proposed and is not imported or implemented here.

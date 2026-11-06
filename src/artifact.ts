@@ -112,6 +112,8 @@ export type FragmentRefFor<N extends string> = string extends N ? unknown : Frag
 export interface FragmentArtifact<TData = unknown, TName extends string = string> {
   /** Type-only: the fragment's own data. */
   readonly " $data"?: TData
+  /** Justification for deliberate polling of this fragment. */
+  readonly pollReason?: string
   readonly kind: "fragment"
   readonly name: TName
   readonly typeCondition: string
@@ -126,6 +128,10 @@ export interface FragmentArtifact<TData = unknown, TName extends string = string
 export interface OperationArtifact<TData = unknown, TVariables = Record<string, unknown>> {
   /** Type-only: the root's data and variables. */
   readonly " $types"?: { readonly data: TData; readonly variables: TVariables }
+  /** Declared justification for explicit interval polling. Absent in older artifacts. */
+  readonly pollReason?: string
+  /** Declaring source files, supplied by generation when available. */
+  readonly sourcePaths?: readonly string[]
   readonly kind: "query" | "mutation" | "subscription"
   readonly name: string
   /** The operation text with every fragment it uses, as sent to the server. */

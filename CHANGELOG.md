@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- R5: generation rejects streamless explicit `@live` and empty polling reasons; optional
+  `queryOwners`/`subscriptionPaths` restrict document ownership. Migration: remove unsupported
+  `@live` or add `@poll(reason: "...")`; add legitimate owners to the configured globs.
+  Each policy has `strict.<rule>: "warn" | "off"` to stage adoption (see design).
+- Explicit `pollMs` now requires `@poll(reason: "...")` on its query. Regenerate before upgrading
+  runtime callers. Set client `polling.undeclared: "warn"` or `"off"` while migrating old artifacts.
+  Generation validates declarations; it cannot detect runtime interval options at build time.
+
+## Unreleased
+
 - R3: generated `OperationArtifact.lists` enables one un-narrowed stream per open list type,
   including empty and count-only lists. Events invalidate membership, order and totals through
   the existing re-read limiter. Unheld rows are not stored. List interest opens before the read;
