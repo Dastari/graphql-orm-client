@@ -164,6 +164,11 @@ export interface LiveArtifact {
   readonly entityField: string
   /** The payload field holding CREATED / UPDATED / DELETED. */
   readonly actionField: string
+  /**
+   * The payload field holding DIRECT / PROPAGATED, where the service serves it. Absent in earlier artifacts, and then
+   * a `DELETED` event always removes the record.
+   */
+  readonly changeKindField?: string
   /** The argument and variable name for keys (`Keys` or `Key`); null when unkeyed. */
   readonly keyArgument: string | null
   /** The key fields in primary-key order; composite keys are sent as input objects. */

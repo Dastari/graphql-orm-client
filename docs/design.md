@@ -160,7 +160,11 @@ aggregate row) is stored inside its parent.
   managed versions need no configuration. `versions` names another field for a type, or
   `null` to turn it off.
 - A `Changed` event with action `DELETED` removes the record. A query that showed it finds the
-  record missing and reads again; lists aren't edited in place.
+  record missing and reads again; lists aren't edited in place. The exception is `DELETED` with change kind
+  `PROPAGATED`: a child was deleted under a record that still exists (graphql-orm 0.93.0), so the record stays and
+  the queries holding it read again, coalesced by `live.minRereadMs`. Only a generated stream that selects the
+  change kind can tell the two apart: without it, on a service that doesn't serve it or in a module generated
+  before 0.1.0-alpha.10, every `DELETED` removes the record.
 - Each response or event is one batch: subscribers are notified once per batch, synchronously, and
   only those whose fields changed. Proposed: batching writes per tick.
 
@@ -278,7 +282,7 @@ The payload's entity field is found by type (`Widget` in `WidgetChangedEvent`), 
 by name. Types with `@live` fragments but no usable subscription are listed in
 `compile(...).liveUnavailable`, and their holders must poll. `client.live.status()` reports
 per-type counts, including overflow beyond the `key`-mode limit. A `DELETED` event removes the
-record, and any query that showed it reads again.
+record, and any query that showed it reads again, unless its change kind is `PROPAGATED` (see above).
 
 ### Stream projections and re-read scheduling
 
