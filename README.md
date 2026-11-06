@@ -56,6 +56,8 @@ then generate a typed module:
 ```
 
 ```sh
+pnpm exec graphql-orm-client schema pull --url https://router.example/graphql --token-env TOKEN
+pnpm exec graphql-orm-client schema pull --url https://router.example/graphql --token-env TOKEN --check
 pnpm exec graphql-orm-client generate          # write the module
 pnpm exec graphql-orm-client generate --check  # fail when it is out of date (CI)
 ```
