@@ -682,3 +682,66 @@ fragments.
   cannot be verified right now). The store keeps what it has and does not treat the failure as the
   record being absent: only a null result without errors means the record is denied or missing
   (`refetchFragment`). Proposed: marking such a record stale and refetching it later.
+
+## Several windows (R19) and budgets (R22)
+
+R19 keeps one client, store and graphql-ws socket per window. R22 is built as
+`pnpm budgets`, separate from `pnpm check`, with a separate CI workflow.
+[The budget sources](../budgets/README.md) describe the workloads; every threshold,
+baseline and reason for its margin is in [limits.json](../budgets/limits.json).
+
+**Measurement from one machine, 2026-11-06:** AMD Ryzen 9 9955HX, 16 available logical CPUs,
+64 GiB RAM, Linux 6.17.13-3-pve, Node 24.13.1, Playwright 1.65.0,
+headless Chromium 158.0.8127.18. These are local measurements, not Actions results.
+Five complete runs passed, with no observed flakiness. The table gives the median across
+those runs; each timing in each run is itself the median of five samples.
+
+| Workload | Measured | Limit |
+| --- | ---: | ---: |
+| 10,000-row writes (ms) | 23.158 | 500 |
+| 10,000 fragment reads (ms) | 7.833 | 300 |
+| 10,000-row collection (ms) | 4.14 | 300 |
+| Store retained heap (bytes) | 8,196,336 | 24,000,000 |
+| Heap after collection (bytes) | 14,960 | 4,000,000 |
+| 100-event burst wall time (ms) | 32.552 | 750 |
+| 100-event subscriber notifications | 100 | 100 |
+| 45,000-line schema + 250 documents (ms) | 7,580.862 | 30,000 |
+| Main standalone raw bundle (bytes) | 39,582 | 50,000 |
+| Main standalone gzip bundle (bytes) | 13,077 | 17,000 |
+| React standalone raw bundle (bytes) | 6,969 | 10,000 |
+| React standalone gzip bundle (bytes) | 2,834 | 4,000 |
+
+Bundles come from the actual built ESM entries, bundled and minified with esbuild; raw means
+uncompressed bundle bytes, gzip uses level 9. React and GraphQL peers are external.
+Each standalone entry counts all its reachable package modules once, including shared code;
+a module reachable from both entries counts in both totals. These totals should not be added
+to estimate an application importing both. The React entry does not pull in the entire client.
+The compiler fixture has 125 root queries and 125 live fragments, with 500 neutral entity types.
+The live burst uses the shipped schema-validating test kit and a simulated second (100 steps of
+10 ms), exercising the real live layer and 100 fragment subscribers; it is not a socket throughput
+or React rendering benchmark.
+
+For the window measurement, a page served from loopback opens pop-out tool windows with
+`window.open`. Each window holds an independent 10,000-row query/store and graphql-ws client.
+A **test-owned ws 8.22.1 server**, not a graphql-orm service or router, acknowledges each socket;
+every socket must have started a live subscription before measurement.
+CDP forces garbage collection and measures retained JS heap, counting each distinct V8 isolate
+once. All windows shared one isolate on this machine; summing per-target heap would overcount it.
+
+| Windows open (main + pop-outs) | Rows per window | Total retained JS heap (bytes) | Open sockets |
+| ---: | ---: | ---: | ---: |
+| 1 | 10,000 | 9,048,332 | 1 |
+| 3 | 10,000 | 23,083,224 | 3 |
+| 6 | 10,000 | 43,677,244 | 6 |
+
+The larger marginal cost of the 1→3 and 3→6 steps was **7,017,366 JS bytes
+and one socket per additional window**. This supports keeping the R19 decision for now.
+It includes page/runtime, query snapshots and store allocations; it excludes native renderer
+memory, browser RSS, GPU memory and server cost. It does not establish a bound on a full
+application or on other devices.
+
+The compiler is the largest time cost: local run medians ranged from
+7,542.151 to 8,122.624 ms.
+The 30 s limit allows about four times the local median on shared runners.
+A missing browser fails with "window budget not run"; an explicit `--skip-window` reports
+incomplete and never counts as a pass. CI installs Chromium and does not skip.
