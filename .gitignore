@@ -7,3 +7,6 @@ coverage/
 *.tgz
 .DS_Store
 test/generated/
+
+# Conformance service builds belong outside the worktree.
+conformance/**/target/

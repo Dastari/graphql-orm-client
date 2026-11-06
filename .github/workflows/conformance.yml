@@ -1,0 +1,44 @@
+name: Conformance
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'conformance/**'
+      - '.github/workflows/conformance.yml'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+jobs:
+  router:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        graphql-orm: [graphql-orm-v0.90.1]
+    env:
+      GRAPHQL_ORM_TAG: ${{ matrix.graphql-orm }}
+      CONFORMANCE_SCRATCH: ${{ runner.temp }}/conformance
+      CARGO_TARGET_DIR: ${{ runner.temp }}/conformance/target
+      CARGO_PROFILE_DEV_DEBUG: '0'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@1.97.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: conformance/service -> ${{ runner.temp }}/conformance/target
+          key: ${{ matrix.graphql-orm }}
+      - run: df -h "$RUNNER_TEMP"
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright-core install --with-deps chromium
+      - run: pnpm check
+      - run: pnpm build
+      - run: pnpm conformance
+      - run: pnpm pack --dry-run

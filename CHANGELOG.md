@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Add `pnpm conformance` and a CI version matrix for a SQLite graphql-orm example
+  behind the real router. The suite checks admission, events, NodeIds, versions,
+  pagination, doctor verdicts and repeated Node/Chromium recovery. The default is
+  graphql-orm-v0.90.1 / router 0.8.1. No runtime API or migration change.
+- Confirm that persisted-key federated fields can be admitted in a stream, while
+  NodeId-key fetches are refused on 0.90.1. Record refusal frames and descriptor catalogue gaps; see
+  `conformance/README.md`. Generated NodeId streams remain a known server/client gap.
+
 ## 0.1.0-alpha.9 (2026-11-06)
 
 Install from the GitHub release archive:
