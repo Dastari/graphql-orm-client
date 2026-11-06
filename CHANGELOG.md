@@ -13,9 +13,9 @@
 Migration: before regeneration, set `liveSelection: "as-written"` to retain previous stream text,
 then review generator warnings naming excluded fragment fields. Existing generated modules keep
 legacy behavior without a version bump. To adopt projections, remove the setting and regenerate.
-Re-pull older schema snapshots for composite keys: schema pull now preserves KeyInput primary-key
-order instead of sorting those fields; retain explicit ordered `keys` overrides for snapshots whose
-original order is unavailable. Review `live.minRereadMs` if automatic re-read timing matters, and run
+Composite keys need no `keys` setting and no particular snapshot order: the client finds the order from a
+record's server `NodeId`. If no order matches, health shows `identity-mismatch`: that type opens no stream and
+polls, rather than dropping every event. Review `live.minRereadMs` if automatic re-read timing matters, and run
 doctor against the deployed identity. Managed RecordVersion remains in full; thin streams carry no
 version and use last-arrival-wins when neither write carries one.
 

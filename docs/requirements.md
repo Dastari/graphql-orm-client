@@ -37,8 +37,8 @@ and R6 hold; check with the owner before turning it on.
 version and scalars without arguments; thin projections carry keys only. Relations/composites and
 `NodeId` never enter a new stream. `INVALID_INPUT` switches a type to thin for this client, with
 health reason `selection-refused`. Omitted fields and changed relation links refresh through bounded
-holder re-reads (`live.minRereadMs`, default 2000), including R4 confirmation. Composite keys come
-from `<Type>KeyInput`; key arguments read stored fields. `liveSelection: "as-written"` and old
+holder re-reads (`live.minRereadMs`, default 2000), including R4 confirmation. Composite key names come
+from `<Type>KeyInput` and their order from a record's `NodeId`; key arguments read stored fields. `liveSelection: "as-written"` and old
 artifacts preserve legacy selection/refusal behavior. A server marker remains proposed, not required.
 *Acceptance:* the natural row fragment with a relation and computed field falls back to an accepted
 thin stream and refreshes all fields. Verified 8/8 runs per `ws` setting (16 total), against generated

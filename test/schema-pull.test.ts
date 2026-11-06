@@ -87,18 +87,6 @@ describe("schema pull", () => {
     expect(generated.code).toBe(1)
     expect(generated.stderr).toContain("run graphql-orm-client generate")
   })
-  it("preserves KeyInput primary-key order while sorting ordinary fields", async () => {
-    const dir = project()
-    const url = await server(() => ({ data: introspectionFromSchema(buildSchema(`
-      type Query { hello: String }
-      input SlotKeyInput { Site: String! Name: String! }
-      input OtherInput { z: String a: String }
-    `)) }))
-    expect((await run(dir, ["schema", "pull", "--url", url])).code).toBe(0)
-    const snapshot = readFileSync(join(dir, "schema.graphql"), "utf8")
-    expect(snapshot).toContain("input SlotKeyInput {\n  Site: String!\n  Name: String!\n}")
-    expect(snapshot).toContain("input OtherInput {\n  a: String\n  z: String\n}")
-  })
   it("keeps legacy projects without a hash working", async () => {
     const dir = project()
     expect((await run(dir, ["generate"])).code).toBe(0)

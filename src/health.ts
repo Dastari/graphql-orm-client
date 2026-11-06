@@ -20,12 +20,14 @@ export type LiveState = "live" | "unconfirmed" | "connecting" | "polling" | "ref
  * - `selection-refused`: the server refused the stream with `INVALID_INPUT`, the code it gives for a
  *   selection a stream can't carry. It can mean other invalid input too.
  * - `refused`: the server refused the stream with another code.
+ * - `identity-mismatch`: the server's `NodeId` isn't what the key fields encode to in any order, so events couldn't
+ *   reach the records. Check `keys`, and the types of the key fields.
  * - `over-cap`: more streams or records than a limit allows, on the client or the router.
  * - `socket-down`: the socket failed, or the router answered `SERVICE_UNAVAILABLE`.
  * - `stream-ended`: the stream ended for another reason.
  * - `schema-reload`: the router retired its graph.
  */
-export type LiveReason = "no-live-layer" | "no-stream" | "selection-refused" | "refused" | "over-cap" | "socket-down" | "stream-ended" | "schema-reload"
+export type LiveReason = "no-live-layer" | "no-stream" | "selection-refused" | "refused" | "identity-mismatch" | "over-cap" | "socket-down" | "stream-ended" | "schema-reload"
 
 export type LiveSocketState = "connected" | "connecting" | "closed" | "unknown"
 
@@ -128,6 +130,7 @@ export function typeHealth(status: LiveTypeStatus | undefined, holdings: readonl
   })
   if (held === 0) return { ...base, state: "idle", reason: null }
   if (!status) return withPoll("unavailable", options.hasLiveLayer ? "no-stream" : "no-live-layer")
+  if (status.identityMismatch) return withPoll("unavailable", "identity-mismatch", null)
   const reason = reasonOfEnd(status.lastEnd)
   if (status.backedOff) return withPoll("refused", reasonOfEnd(status.lastRefusal), status.lastRefusal?.code ?? null)
   if (status.restarting) {

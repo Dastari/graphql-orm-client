@@ -152,20 +152,10 @@ async function schemaPullCommand(args) {
   if (typeof config.schema !== "string") fail("The config needs `schema`", 2)
   const path = resolve(dirname(configPath), config.schema)
   const { readServedSchema } = await import("../dist/doctor/index.js")
-  const { lexicographicSortSchema, printSchema, isInputObjectType } = await import("graphql")
+  const { lexicographicSortSchema, printSchema } = await import("graphql")
   let snapshot
   try {
-    const served = await readServedSchema({ url, headers })
-    const sorted = lexicographicSortSchema(served)
-    // KeyInput declaration order is graphql-orm primary-key order, needed for NodeId encoding.
-    for (const type of Object.values(served.getTypeMap())) {
-      if (!isInputObjectType(type) || !type.name.endsWith("KeyInput")) continue
-      const fields = sorted.getType(type.name).getFields()
-      const ordered = Object.fromEntries(Object.keys(type.getFields()).map((key) => [key, fields[key]]))
-      for (const key of Object.keys(fields)) delete fields[key]
-      Object.assign(fields, ordered)
-    }
-    snapshot = printSchema(sorted) + "\n"
+    snapshot = printSchema(lexicographicSortSchema(await readServedSchema({ url, headers }))) + "\n"
     // A server may echo request credentials in descriptions. Never persist them.
     if (Object.values(headers).some((secret) => snapshot.includes(secret) || (secret.startsWith("Bearer ") && snapshot.includes(secret.slice(7)))))
       fail("Schema contains a credential value; snapshot not written")

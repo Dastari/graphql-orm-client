@@ -102,7 +102,7 @@ render records one component at a time.
 ## Schema snapshots
 
 `graphql-orm-client schema pull --url <router>` uses only introspection and writes the configured
-`schema` path as lexicographically sorted SDL (except `<Type>KeyInput` fields, whose key order is preserved). A SHA-256 of its exact bytes lives beside it in
+`schema` path as lexicographically sorted SDL. A SHA-256 of its exact bytes lives beside it in
 `<schema>.sha256`; a sidecar keeps the SDL usable by ordinary GraphQL tools. Commit both files.
 `schema pull --check` compares both without writing and names differing paths. Unreachable servers
 are unknown, never a match. Credentials use `--token-env NAME` or repeated
@@ -286,9 +286,10 @@ New generation emits `LiveArtifact.operation` (full), `thinOperation` (keys only
 `rereadFragments` (fragments selecting fields the full stream omits). Operations also carry
 `liveReread` for omitted fields selected directly in the query. Streams never select
 `NodeId`; the store encodes identity from complete key fields, using shared NodeId vectors.
-Composite keys use `<Type>KeyInput` field order. `schema pull` preserves that order while sorting
-other fields. Re-pull old sorted snapshots before regenerating composite types, or retain an
-explicit ordered `keys` override. A server must preserve primary-key order in this input.
+Composite keys take their field names from `<Type>KeyInput`, when all of its fields are on the type. The
+order can't come from there: introspection through router 0.8.1 at `graphql-orm-v0.90.1` lists `SlotKeyInput` as
+`Name, Site`, while the service's SDL and its `NodeId` use `Site, Name`. So the client finds the order by exact
+match against a held record's server `NodeId`, without decoding it, before opening a stream.
 
 `liveSelection: "as-written"` in generator config preserves previous subscription text. Generation
 warns, naming each fragment and field the new projection would exclude. Old artifacts without
@@ -365,7 +366,7 @@ with no live layer. `client.subscribeLiveHealth(listener)` and `useLiveHealth(ty
 | `unavailable` | No stream, after three restarts in a row or for good, and nothing refreshes the records |
 | `idle` | Nothing is held |
 
-- Each type also has `reason` (`no-live-layer`, `no-stream`, `selection-refused`, `refused`, `over-cap`,
+- Each type also has `reason` (`no-live-layer`, `no-stream`, `selection-refused`, `refused`, `identity-mismatch`, `over-cap`,
   `socket-down`, `stream-ended`, `schema-reload`), the server's `code`, `held`, `pollMs`, `lastEventAt`,
   `lastReadAt`, `retryAt` and the `fragments` held. A null time means it hasn't happened, not that it was
   long ago. `pollMs` is null if any query holding the type has no poll. `worst` is the worst state of any type.
@@ -374,6 +375,7 @@ with no live layer. `client.subscribeLiveHealth(listener)` and `useLiveHealth(ty
   that recovers by itself reads the queries holding live records again, which `graphqlWsSubscribe` leaves to
   the application. A stream on a socket that's down is `connecting`.
 - `selection-refused` means the code was `INVALID_INPUT`, which the server also uses for other invalid input.
+- `identity-mismatch` means a record's server `NodeId` isn't what its key fields encode to in any order. A stream event has only key fields to identify its record, so its events could never reach the record: the type opens no stream and its holders poll. Key order alone doesn't cause it: the served schema doesn't give that order (introspection through router 0.8.1 at `graphql-orm-v0.90.1` lists `SlotKeyInput` as `Name, Site` for a key the server encodes as `Site, Name`), so the client finds it by exact match against a record's `NodeId`, without decoding it.
 - Listeners hear about a change once per tick, and a new `lastEventAt` alone at most once a second.
 - `live.onDiagnostic` is called once per fragment and reason when a `@live` fragment settles into `refused`,
   `unavailable` or `polling`, naming the fragment. It defaults to `console.warn`, except where

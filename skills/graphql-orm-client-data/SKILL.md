@@ -7,8 +7,7 @@ description: Use full/thin stream projections and bounded holder re-reads (minRe
 
 Status: early alpha. Check the installed `docs/design.md` for the current API.
 
-Composite keys are inferred from `<Type>KeyInput` in server order. Re-pull snapshots made by older
-versions before regenerating composite types, or keep an explicit ordered `keys` override. Queries
+Composite keys are inferred from `<Type>KeyInput`, and need no `keys` setting. Queries
 can include relation/computed fields in `@live` fragments: omitted stream fields refresh through
 bounded holder re-reads. `liveSelection: "as-written"` preserves legacy stream text.
 

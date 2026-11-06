@@ -80,7 +80,7 @@ describe("R2 projections and bounded holder re-reads", () => {
     const c = setup(); await c.open(); c.active(false)
     for (let i = 0; i < 100; i++) c.streams.one("LiveSlot").emit(c.row())
     await c.clock.tick(3000); expect(c.reads()).toBe(1)
-    c.active(true); await c.clock.tick(100); expect(c.reads()).toBe(2)
+    c.active(true); await c.clock.tick(1000); expect(c.reads()).toBe(2)
     c.client.dispose()
   })
 

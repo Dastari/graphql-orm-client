@@ -167,9 +167,13 @@ export function keyFieldsOf(
   options: CompileOptions = {}
 ): readonly string[] | null {
   if (options.keys && typename in options.keys) return options.keys[typename] ?? null
-  const input = schema.getType(`${typename}KeyInput`)
-  if (input && isInputObjectType(input)) return Object.keys(input.getFields())
   const type = schema.getType(typename)
+  const input = schema.getType(`${typename}KeyInput`)
+  if (input && isInputObjectType(input) && type && isObjectType(type)) {
+    // An unrelated input can share the name, as `ApiKeyInput` for a type `Api`: its fields must be the type's.
+    const fields = Object.keys(input.getFields())
+    if (fields.length && fields.every((field) => field in type.getFields())) return fields
+  }
   if (type && isObjectType(type) && "Id" in type.getFields()) return ["Id"]
   return null
 }

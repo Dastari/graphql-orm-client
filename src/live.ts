@@ -1,6 +1,7 @@
 import type { LiveArtifact, LiveMode } from "./artifact.js"
 import type { GraphQLResponse, OperationRequest } from "./client.js"
 import type { LiveDiagnostic, LiveSocketState } from "./health.js"
+import { encodeNodeId, type KeyPart } from "./node-id.js"
 import { contextOf, identify, normalize } from "./store/normalize.js"
 import type { Store } from "./store/store.js"
 
@@ -146,6 +147,11 @@ export interface LiveOptions {
 export interface LiveTypeStatus {
   /** Full projection was refused; this client uses keys only. */
   readonly selectionRefused?: boolean
+  /**
+   * The server's `NodeId` isn't what the key fields encode to in any order, so a stream's events couldn't
+   * reach the records. Nothing streams; holders poll.
+   */
+  readonly identityMismatch?: boolean
   readonly mode: LiveMode
   readonly held: number
   readonly subscriptions: number
@@ -244,6 +250,8 @@ interface RestartState {
  */
 export class LiveManager {
   private readonly thin = new Set<string>()
+  private readonly mismatched = new Set<string>()
+  private readonly keyOrder = new Map<string, readonly string[]>()
   private readonly holders = new Map<string, Targets>()
   private readonly active = new Map<string, ActiveType>()
   private timer: unknown = null
@@ -294,6 +302,7 @@ export class LiveManager {
 
   /** Whether held records exceed the keyed cap or lack coverage after a router capacity error. */
   overflows(typename: string): boolean {
+    if (this.mismatched.has(typename)) return true
     const artifact = this.artifacts[typename]
     if (this.restarts.get(typename)?.lastEnd?.code === "SUBSCRIPTION_LIMIT_EXCEEDED") {
       const active = this.active.get(typename)
@@ -324,6 +333,7 @@ export class LiveManager {
           artifact.typename,
           {
             selectionRefused: this.thin.has(artifact.typename),
+            identityMismatch: this.mismatched.has(artifact.typename),
             mode: artifact.mode,
             held: held.get(artifact.typename)?.size ?? 0,
             subscriptions: active?.subscriptions.size ?? 0,
@@ -395,7 +405,9 @@ export class LiveManager {
     const held = this.held()
     for (const artifact of Object.values(this.artifacts)) {
       const confirm = artifact.typename !== suppressConfirmationFor
-      const ids = [...(held.get(artifact.typename) ?? [])].sort()
+      const heldIds = [...(held.get(artifact.typename) ?? [])].sort()
+      if (heldIds.length) this.checkIdentity(artifact, heldIds[0]!)
+      const ids = this.mismatched.has(artifact.typename) ? [] : heldIds
       const active: ActiveType = this.active.get(artifact.typename) ?? { subscriptions: new Map(), overflow: 0, chunks: [], coverage: new Map(), transition: null }
       this.active.set(artifact.typename, active)
       const wanted = new Map<string, Record<string, unknown>>()
@@ -408,7 +420,10 @@ export class LiveManager {
           if (ids.length > max && artifact.keyOptional) {
             wanted.set("all", {})
           } else {
-            for (const id of ids.slice(0, max)) wanted.set(id, { [artifact.keyArgument!]: keyValue(this.store, artifact, id) })
+            for (const id of ids.slice(0, max)) {
+              const value = keyValue(this.store, artifact, id)
+              if (value !== undefined) wanted.set(id, { [artifact.keyArgument!]: value })
+            }
             active.overflow = Math.max(0, ids.length - max)
           }
         } else {
@@ -427,7 +442,8 @@ export class LiveManager {
           for (const chunk of active.chunks) {
             if (!chunk.size) continue
             const keys = [...chunk].sort()
-            wanted.set(`keys:${keys.join(",")}`, { [artifact.keyArgument!]: keys.map((id) => keyValue(this.store, artifact, id)) })
+            const values = keys.map((id) => keyValue(this.store, artifact, id)).filter((value) => value !== undefined)
+            if (values.length) wanted.set(`keys:${keys.join(",")}`, { [artifact.keyArgument!]: values })
           }
         }
       }
@@ -435,9 +451,9 @@ export class LiveManager {
         for (const [key, variables] of [...wanted]) { wanted.delete(key); wanted.set(`thin:${key}`, variables) }
       }
       for (const key of ["all", "thin:all"]) if (active.subscriptions.has(key)) active.coverage.set(key, new Set(ids))
-      const heldIds = new Set(ids)
+      const covering = new Set(ids)
       for (const [key, stop] of [...active.subscriptions]) {
-        if (![...(active.coverage.get(key) ?? [])].some((id) => heldIds.has(id))) {
+        if (![...(active.coverage.get(key) ?? [])].some((id) => covering.has(id))) {
           stop()
           active.subscriptions.delete(key)
           active.coverage.delete(key)
@@ -502,6 +518,38 @@ export class LiveManager {
       }
     }
     this.onChange()
+  }
+
+  /**
+   * A stream event has only key fields to identify its record, so they must encode to the id the record has.
+   * The served schema doesn't give the key order: introspection through the router lists a composite key's
+   * fields in another order than the server builds `NodeId` from. A record with a server `NodeId` shows which
+   * order is right, so this finds it by exact match, without decoding the `NodeId`. If no order matches, events
+   * could never reach the records, and they'd be dropped as being for a record nobody holds: the type stops
+   * streaming and its holders poll. A wrong order or encoding applies to the whole type, so one record per
+   * reconcile is enough.
+   */
+  private checkIdentity(artifact: LiveArtifact, id: string): void {
+    const { typename, keyFields } = artifact
+    if (!artifact.thinOperation || this.mismatched.has(typename)) return
+    const record = this.store.get(id)
+    if (!record) return
+    const parts = (fields: readonly string[]) => fields.map((field) => record.fields.get(field)) as KeyPart[]
+    if (parts(keyFields).some((part) => typeof part !== "string" && typeof part !== "number" && typeof part !== "boolean")) return
+    if (encodeNodeId(typename, parts(this.keyOrder.get(typename) ?? keyFields)) === id) return
+    const order = orderings(keyFields).find((fields) => encodeNodeId(typename, parts(fields)) === id)
+    if (order) {
+      this.keyOrder.set(typename, order)
+      return
+    }
+    this.mismatched.add(typename)
+    this.onRefusalChange()
+  }
+
+  /** The operation's key fields, with the order `checkIdentity` found for this type. */
+  private keysOf(artifact: LiveArtifact): Readonly<Record<string, readonly string[]>> {
+    const order = this.keyOrder.get(artifact.typename)
+    return order ? { ...artifact.operation.keys, [artifact.typename]: order } : artifact.operation.keys
   }
 
   private cancelTimer(handle: unknown): void {
@@ -709,7 +757,8 @@ export class LiveManager {
     const payload = response.data?.[artifact.field] as Record<string, unknown> | null | undefined
     const entity = payload?.[artifact.entityField] as Record<string, unknown> | null | undefined
     if (!payload || !entity) return
-    const id = identify(entity, artifact.operation.keys)
+    const keys = this.keysOf(artifact)
+    const id = identify(entity, keys)
     if (id === null) return
     // A stream without keys carries every record of the type; only held records are written.
     if (!this.held().get(artifact.typename)?.has(id)) return
@@ -721,7 +770,7 @@ export class LiveManager {
       // The event payload has no key and nothing reads it afterwards, so it isn't kept. Objects
       // embedded in the changed entity stay with it.
       const embedded = new Set<string>()
-      normalize(this.store, artifact.operation.normalization, response.data!, { ...contextOf(artifact.operation, variables), embedded }, root, "Subscription")
+      normalize(this.store, artifact.operation.normalization, response.data!, { ...contextOf(artifact.operation, variables), keys, embedded }, root, "Subscription")
       this.store.delete(root)
       for (const embeddedId of embedded) if (embeddedId.startsWith(`${root}.`)) this.store.delete(embeddedId)
     }
@@ -746,10 +795,20 @@ function refusalIdentity(artifact: LiveArtifact, key: string): string {
   return artifact.mode === "key" && key !== "all" ? `${artifact.typename}\u0000${key}` : artifact.typename
 }
 
-/** The `Key` value for a record: its single key, or an object of its composite key fields. */
+/** Every order of a composite key's fields. Keys have few fields; past six it's left to `identity-mismatch`. */
+function orderings(fields: readonly string[]): readonly (readonly string[])[] {
+  if (fields.length > 6) return []
+  if (fields.length < 2) return [fields]
+  return fields.flatMap((field, index) => orderings([...fields.slice(0, index), ...fields.slice(index + 1)]).map((rest) => [field, ...rest]))
+}
+
+/**
+ * The `Key` value for a record: its single key, or an object of its composite key fields. Undefined when the
+ * store no longer has the record, as after a `DELETED` event and before the query holding it reads again.
+ */
 function keyValue(store: Store, artifact: LiveArtifact, id: string): unknown {
   const record = store.get(id)
   const values = artifact.keyFields.map((field) => record?.fields.get(field))
-  if (values.some((value) => value === undefined)) throw new Error(`Missing stored key fields for ${artifact.typename}`)
+  if (values.some((value) => value === undefined)) return undefined
   return values.length === 1 ? values[0] : Object.fromEntries(artifact.keyFields.map((field, i) => [field, values[i]]))
 }

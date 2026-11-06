@@ -239,6 +239,9 @@ function queryKey(artifact: OperationArtifact<any, any>, variables: Variables): 
   return `${artifact.hash}:${stableStringify(variables)}`
 }
 
+/** How often a query with a re-read waiting checks whether polling has become active again. */
+const INACTIVE_REREAD_CHECK_MS = 1000
+
 class QueryResource<T> implements WatchedQuery<T> {
   private state: QueryState<T>
   private readonly listeners = new Set<() => void>()
@@ -338,9 +341,7 @@ class QueryResource<T> implements WatchedQuery<T> {
     this.users -= 1
     if (this.users > 0) return
     this.users = 0
-    if (this.rereadTimer !== null) this.client.cancelReread(this.rereadTimer)
-    this.rereadTimer = null
-    this.rereadPending = false
+    this.cancelRereads()
     this.schedulePoll()
     // Forget the request as well: a reopen in the same tick (React's StrictMode replays effects)
     // must start a new one, not wait on this one, whose result is dropped.
@@ -454,6 +455,13 @@ class QueryResource<T> implements WatchedQuery<T> {
   private rereadTimer: unknown = null
   private rereadAt = -Infinity
 
+  /** Drop a re-read that hasn't started. */
+  cancelRereads(): void {
+    if (this.rereadTimer !== null) this.client.cancelReread(this.rereadTimer)
+    this.rereadTimer = null
+    this.rereadPending = false
+  }
+
   /** Mark stale, coalescing bursts and following an in-flight read with one more. */
   readAgain(): void {
     this.rereadPending = true
@@ -468,15 +476,16 @@ class QueryResource<T> implements WatchedQuery<T> {
       this.rereadTimer = this.client.afterReread(() => {
         this.rereadTimer = null
         this.drainReread()
-      }, Math.max(delay, active ? 0 : 100))
+      }, Math.max(delay, active ? 0 : INACTIVE_REREAD_CHECK_MS))
       return
     }
     if (this.inflight) {
       this.rereadWaiting = true
-      void this.inflight.finally(() => {
+      const finish = () => {
         this.rereadWaiting = false
         this.drainReread()
-      })
+      }
+      void this.inflight.then(finish, finish)
       return
     }
     this.rereadPending = false
@@ -1150,6 +1159,7 @@ export class Client {
 
   dispose(): void {
     for (const stop of [...this.subscriptions]) stop()
+    for (const resource of this.resources.values()) resource.cancelRereads()
     this.live?.dispose()
     for (const controller of this.controllers) controller.abort()
     this.controllers.clear()

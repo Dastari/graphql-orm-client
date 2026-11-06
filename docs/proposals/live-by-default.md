@@ -198,8 +198,8 @@ Validation: 16/16 acceptance runs against generated graphql-orm 0.90.1 and real 
 refresh, changed relation link, managed-version full event and composite key stream were exercised.
 Main was source-read, not run. Doctor fallback passes normally; strict mode fails a quiet thin probe.
 
-Also fixed here: composite keys come from `<Type>KeyInput`, so a composite type needs no `keys`
-configuration, and `key` mode reads key fields from the stored record, not by decoding the `NodeId`.
+Also fixed here: a composite key's field names come from `<Type>KeyInput` and its order from a held record's
+server `NodeId`, by exact match, so a composite type needs no `keys` configuration, and `key` mode reads key fields from the stored record, not by decoding the `NodeId`.
 
 ### R3. Lists stay correct
 
