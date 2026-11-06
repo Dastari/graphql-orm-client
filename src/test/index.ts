@@ -109,7 +109,7 @@ export interface MockStream {
    * Send a `Changed` event for this entity, taking the field names from graphql-orm's convention
    * (`WidgetChanged`, `WidgetChangedEvent`, `Widget`). Use `next` for anything else.
    */
-  emit(entity: Readonly<Record<string, unknown>>, options?: { readonly action?: "CREATED" | "UPDATED" | "DELETED" }): void
+  emit(entity: Readonly<Record<string, unknown>>, options?: { readonly action?: "CREATED" | "UPDATED" | "DELETED"; readonly changeKind?: "DIRECT" | "PROPAGATED" }): void
   /**
    * The server refuses it. `frame` is `error`, as the router answers a subscribe itself, or `next`, an
    * error-only frame then `complete`, as a subgraph's refusal reaches the client. Default `INVALID_INPUT`.
@@ -192,10 +192,10 @@ export function createMockStreams(options: MockStreamsOptions = {}): MockStreams
       next: (response) => {
         if (!closed) sink.next(response)
       },
-      emit: (entity, { action = "UPDATED" } = {}) => {
+      emit: (entity, { action = "UPDATED", changeKind } = {}) => {
         const field = eventField(request)
         const typename = field.replace(/Changed$/, "")
-        stream.next({ data: { [field]: { __typename: `${field}Event`, Action: action, [typename]: entity } } })
+        stream.next({ data: { [field]: { __typename: `${field}Event`, Action: action, ...(changeKind ? { ChangeKind: changeKind } : {}), [typename]: entity } } })
       },
       refuse: (code = "INVALID_INPUT", { frame = "error" } = {}) => {
         if (frame === "error") return terminal(() => sink.error(graphQLErrors(code)))

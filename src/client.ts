@@ -494,9 +494,9 @@ class QueryResource<T> implements WatchedQuery<T> {
   }
 
   /** Whether a projection omits something selected by this query's held fragments. */
-  needsEventReread(typename: string, thin: boolean, fragments: readonly string[]): boolean {
+  needsEventReread(typename: string, stale: boolean, fragments: readonly string[]): boolean {
     const holding = this.liveHoldings.get(typename)
-    return !!holding && (thin || this.artifact.liveReread?.includes(typename) === true || fragments.some((name) => this.artifact.fragments[name] !== undefined))
+    return !!holding && (stale || this.artifact.liveReread?.includes(typename) === true || fragments.some((name) => this.artifact.fragments[name] !== undefined))
   }
 
   private watch(snapshot: Snapshot<T>): void {
@@ -716,9 +716,9 @@ export class Client {
           () => {
             for (const resource of this.resources.values()) resource.refreshFallbackPoll()
           },
-          (holders, typename, thin, fragments) => {
+          (holders, typename, stale, fragments) => {
             for (const resource of this.resources.values()) {
-              if (holders.has(resource.key) && resource.needsEventReread(typename, thin, fragments)) resource.readAgain()
+              if (holders.has(resource.key) && resource.needsEventReread(typename, stale, fragments)) resource.readAgain()
             }
           }
         )

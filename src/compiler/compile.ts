@@ -416,6 +416,7 @@ function compileLive(
     const payloadFields = Object.values(payload.getFields())
     const entity = payloadFields.find((candidate) => getNamedType(candidate.type).name === typename)
     const action = payloadFields.find((candidate) => candidate.name.toLowerCase() === "action")
+    const changeKind = payloadFields.find((candidate) => candidate.name.toLowerCase() === "changekind")
     const keyFields = keyFieldsOf(schema, typename, options)
     if (!entity || !action || !keyFields) {
       liveUnavailable.push(typename)
@@ -429,7 +430,8 @@ function compileLive(
     const variables = arg ? `($${arg.name}: ${String(arg.type)})` : ""
     const argumentUse = arg ? `(${arg.name}: $${arg.name})` : ""
     const spreads = [...names].sort().map((name) => `...${name}`).join(" ")
-    const text = `subscription ${operationName}${variables} { ${fieldName}${argumentUse} { ${action.name} ${entity.name} { ${spreads} } } }`
+    const eventFields = changeKind ? `${action.name} ${changeKind.name}` : action.name
+    const text = `subscription ${operationName}${variables} { ${fieldName}${argumentUse} { ${eventFields} ${entity.name} { ${spreads} } } }`
     const document: DocumentNode = {
       kind: Kind.DOCUMENT,
       definitions: [...parse(text).definitions, ...fragmentNodes.values()],
@@ -478,7 +480,7 @@ function compileLive(
         if (fragment.typeCondition === typename) compare(fragmentNodes.get(fragment.name)!.selectionSet, fragment.name)
       }
       const build = (fields: readonly string[]) => {
-        const source = `subscription ${operationName}${variables} { ${fieldName}${argumentUse} { ${action.name} ${entity.name} { ${fields.join(" ")} } } }`
+        const source = `subscription ${operationName}${variables} { ${fieldName}${argumentUse} { ${eventFields} ${entity.name} { ${fields.join(" ")} } } }`
         return compileDocuments(schema, [source], { ...options, streamProjection: true } as ProjectionOptions, true).operations[operationName]!
       }
       operation = build([...carried])
@@ -490,6 +492,7 @@ function compileLive(
       field: fieldName,
       entityField: entity.name,
       actionField: action.name,
+      ...(changeKind ? { changeKindField: changeKind.name } : {}),
       keyArgument: arg?.name ?? null,
       keyFields,
       keyOptional: arg !== undefined && !isNonNullType(arg.type),
