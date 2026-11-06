@@ -51,3 +51,5 @@ export type { Selector, Snapshot, StoreOptions } from "./store/store.js"
 
 export { WriteNotSentError } from "./outcome.js"
 export type { WriteOutcome, WriteStatus } from "./outcome.js"
+
+export { errorsAtPath } from "./partial.js"

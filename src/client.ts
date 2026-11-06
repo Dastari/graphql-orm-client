@@ -1,3 +1,4 @@
+import { withoutErrorNulls } from "./partial.js"
 import { WriteNotSentError, writeStatus, type WriteOutcome } from "./outcome.js"
 import type { ConnectionSpec, FragmentArtifact, FragmentRefFor, LinkSelection, OperationArtifact, PagedSpec, Selection } from "./artifact.js"
 import { fieldStorageKey, stableStringify, type Variables } from "./store/arguments.js"
@@ -47,8 +48,8 @@ export class OperationError extends Error {
 
 /**
  * How a query uses stored data. Apollo's names: `cache-first` is `store-or-network`,
- * `cache-and-network` is `store-and-network`, and `network-only` is the same. Every query result
- * is normalised, so there is no `no-cache` for queries; use `network-only`. A mutation can skip
+ * `cache-and-network` is `store-and-network`, and `network-only` is the same. Query results are normalised unless the document declares `@sensitive`.
+ * There is no call-site `no-cache` policy for queries. A mutation can skip
  * the store with `MutationPolicy` `no-store`.
  */
 export type FetchPolicy =
@@ -84,6 +85,8 @@ export interface QueryState<T> {
 
 export interface ClientOptions {
   readonly network: Network
+  /** Opt-in: error-associated nulls do not erase previous good fields. Default is legacy overwrite. */
+  readonly partialResults?: "legacy" | "preserve-errors"
   readonly store?: StoreOptions
   /** Keep records read through `@live` fragments current with generated Changed subscriptions. */
   readonly live?: LiveOptions
@@ -699,7 +702,11 @@ export class Client {
 
   readonly polling: PollingOptions
 
+  /** How error-associated null writes affect previously cached values. */
+  readonly partialResults: "legacy" | "preserve-errors"
+
   constructor(options: ClientOptions) {
+    this.partialResults = options.partialResults ?? "legacy"
     this.network = options.network
     this.polling = options.polling ?? {}
     this.subscribeTransport = options.live?.subscribe ?? null
@@ -994,7 +1001,7 @@ export class Client {
       }
       const rootId = artifact.kind === "query" ? ROOT_ID : `client:${artifact.kind}:${++this.mutationCount}`
       const target = options.isolated ? new Store() : this.store
-      normalize(target, artifact.normalization, response.data, contextOf(artifact, variables), rootId, artifact.rootType)
+      normalize(target, artifact.normalization, this.partialResults === "preserve-errors" ? withoutErrorNulls(response.data, errors) : response.data, contextOf(artifact, variables), rootId, artifact.rootType)
       target.publish()
       const snapshot = target.lookup<T>(selectorOf(artifact, variables, rootId))
       if (rootId !== ROOT_ID) target.delete(rootId)

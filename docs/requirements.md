@@ -135,7 +135,9 @@ consumer-written versions and is the one sanctioned exception in R5.
 *Acceptance:* a high-frequency stream reconnects with no duplicate or missing items and without
 re-rendering per event.
 
-**R12. Partial results.** One refused root or alias must not blank the rest of a response. Errors are
+**R12. Partial results.** *Built:* existing per-path errors and partial alias data are tested. Opt-in `partialResults: "preserve-errors"` protects good cached values from error-associated nulls; `errorsAtPath` selects alias state. Real router 0.8.1 / graphql-orm 0.90.1 preserved a good alias beside a failing nullable root.
+
+ One refused root or alias must not blank the rest of a response. Errors are
 reported per path, so several aliased counts or dashboard reads can show their own state. Confirm what
 happens today, and document it.
 

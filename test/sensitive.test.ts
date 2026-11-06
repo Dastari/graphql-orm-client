@@ -1,7 +1,7 @@
 import { extendSchema, parse } from "graphql"
 import { inspect } from "node:util"
 import { expect, it } from "vitest"
-import { compile } from "../src/compiler/index.js"
+import { compile, generate } from "../src/compiler/index.js"
 import { createClient, readFragment } from "../src/client.js"
 import { schema, mockNetwork, ticket, ops, frags } from "./fixtures.js"
 
@@ -24,7 +24,7 @@ it.each(["query", "mutation"])("sensitive %s never stores values, versions or fr
   expect(() => readFragment(frags.TicketRow, row)).toThrow()
   // Inspect every record and all private properties, including references an inspector follows.
   expect(inspect(client, { depth: null })).not.toContain(marker)
-  expect(JSON.stringify([...(client.store as any).records])).not.toContain(marker)
+  expect(JSON.stringify([...(client.store as any).records].map(([id, record]: any) => [id, [...record.fields]]))).not.toContain(marker)
   client.store.collect()
   expect(inspect(client, { depth: null })).not.toContain(marker)
   client.dispose()
@@ -36,4 +36,15 @@ it("rejects live fragments (including nested spreads), live operations and optim
   expect(() => compile(extendSchema(schema, parse("extend type Query { Ticket(Id: String!): Ticket }")), ["query Q @sensitive @live { Ticket(Id: \"t1\") { Title } }"])).toThrow()
   const client = createClient({ network: mockNetwork(() => ({ data: {} })).network })
   await expect(client.mutate({ ...ops.IssueToken!, sensitive: true }, {}, { optimisticResponse: {} })).rejects.toThrow()
+})
+
+it("generation expands sensitive fragment fields and records the policy", () => {
+  const source = generate(schema, [
+    'query Q @sensitive { Widget(Id: "w1") { ...Row } }',
+    'fragment Row on Widget { Name }',
+  ])
+  const type = source.split('export type QQuery = ')[1]!.split('\n')[0]!
+  expect(type).toContain('readonly Name: string')
+  expect(type).not.toContain('FragmentRefs')
+  expect(source).toContain('"sensitive":true')
 })

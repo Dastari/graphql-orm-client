@@ -18,7 +18,7 @@ export interface HttpNetworkOptions {
   readonly reads?: { readonly deadlineMs?: number; readonly maxResponseBytes?: number }
   /** Independent write bounds. No request is automatically retried. */
   readonly writes?: { readonly deadlineMs?: number; readonly maxResponseBytes?: number }
-  /** Defaults to the global `fetch`. Pass a wrapper to add retries, timeouts or logging. */
+  /** Defaults to the global `fetch`. Pass a wrapper for logging or additional bounds; mutation requests must never be retried. */
   readonly fetch?: typeof globalThis.fetch
   /** Extra headers, such as `authorization`; a function is called for every request. */
   readonly headers?: HeadersInit | (() => HeadersInit | Promise<HeadersInit>)

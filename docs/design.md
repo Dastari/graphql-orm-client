@@ -789,3 +789,39 @@ HTTP limits are opt-in to preserve existing applications: configure
 `reads` has independent bounds; omitted bounds retain unlimited behaviour.
 Limits cover response streaming and are not mutation retries. Custom networks must implement
 their own bounds and must not automatically retry mutations.
+
+### Partial responses (R12)
+
+Already supported: an HTTP GraphQL response with both data and errors is returned; successful
+aliases normalise and render. `QueryState.errors` and `useQuery().errors` preserve every original
+error path (including aliases and list indices). Query state is ready with partial data; React
+also exposes an `OperationError` in `error`. No-data responses still throw. `readFragment` and
+`useFragment` return only masked data, not operation errors. The query owner must pass error
+state to fragment components; use `errorsAtPath(query.errors, ["alias", ...])` to select it.
+Pathless errors apply to every path. Do not render missing data as empty or zero.
+
+Previously (and by default), error-associated nulls overwrite good cached fields. Opt into
+`createClient({ network, partialResults: "preserve-errors" })` to omit null writes at error paths
+or their null-bubbled ancestors. Other aliases still write, and genuine nulls without errors
+still clear values. A refused array position preserves the whole list rather than shifting
+positions or guessing identity. Pathless errors cannot identify refused fields, so their nulls
+retain legacy handling. Missing fields remain missing. Existing values may therefore be stale;
+always render the path error alongside retained data. Fragment readers see retained values;
+they do not independently know whether a root was refused. Version ordering, identity disposal
+and collection still use the existing store rules. Live recovery continues to re-read holders.
+
+Migration: enable `partialResults: "preserve-errors"`, then audit partial views to check
+`errorsAtPath` before displaying retained values. The default remains `"legacy"` so existing
+applications keep their null-clearing behaviour.
+
+Real run: generated conformance service from graphql-orm 0.90.1, router 0.8.1, with a failing
+remote root and a successful entity alias in one document returned
+`data: { bad: null, good: { Id: "w1", Name: "First" } }` and
+`errors: [{ message: "Unexpected error", path: ["bad"], extensions: {
+code: "DOWNSTREAM_SERVICE_ERROR", service: "remote" } }]` (also source locations).
+This confirms the router preserves the good alias for this nullable failing root. A non-null
+root can still bubble to data:null; the client cannot recover data the server did not return.
+The same real run dropped the HTTP socket after a write committed: outcome was unconfirmed,
+reconciliation reread, and a network-only read observed the updated name and version 2.
+No real refused-write signal or committed read-back denial was produced; those classifier
+cases use mocks. The fixture's public mutation succeeded without an authorization header.
