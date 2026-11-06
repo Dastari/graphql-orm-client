@@ -81,7 +81,7 @@ poll, because some state has no event and polling is the honest answer there.
 
 Without this section, R1 makes failures quieter, so it comes first.
 
-**R6. A refused stream backs off and recovers, by default.** *Built, unreleased:* `live.refusalBackoff`
+**R6. A refused stream backs off and recovers, by default.** *Built in 0.1.0-alpha.9:* `live.refusalBackoff`
 is on by default with jitter, and a refused stream's records poll while it waits.
 *Acceptance:* with no configuration, a refused stream sends a bounded number of subscribes per hour
 however often its lists refetch, its records still refresh, and it starts working with no reload once
@@ -103,7 +103,7 @@ It reports what is admitted, refused and missing, for the identity used. Only su
 run, never a mutation. Admission can't be known at build time, and it is the commonest cause of
 silently stale data.
 *Acceptance:* it names a refused stream and a document that no longer validates, with a non-zero exit.
-*Built, unreleased.* It runs introspection and subscriptions only, with no reads of application data.
+*Built in 0.1.0-alpha.9.* It runs introspection and subscriptions only, with no reads of application data.
 
 **R23. Schema pull with drift detection.** `graphql-orm-client schema pull` writes the snapshot and
 its hash. `generate --check` fails when generated output doesn't match. Consumers currently write

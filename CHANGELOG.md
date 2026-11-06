@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.1.0-alpha.9 (2026-11-06)
+
+Install from the GitHub release archive:
+`pnpm add https://github.com/Dastari/graphql-orm-client/releases/download/v0.1.0-alpha.9/graphql-orm-client-0.1.0-alpha.9.tgz`.
+No artifact or generated-module change: no need to regenerate.
 
 - **Behaviour change: refused streams back off by default (R6).** `live.refusalBackoff` is now on with no
   configuration. A refused stream waits five minutes, sends nothing for it meanwhile, and subscribes again and
@@ -17,6 +21,18 @@
   `refused <code>`, `missing`, `invalid` or `unknown` per type, and exits non-zero for all but the first two.
   `--strict` fails `not-refused` too. Credentials come only from named environment variables (`--token-env`,
   `--header-env`). It runs introspection and subscriptions only, never a query for data or a mutation.
+
+What it ran against: unit tests with mocks, and a real `graphql-orm-router` 0.8.1 built from the
+`graphql-orm-v0.90.1` tag, with real sockets and a test-owned subgraph that refuses like graphql-orm's source does.
+Not run against a generated graphql-orm service. The refusal runs were on Node only.
+
+Migration from alpha.8 (from an earlier version, follow its steps as well):
+
+1. Decide about refused streams: the default now waits five minutes between attempts and polls meanwhile, where
+   alpha.8 retried about once a minute with no poll. Set `live: { refusalBackoff: false }` to keep alpha.8's.
+2. Expect polling reads for a refused type, every `polling.liveFallbackMs` (30 s) per query holding it, paused when
+   the page is hidden. Past the router's 32 operations per connection, the extra streams count as refused too.
+3. To see what your router refuses before you deploy, run `graphql-orm-client doctor`.
 
 ## 0.1.0-alpha.8 (2026-11-06)
 
