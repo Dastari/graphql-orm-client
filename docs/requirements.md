@@ -24,10 +24,6 @@ can't be noticed, the design isn't done.
 - Nothing checks where a query is written, and `pollMs` is one option away.
 - Back-off for a refused stream exists (`live.refusalBackoff`, 0.1.0-alpha.6) but is off by default.
 - `client.live.status()` reports per type, but nothing lets a component draw it, and nothing warns.
-- A stream that ends for any reason but lost events stays ended until the held records change, with
-  no refetch: a socket that ran out of retries, a plain `complete`, or the router's
-  `SUBSCRIPTION_SCHEMA_RELOAD`. A test held one open query for an hour after each: no new subscribe,
-  no read. With `refusalBackoff` on, the reload of a quiet stream also counts as a refusal (R4, R6).
 - The compiler adds `NodeId` to every stream selection on a type that has it, and `RecordVersion`
   where it exists. graphql-orm 0.91.1 refuses `NodeId` on a `Changed` payload, and a hand-written
   `RecordVersion` (R2).
@@ -44,7 +40,8 @@ can't be noticed, the design isn't done.
 
 **R1. Live by default.** A fragment on an entity with a usable `Changed` stream is live, with an
 explicit opt-out (`@live(false)` or similar). A `live: "explicit" | "default"` setting lets existing
-applications migrate one area at a time, and goes away at 1.0.
+applications migrate one area at a time, and goes away at 1.0. Accepted by the owner once R2, R3, R4
+and R6 hold; check with the owner before turning it on.
 *Acceptance:* a new fragment with no directive updates from a stream.
 
 **R2. The compiler decides what goes in a stream.** Only fields the stream can carry are selected:
@@ -66,6 +63,8 @@ with no polling and no consumer code. A burst of 100 events causes a small, boun
 closing the old one and removes duplicates by record version. A first read subscribes first and then
 reads, so no change falls between them. After a gap, what the stream fed is refetched.
 *Acceptance:* a test that writes during a key-set change and during a first read loses nothing.
+*Built in 0.1.0-alpha.7:* any end the client didn't ask for restarts and re-reads, with back-off. Still
+to do: replacing a stream without a gap, and the first-read gap.
 
 **R5. Build failures in place of conventions**, each with a small, named escape:
 
@@ -93,9 +92,11 @@ however often its lists refetch, its records still refresh, and it starts workin
 the server accepts it.
 
 **R7. Live status is visible.** Build on `client.live.status()`: a subscribable status and a hook
-report `live`, `connecting`, `refused`, `unavailable` or `polling`, with reason codes and the last
-update time, per type and for the socket. An application can draw "updated 5 min ago, live updates unavailable". A development
+report `live`, `unconfirmed`, `connecting`, `refused`, `unavailable`, `polling` or `idle`, with reason
+codes and the last update time, per type and for the socket. An application can draw "updated 5 min ago, live updates unavailable". A development
 warning names a fragment whose data can't stay live.
+A stream with no event yet is `unconfirmed`, because a subscribe has no acknowledgement and unknown is
+never shown as healthy.
 *Acceptance:* the refused and unavailable states can be drawn with no consumer bookkeeping.
 
 **R8. A doctor command.** `graphql-orm-client doctor --url <router>`, with credentials from the
@@ -162,7 +163,8 @@ loader can avoid a waterfall. Suspense is optional. Decide on fragment arguments
 document how the client behaves inside a framework that renders a shell on the server.
 
 **R19. Several windows.** An application with pop-out windows or several tabs opens one socket and
-store per window today. Decide whether to share streams, and if not, document the cost.
+store per window. The owner decided to keep that for now; R22 measures the cost, including pop-out tool
+windows.
 
 ## 4. Proving it
 
@@ -175,8 +177,8 @@ and proves stream admission, keyed streams, continuity codes, node lookup, versi
 behaviour. Mocks can't prove a document is accepted.
 
 **R22. Budgets.** Checked in CI: 10,000 rows in the store, a burst of 100 events a second, the
-compile time of 250 documents against a 45,000-line schema, and the bundle size of the main and react
-entry points.
+compile time of 250 documents against a 45,000-line schema, the bundle size of the main and react
+entry points, and the cost of one socket and store per window with pop-out tool windows open (R19).
 
 **R24. Release discipline.** While pre-1.0, every breaking change has migration steps in the changelog
 and a generator error or warning where one is possible. A behaviour change that alters what a working
@@ -187,7 +189,7 @@ An agent following them, with no other knowledge, passes the acceptance test at 
 
 ## Suggested order
 
-The design for groups 1 and 2, proposed and not built, is in
+The design for groups 1 and 2, with its direction approved and labelled proposed until built, is in
 [proposals/live-by-default.md](proposals/live-by-default.md).
 
 1. **R7, R8, R20, and R6's default.** Failures become visible and testable.
@@ -196,18 +198,21 @@ The design for groups 1 and 2, proposed and not built, is in
 4. **R9, R10, R12.** These are safety fixes: pull them forward if a consumer needs them.
 5. **R13 to R19, then R21, R22, R24, R25,** in the order consumers ask.
 
-## Decisions for the owner
+## Decisions from the owner (2026-11-06)
 
-- **R1:** default on, with an opt-out, once R2 to R4 and R6 hold. Recommended.
-- **R5:** error by default for streamless `@live` and for polls without a reason; query ownership as
-  a project setting rather than a universal rule. Recommended.
-- **R19:** share streams between windows, or accept one per window.
+- **R1:** accepted: default on with an opt-out, behind the `live` setting, once R2, R3, R4 and R6 hold.
+  Check with the owner before turning it on.
+- **R5:** accepted: errors by default for streamless `@live` and for polls without a reason; query
+  ownership per project, by globs.
+- **R7:** `unconfirmed` and `idle` are added to the states.
+- **R19:** one socket and store per window for now; R22 measures it.
 
 ## What the server needs
 
 Add these to [graphql-orm-contract.md](graphql-orm-contract.md) as they're confirmed:
 
-- Mark computed and federated fields in the schema, so the compiler can keep them out of a stream (R2).
+- Mark computed and federated fields in the schema, so the compiler can keep them out of a stream. R2
+  doesn't wait for this: without a marker, a stream that can't carry a field costs a re-read.
 - Report who a stream admits, or at least make refusal codes stable (R6, R8).
 - Signal that a stream has started, so a client can read after it and can tell a quiet stream from an
   unanswered one (R4, R7).

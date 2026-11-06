@@ -57,22 +57,63 @@ export interface GraphQLWsClientLike {
     payload: { operationName?: string | null; query: string; variables?: Record<string, unknown> | null },
     sink: { next(value: any): void; error(error: unknown): void; complete(): void }
   ): () => void
+  /** Closes the socket and forgets it, so the next subscribe opens a fresh connection. */
+  terminate?(): void
+}
+
+/** Codes the router uses on a connection whose graph it has retired. */
+const RETIRED_CONNECTION_CODES = new Set(["SUBSCRIPTION_SCHEMA_RELOAD", "SERVICE_UNAVAILABLE"])
+
+function endsConnection(errors: unknown): boolean {
+  return Array.isArray(errors) && errors.some((error) => RETIRED_CONNECTION_CODES.has(String((error as { extensions?: { code?: unknown } } | null)?.extensions?.code)))
 }
 
 /**
  * `live.subscribe` for a graphql-ws client. Missed events aren't replayed after a reconnect, so
  * call `client.refetchActive()` from the graphql-ws `connected` event when `wasRetry` is true.
+ *
+ * The router pins a connection to the graph it selected. Once that graph is retired, the connection
+ * answers every new subscribe with `SERVICE_UNAVAILABLE`, so a stream can only come back on a fresh
+ * connection. When the last operation has ended after such an answer, this closes the socket through
+ * `ws.terminate()`; graphql-ws's own idle close can't be relied on here, because the router's `error`
+ * and `complete` for one operation can count as two releases in graphql-ws.
  */
 export function graphqlWsSubscribe(
   ws: GraphQLWsClientLike
 ): (request: OperationRequest, sink: SubscriptionSink) => () => void {
-  return (request, sink) =>
-    ws.subscribe(
+  let open = 0
+  let retired = false
+  return (request, sink) => {
+    open += 1
+    let ended = false
+    const release = () => {
+      if (ended) return
+      ended = true
+      open -= 1
+      if (retired && open === 0) {
+        retired = false
+        ws.terminate?.()
+      }
+    }
+    const dispose = ws.subscribe(
       { operationName: request.name, query: request.text, variables: request.variables },
       {
         next: (value: GraphQLResponse) => sink.next(value),
-        error: (error) => sink.error(error),
-        complete: () => sink.complete(),
+        error: (error) => {
+          if (endsConnection(error)) retired = true
+          // Release first: the sink may subscribe again at once, and that must reach a fresh socket.
+          release()
+          sink.error(error)
+        },
+        complete: () => {
+          release()
+          sink.complete()
+        },
       }
     )
+    return () => {
+      release()
+      dispose()
+    }
+  }
 }

@@ -1,5 +1,57 @@
 # Changelog
 
+## 0.1.0-alpha.7 (2026-11-06)
+
+Install from the GitHub release archive:
+`pnpm add https://github.com/Dastari/graphql-orm-client/releases/download/v0.1.0-alpha.7/graphql-orm-client-0.1.0-alpha.7.tgz`.
+No artifact or generated-module change: no need to regenerate.
+
+- **Fix: a `@live` stream that ended stayed down, and data went stale with no sign of it.** A router
+  schema reload, a socket out of retries or a plain `complete` left the stream closed, with nothing read,
+  until the held records next changed, which they couldn't without a stream. Any end the client didn't ask
+  for now restarts the type's streams and reads the queries that show the type. The first restart is within
+  `live.resyncJitterMs`; repeated ends back off to about once a minute with jitter (`live.restart: { minMs,
+  maxMs }`), and no change to the held records shortens the wait.
+- **Fix: a schema reload no longer counts as a refusal** under `refusalBackoff`, on either channel, and
+  neither does `SERVICE_UNAVAILABLE`, which is what a retired connection answers. In alpha.6 a reload of a
+  quiet stream started a five-minute window.
+- **Fix: a stream can come back after a schema reload.** The router pins a connection to its graph, and
+  answers every new subscribe on a retired one with `SERVICE_UNAVAILABLE`. `graphqlWsSubscribe` now closes
+  that socket through `ws.terminate()` once its last operation has ended, so the next subscribe gets a fresh
+  connection. `GraphQLWsClientLike` gains an optional `terminate`.
+- `client.live.status()` gains `restarting`, `restartAttempts` and `lastEnd` (`{ reason, code, at }`) per
+  type. Existing fields are unchanged. New exports: `LiveEnd`, `LiveEndReason`, `StreamRestart`. `live` gains
+  `restart` and a `now` test seam.
+- A window under `refusalBackoff` now ends with a read of the queries that show the type.
+
+What it ran against: unit tests with mocks, and a real `graphql-orm-router` 0.8.1 built from the
+`graphql-orm-v0.90.1` tag, with real `graphql-ws` 6.4.1 sockets and a test-owned Node subgraph that speaks
+graphql-transport-ws. Not run against a generated graphql-orm service; the frames the router forwards are
+what was tested.
+
+Migration from alpha.5 or alpha.6:
+
+1. Nothing is required. Update the archive URL.
+2. Expect more requests when streams fail: a type whose stream keeps ending now costs about one subscribe,
+   and one read per query that shows it, a minute. A refused stream with no `refusalBackoff` is included;
+   set `refusalBackoff: true` for one attempt in five minutes. Past the router's 32 operations per connection
+   (its default; the client's `key` mode allows 50), the extra streams are refused with
+   `SUBSCRIPTION_LIMIT_EXCEEDED` and count here too.
+3. A retry that started on the next change to the held records now waits for its back-off. That includes
+   `refusalBackoff: { types: { Type: false } }`, which now means the ordinary back-off and not retry on change.
+4. Remove any retry, back-off or refetch you wrapped around `live.subscribe`. Keep calling
+   `client.refetchActive()` from graphql-ws's `connected` event when `wasRetry` is true: a reconnect graphql-ws
+   handles itself doesn't end the stream.
+5. A custom `live.subscribe` that doesn't use `graphqlWsSubscribe` must open a fresh connection after
+   `SUBSCRIPTION_SCHEMA_RELOAD`, or its restarts keep answering `SERVICE_UNAVAILABLE`.
+6. To keep the old behaviour while you migrate, set `live: { restart: false }`. Ended streams then stay down
+   until the held records change, and data can stay stale indefinitely. The reload and refusal fix still applies.
+
+Documentation published with this release corrects 0.1.0-alpha.6: **the skills shipped in alpha.6 tell agents
+to pass `store.scope` and `store.types` and to use a list updater, none of which exist,** and alpha.6's README,
+design, contract and roadmap describe options that aren't built. Reinstall skills with
+`graphql-orm-client skills install --target <target> --update`. Examples now use a neutral domain.
+
 ## 0.1.0-alpha.6 (2026-11-06)
 
 Install from the GitHub release archive:
@@ -21,9 +73,6 @@ No artifact or generated-module change.
   `SUBSCRIPTION_SOURCE_CLOSED` still restart at once, transport failures are never remembered, and
   disposing the client clears the memory. `client.live.status()` gains `backedOff`. New exports:
   `DEFAULT_REFUSAL_BACKOFF_MS`, `RefusalBackoff`. Default behaviour is unchanged.
-- Documentation only: the README, design, contract, roadmap and skills no longer describe options
-  that don't exist. `store.scope`, `store.types` and persistence were listed as usable and aren't
-  built; passing them is a type error. Examples use a neutral domain.
 
 ## 0.1.0-alpha.5 (2026-11-04)
 

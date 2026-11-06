@@ -20,16 +20,48 @@ export const DEFAULT_REFUSAL_BACKOFF_MS = 5 * 60_000
 export interface RefusalBackoff {
   /**
    * Window in milliseconds for every type not listed in `types`. Omit it to leave other types on
-   * immediate retry.
+   * the ordinary back-off.
    */
   readonly ms?: number
   /**
    * Per type (the generated `<Type>Changed` subscription is the operation). A number sets that
-   * type's window, `true` uses `DEFAULT_REFUSAL_BACKOFF_MS` and `false` keeps immediate retry: the
-   * stream starts again on the next change to the records it holds, as without the option. Use
-   * `false` for a stream with no poll behind it.
+   * type's window, `true` uses `DEFAULT_REFUSAL_BACKOFF_MS` and `false` leaves the type on the
+   * ordinary back-off (`LiveOptions.restart`), as without the option. Use `false` for a stream with
+   * no poll behind it.
    */
   readonly types?: Readonly<Record<string, number | boolean>>
+}
+
+/** Back-off for a stream that ended without the client asking. See `LiveOptions.restart`. */
+export interface StreamRestart {
+  /** The delay after the second end in a row; it doubles after each further end. Default 1000 ms. */
+  readonly minMs?: number
+  /**
+   * The longest delay, default 60000 ms. A stream that stays open this long has recovered, so its
+   * next end starts again from the shortest delay.
+   */
+  readonly maxMs?: number
+}
+
+/**
+ * Why a stream ended without the client asking.
+ * - `reload`: the router retired the graph the connection selected (`SUBSCRIPTION_SCHEMA_RELOAD`).
+ * - `lost`: events were lost (`SUBSCRIPTION_CONTINUITY_LOST`, `SUBSCRIPTION_SOURCE_CLOSED`).
+ * - `unavailable`: the router can't serve it now (`SERVICE_UNAVAILABLE`), as a retired connection answers.
+ * - `refused`: GraphQL errors answered the subscribe and no event ever arrived.
+ * - `errored`: GraphQL errors ended a stream that had delivered events.
+ * - `transport`: the socket failed, or its reconnect attempts ran out.
+ * - `completed`: the server ended the stream with no error.
+ */
+export type LiveEndReason = "reload" | "lost" | "unavailable" | "refused" | "errored" | "transport" | "completed"
+
+/** The last time a type's stream ended without the client asking. */
+export interface LiveEnd {
+  readonly reason: LiveEndReason
+  /** The GraphQL error code, when the server gave one. */
+  readonly code: string | null
+  /** When it ended, in milliseconds since the epoch. */
+  readonly at: number
 }
 
 export interface LiveOptions {
@@ -58,17 +90,29 @@ export interface LiveOptions {
    */
   readonly resyncJitterMs?: number
   /**
+   * What happens when a stream ends and the client didn't ask, for any reason. By default (`true`)
+   * the type's streams start again and the queries showing the type read again, after a random
+   * delay below `resyncJitterMs`; further ends in a row wait longer, from `minMs` doubling to `maxMs`
+   * with jitter, so a failing router sees no storm. A refused stream under `refusalBackoff` waits
+   * out its window instead. `false` is the 0.1.0-alpha.6 behaviour, for migration: an ended stream
+   * stays down, with nothing read, until the held records next change, and only lost events restart
+   * it. Data can stay stale indefinitely with `false`.
+   */
+  readonly restart?: boolean | StreamRestart
+  /**
    * Off by default. When a stream ends because the server refused it (see `docs/design.md`), the
    * live layer remembers that for a window, starts no request for it however often the held
-   * records change, and subscribes again when the window ends. `true` is five minutes for every
+   * records change, and subscribes again and reads what shows the type when the window ends. `true` is five minutes for every
    * type; see `RefusalBackoff` for a window per type and opting a type out. A close that reports
-   * lost events (`SUBSCRIPTION_CONTINUITY_LOST`, `SUBSCRIPTION_SOURCE_CLOSED`) and a transport
-   * failure are never remembered. The memory belongs to the client and goes with it when the
+   * lost events (`SUBSCRIPTION_CONTINUITY_LOST`, `SUBSCRIPTION_SOURCE_CLOSED`), a schema reload
+   * (`SUBSCRIPTION_SCHEMA_RELOAD`), `SERVICE_UNAVAILABLE` and a transport failure are never remembered. The memory belongs to the client and goes with it when the
    * identity changes. Uses `setTimeout` and `clearTimeout` below, so tests can drive the window.
    */
   readonly refusalBackoff?: boolean | RefusalBackoff
   readonly setTimeout?: (callback: () => void, ms: number) => unknown
   readonly clearTimeout?: (handle: unknown) => void
+  /** Clock seam for tests. Defaults to `Date.now`. */
+  readonly now?: () => number
 }
 
 export interface LiveTypeStatus {
@@ -79,6 +123,12 @@ export interface LiveTypeStatus {
   readonly overflow: number
   /** At least one of the type's streams is waiting out a refusal window (`refusalBackoff`). */
   readonly backedOff: boolean
+  /** A stream of the type ended without the client asking, and its restart is waiting. */
+  readonly restarting: boolean
+  /** Ends in a row with no stream staying open for the longest delay. 0 when it is healthy. */
+  readonly restartAttempts: number
+  /** The last end the client didn't ask for; null if there has been none. */
+  readonly lastEnd: LiveEnd | null
 }
 
 type Targets = ReadonlyMap<string, ReadonlySet<string>>
@@ -113,7 +163,36 @@ function graphQLErrorsOf(failure: unknown): GraphQLErrors | null {
   return errors.every((entry) => typeof entry === "object" && entry !== null && typeof entry.message === "string") ? (errors as unknown as GraphQLErrors) : null
 }
 
-const hasContinuityCode = (errors: GraphQLErrors) => errors.some((error) => CONTINUITY_CODES.has(String(error.extensions?.code)))
+const hasCode = (errors: GraphQLErrors, codes: ReadonlySet<string>) => errors.some((error) => codes.has(String(error.extensions?.code)))
+const firstCode = (errors: GraphQLErrors | null): string | null => {
+  const code = errors?.find((error) => error.extensions?.code !== undefined)?.extensions?.code
+  return code === undefined ? null : String(code)
+}
+
+/** The router retired the graph this connection selected, and ends its streams with this code. */
+const RELOAD_CODES = new Set(["SUBSCRIPTION_SCHEMA_RELOAD"])
+/** The router can't serve the stream right now. A connection on a retired graph answers this. */
+const UNAVAILABLE_CODES = new Set(["SERVICE_UNAVAILABLE"])
+
+const DEFAULT_RESTART_MIN_MS = 1000
+const DEFAULT_RESTART_MAX_MS = 60_000
+
+/** Why a stream that failed with these errors ended (null: not GraphQL errors, the transport). */
+function reasonFor(errors: GraphQLErrors | null, delivered: boolean): LiveEndReason {
+  if (errors === null) return "transport"
+  if (hasCode(errors, CONTINUITY_CODES)) return "lost"
+  if (hasCode(errors, RELOAD_CODES)) return "reload"
+  if (hasCode(errors, UNAVAILABLE_CODES)) return "unavailable"
+  return delivered ? "errored" : "refused"
+}
+
+/** A type's restart: the waiting timer, the ends in a row, and when its streams last started. */
+interface RestartState {
+  handle: unknown
+  attempts: number
+  startedAt: number
+  lastEnd: LiveEnd | null
+}
 
 /**
  * Keeps generated `<Type>Changed` subscriptions open for exactly the records that readers of
@@ -125,7 +204,7 @@ export class LiveManager {
   private timer: unknown = null
   private disposed = false
   private subscriptionCount = 0
-  private readonly resyncs = new Map<string, unknown>()
+  private readonly restarts = new Map<string, RestartState>()
   /** Streams waiting out a refusal window, by identity, with the timer that ends the wait. */
   private readonly refused = new Map<string, { readonly typename: string; readonly handle: unknown }>()
   private readonly artifacts: Readonly<Record<string, LiveArtifact>>
@@ -167,6 +246,7 @@ export class LiveManager {
     return Object.fromEntries(
       Object.values(this.artifacts).map((artifact) => {
         const active = this.active.get(artifact.typename)
+        const restart = this.restarts.get(artifact.typename)
         return [
           artifact.typename,
           {
@@ -175,6 +255,9 @@ export class LiveManager {
             subscriptions: active?.subscriptions.size ?? 0,
             overflow: active?.overflow ?? 0,
             backedOff: [...this.refused.values()].some((entry) => entry.typename === artifact.typename),
+            restarting: (restart?.handle ?? null) !== null,
+            restartAttempts: restart && (restart.handle !== null || this.now() - restart.startedAt < this.restartMaxMs()) ? restart.attempts : 0,
+            lastEnd: restart?.lastEnd ?? null,
           },
         ]
       })
@@ -191,8 +274,10 @@ export class LiveManager {
   dispose(): void {
     this.disposed = true
     if (this.timer !== null) (this.options.clearTimeout ?? clearTimeout)(this.timer as ReturnType<typeof setTimeout>)
-    for (const handle of this.resyncs.values()) (this.options.clearTimeout ?? clearTimeout)(handle as ReturnType<typeof setTimeout>)
-    this.resyncs.clear()
+    for (const restart of this.restarts.values()) {
+      if (restart.handle !== null) (this.options.clearTimeout ?? clearTimeout)(restart.handle as ReturnType<typeof setTimeout>)
+    }
+    this.restarts.clear()
     for (const entry of this.refused.values()) (this.options.clearTimeout ?? clearTimeout)(entry.handle as ReturnType<typeof setTimeout>)
     this.refused.clear()
     for (const active of this.active.values()) for (const stop of active.subscriptions.values()) stop()
@@ -255,6 +340,8 @@ export class LiveManager {
           active.subscriptions.delete(key)
         }
       }
+      // A restart is waiting out its delay: no change to the held records may shorten it.
+      if ((this.restarts.get(artifact.typename)?.handle ?? null) !== null) continue
       for (const [key, variables] of wanted) {
         if (active.subscriptions.has(key)) continue
         this.start(artifact, active, key, variables)
@@ -268,50 +355,81 @@ export class LiveManager {
     // A refused stream is not asked for again until its window ends; the end of the window
     // reconciles, so it starts again by itself if the records are still held.
     if (this.refused.has(identity)) return
+    this.markStarted(artifact.typename)
     let ended = false
     let stopped = false
     let delivered = false
-    let answeredWithErrors = false
+    let answered: GraphQLErrors | null = null
     let dispose: (() => void) | null = null
     const stop = () => {
       stopped = true
       dispose?.()
     }
-    // The stream ended from the server's side. It is started again only when events were lost;
-    // after any other end, the next change to the held records starts it. An end that is a refusal
-    // is also remembered, when the option is on.
-    const end = (lost: boolean, refusal = false) => {
+    const end = (reason: LiveEndReason, code: string | null) => {
       if (ended) return
       ended = true
-      const requested = !stopped
+      const requested = stopped
       if (active.subscriptions.get(key) === stop) active.subscriptions.delete(key)
       stop()
-      if (lost) this.scheduleResync(artifact.typename)
-      else if (refusal && requested) this.remember(artifact, identity)
+      if (requested) return
+      this.ended(artifact, identity, reason, code)
     }
     active.subscriptions.set(key, stop)
     dispose = this.options.subscribe(
       { kind: "subscription", name: operation.name, text: operation.text, hash: operation.hash, variables },
       {
         next: (response) => {
-          if (lostContinuity(response)) return end(true)
+          const errors = response.errors ?? []
+          if (hasCode(errors, CONTINUITY_CODES) || hasCode(errors, RELOAD_CODES)) return end(reasonFor(errors, delivered), firstCode(errors))
           if (response.data) delivered = true
-          else if (response.errors?.length) answeredWithErrors = true
+          else if (errors.length) answered = errors
           this.receive(artifact, response, variables)
         },
         error: (failure) => {
           const errors = graphQLErrorsOf(failure)
-          // The server answered the subscribe with errors, and no event ever arrived: a refusal.
-          // Lost events (a continuity code) and failures of the transport are neither.
-          end(false, errors !== null && !delivered && !hasContinuityCode(errors))
+          end(reasonFor(errors, delivered), firstCode(errors))
         },
-        complete: () => end(false, answeredWithErrors && !delivered),
+        complete: () => end(answered ? reasonFor(answered, delivered) : "completed", firstCode(answered)),
       }
     )
     if (ended) dispose()
   }
 
-  /** The window for a type's refused streams, in ms; 0 for immediate retry. */
+  /** A stream ended and nothing asked it to: remember a refusal, or restart the type. */
+  private ended(artifact: LiveArtifact, identity: string, reason: LiveEndReason, code: string | null): void {
+    if (this.disposed) return
+    const state = this.restartState(artifact.typename)
+    state.lastEnd = { reason, code, at: this.now() }
+    if (reason === "refused" && this.backoffMs(artifact.typename) > 0) return this.remember(artifact, identity)
+    // With `restart: false` only lost events restart a stream, as in 0.1.0-alpha.6.
+    if (this.options.restart === false && reason !== "lost") return
+    this.scheduleRestart(artifact.typename)
+  }
+
+  private restartMaxMs(): number {
+    return (typeof this.options.restart === "object" ? this.options.restart.maxMs : undefined) ?? DEFAULT_RESTART_MAX_MS
+  }
+
+  private now(): number {
+    return (this.options.now ?? Date.now)()
+  }
+
+  private restartState(typename: string): RestartState {
+    const existing = this.restarts.get(typename)
+    if (existing) return existing
+    const state: RestartState = { handle: null, attempts: 0, startedAt: this.now(), lastEnd: null }
+    this.restarts.set(typename, state)
+    return state
+  }
+
+  private markStarted(typename: string): void {
+    const state = this.restartState(typename)
+    // A stream already open keeps the clock running; only a start after a quiet spell moves it.
+    const active = this.active.get(typename)
+    if (!active || active.subscriptions.size === 0) state.startedAt = this.now()
+  }
+
+  /** The window for a type's refused streams, in ms; 0 for the ordinary back-off. */
   private backoffMs(typename: string): number {
     const config = this.options.refusalBackoff
     if (!config) return 0
@@ -326,37 +444,55 @@ export class LiveManager {
   private remember(artifact: LiveArtifact, identity: string): void {
     const ms = this.backoffMs(artifact.typename)
     if (this.disposed || ms === 0 || this.refused.has(identity)) return
-    const set =
-      this.options.setTimeout ??
-      ((callback: () => void, delay: number) => {
-        const timer = setTimeout(callback, delay)
-        // A window must not keep a Node process (SSR, tests) alive.
-        ;(timer as { unref?: () => void }).unref?.()
-        return timer
-      })
-    const handle = set(() => {
+    const handle = this.after(() => {
       this.refused.delete(identity)
-      if (!this.disposed) this.reconcile()
+      // Nothing was delivered during the window, so the records may have changed.
+      if (!this.disposed) this.restartNow(artifact.typename)
     }, ms)
     this.refused.set(identity, { typename: artifact.typename, handle })
   }
 
   /**
-   * Events of a type were lost. Subscribe again first, then refetch what shows the type, so no
-   * change falls between the two. A random delay spreads clients that lost events together.
+   * A type's stream ended. Subscribe again first, then read what shows the type, so no change falls
+   * between the two. The first restart is below `resyncJitterMs`, which spreads clients that lost
+   * their streams together; each further end in a row waits longer, up to `restart.maxMs`.
    */
-  private scheduleResync(typename: string): void {
-    if (this.disposed || this.resyncs.has(typename)) return
-    const set = this.options.setTimeout ?? ((callback: () => void, ms: number) => setTimeout(callback, ms))
-    const handle = set(() => {
-      this.resyncs.delete(typename)
-      if (this.disposed) return
-      this.reconcile()
-      const holders = new Set<string>()
-      for (const [holder, targets] of this.holders) if (targets.get(typename)?.size) holders.add(holder)
-      if (holders.size) this.resync(holders)
-    }, Math.random() * (this.options.resyncJitterMs ?? 1000))
-    this.resyncs.set(typename, handle)
+  private scheduleRestart(typename: string): void {
+    const state = this.restartState(typename)
+    if (this.disposed || state.handle !== null) return
+    const config = typeof this.options.restart === "object" ? this.options.restart : {}
+    const maxMs = this.restartMaxMs()
+    // A stream that stayed open for the longest delay had recovered.
+    if (this.now() - state.startedAt >= maxMs) state.attempts = 0
+    const attempts = state.attempts
+    state.attempts += 1
+    // `restart: false` keeps the fixed delay it always had for lost events.
+    const delay =
+      attempts === 0 || this.options.restart === false
+        ? Math.random() * (this.options.resyncJitterMs ?? 1000)
+        : Math.min(maxMs, (config.minMs ?? DEFAULT_RESTART_MIN_MS) * 2 ** (attempts - 1)) * (0.5 + Math.random() * 0.5)
+    state.handle = this.after(() => {
+      state.handle = null
+      state.startedAt = this.now()
+      if (!this.disposed) this.restartNow(typename)
+    }, delay)
+  }
+
+  /** Start the type's missing streams, then read what shows the type. */
+  private restartNow(typename: string): void {
+    this.reconcile()
+    const holders = new Set<string>()
+    for (const [holder, targets] of this.holders) if (targets.get(typename)?.size) holders.add(holder)
+    if (holders.size) this.resync(holders)
+    else this.restarts.delete(typename)
+  }
+
+  /** A timer that must not keep a Node process (SSR, tests) alive. */
+  private after(callback: () => void, ms: number): unknown {
+    if (this.options.setTimeout) return this.options.setTimeout(callback, ms)
+    const timer = setTimeout(callback, ms)
+    ;(timer as { unref?: () => void }).unref?.()
+    return timer
   }
 
   private receive(artifact: LiveArtifact, response: GraphQLResponse, variables: Record<string, unknown>): void {

@@ -11,7 +11,7 @@ export type {
   Selection,
 } from "./artifact.js"
 export { DEFAULT_REFUSAL_BACKOFF_MS, LiveManager } from "./live.js"
-export type { LiveOptions, LiveTypeStatus, RefusalBackoff, SubscriptionSink } from "./live.js"
+export type { LiveEnd, LiveEndReason, LiveOptions, LiveTypeStatus, RefusalBackoff, StreamRestart, SubscriptionSink } from "./live.js"
 export {
   Client,
   DEFAULT_PAGE_SIZE,
