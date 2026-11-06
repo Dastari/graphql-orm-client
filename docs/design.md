@@ -465,7 +465,7 @@ period, like a preload. It rejects with `OperationError` when the server returns
 ## Plain subscriptions
 
 Subscriptions that aren't the live layer's, such as an operation's own
-`subscription FileOperations { FameFileOperationChanged(...) { ... } }`, run through the same
+`subscription FileOperations { FileOperationChanged(...) { ... } }`, run through the same
 `live.subscribe` transport. `live.artifacts` can be left out when an application has no `@live`
 fragments.
 

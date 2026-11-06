@@ -20,3 +20,6 @@ uses Apollo.
    and removal of polling where events cover the state.
 5. **Persistence and tooling.** IndexedDB persistence, a store inspector and persisted-
    operation enforcement.
+
+What is still needed for a complete client, with acceptance tests and a suggested order, is in
+[requirements.md](requirements.md).
