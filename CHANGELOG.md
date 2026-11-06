@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Behaviour change: refused streams back off by default (R6).** `live.refusalBackoff` is now on with no
+  configuration. A refused stream waits five minutes, sends nothing for it meanwhile, and subscribes again and
+  reads when the window ends. Every window now varies by 20% either way, including one you set. The queries holding it poll
+  during the window (`polling.liveFallbackMs`, 30 s), so their records still refresh. `SUBGRAPH_UNAVAILABLE` joins
+  the codes that are never refusals.
+
+  To keep the behaviour you had: `live: { refusalBackoff: false }` for alpha.7 and alpha.8's ordinary back-off, or
+  `live: { restart: false, refusalBackoff: false }` for alpha.5 and alpha.6's. To keep the window with no poll, set
+  `polling: { liveFallbackMs: null }`, but that also turns off the poll for types with no stream. An application
+  with its own back-off around `live.subscribe` should remove it.
 - `graphql-orm-client doctor --url <router>` (R8) checks every document against the schema the router serves and
   opens each live stream briefly, for the identity whose credential you name. It prints `admitted`, `not-refused`,
   `refused <code>`, `missing`, `invalid` or `unknown` per type, and exits non-zero for all but the first two.

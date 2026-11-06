@@ -22,7 +22,6 @@ can't be noticed, the design isn't done.
 - `@live` only updates records already held. New rows, removed rows and changed totals need a poll.
 - `@live` on a type with no stream only adds it to `liveUnavailable`, and falls back to polling.
 - Nothing checks where a query is written, and `pollMs` is one option away.
-- Back-off for a refused stream exists (`live.refusalBackoff`, 0.1.0-alpha.6) but is off by default.
 - The compiler adds `NodeId` to every stream selection on a type that has it, and `RecordVersion`
   where it exists. graphql-orm 0.91.1 refuses `NodeId` on a `Changed` payload, and a hand-written
   `RecordVersion` (R2).
@@ -82,10 +81,8 @@ poll, because some state has no event and polling is the honest answer there.
 
 Without this section, R1 makes failures quieter, so it comes first.
 
-**R6. A refused stream backs off and recovers, by default.** Built in 0.1.0-alpha.6 as
-`live.refusalBackoff`, opt-in. What remains: turn it on by default before R1, add jitter, and make
-sure a refused stream's records fall back to the polling path while it waits, so turning it on can't
-leave a type with no updates.
+**R6. A refused stream backs off and recovers, by default.** *Built, unreleased:* `live.refusalBackoff`
+is on by default with jitter, and a refused stream's records poll while it waits.
 *Acceptance:* with no configuration, a refused stream sends a bounded number of subscribes per hour
 however often its lists refetch, its records still refresh, and it starts working with no reload once
 the server accepts it.

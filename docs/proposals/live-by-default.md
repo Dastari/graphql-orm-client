@@ -116,7 +116,7 @@ graphql-transport-ws itself, so it needs no new dependency.
 
 ### R6. Back-off on by default
 
-`refusalBackoff` defaults to on, and `false` restores today's behaviour. What changes:
+**Built, unreleased.** `refusalBackoff` defaults to on, and `false` restores the behaviour before it. What changes:
 
 - A refusal excludes `SUBSCRIPTION_SCHEMA_RELOAD`, `SERVICE_UNAVAILABLE` and `SUBGRAPH_UNAVAILABLE`,
   which are outages and take the restart path in R4. Code lists stay this short: anything else that
@@ -206,8 +206,8 @@ alpha.5 archive until it chooses to move.
 | Change | Setting | Restores the old behaviour | Comes with |
 | --- | --- | --- | --- |
 | Ended streams restart and re-read (built) | `live.restart` | `false` | Client upgrade |
-| Back-off by default | `live.refusalBackoff` | `false` | Client upgrade |
-| Refused types poll | `polling.liveFallbackMs` | `null` | Client upgrade |
+| Back-off by default (built) | `live.refusalBackoff` | `false` | Client upgrade |
+| Refused types poll (built) | `polling.liveFallbackMs` | `null` | Client upgrade |
 | Compiled stream selection | `liveSelection` in the generator | `"as-written"` | Regeneration |
 | List re-reads | `live.listStreams` | `false` until `live` is `default` | Regeneration: older artifacts have no `lists` |
 | Live by default | `live` in the generator | `"explicit"` | Regeneration |

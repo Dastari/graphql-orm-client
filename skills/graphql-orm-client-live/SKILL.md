@@ -49,12 +49,13 @@ Status: early alpha. Check the installed `docs/design.md` and `docs/graphql-orm-
   somewhere else with `live: { onDiagnostic }`; `null` turns them off.
 - Lower down, `client.live.status()` shows `restarting`, `restartAttempts` and `lastEnd` (`reason`, `code`,
   `at`) per type.
-- For a stream the server refuses (GraphQL errors answering the subscribe, or an error-only frame then
-  `complete`, before any event), `live: { refusalBackoff: true }` waits five minutes between attempts in
-  place of the ordinary back-off, and `{ ms, types: { Type: ms | false } }` sets it per type. It reads
-  again when the window ends, but nothing refreshes the type during the window, so keep a poll behind
-  it or give it `false`. A schema reload, lost events, `SERVICE_UNAVAILABLE` and a transport failure are
-  never treated as refusals. `status()` shows `backedOff`. Don't wrap `live.subscribe` to build this.
+- A stream the server refuses (GraphQL errors answering the subscribe, or an error-only frame then
+  `complete`, before any event) waits five minutes before trying again, varying by 20%, with no setup. Queries
+  holding it poll meanwhile (`polling.liveFallbackMs`, 30 s) and read when the window ends, and it starts
+  working by itself once the server accepts it. `live: { refusalBackoff: { ms, types: { Type: ms | false } } }`
+  changes the window, and `false` means the ordinary back-off instead, for a type or for all. A schema reload,
+  lost events, `SERVICE_UNAVAILABLE`, `SUBGRAPH_UNAVAILABLE` and a transport failure are never refusals. Don't
+  wrap `live.subscribe` to build this.
 - Paged tables (`usePagedQuery`) keep only the visible page live; changing page moves the
   subscription to the new page's rows.
 

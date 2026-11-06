@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest"
 import { createClient, type Client } from "../src/client.js"
 import type { LiveOptions } from "../src/live.js"
 import { encodeNodeId } from "../src/node-id.js"
@@ -80,6 +80,10 @@ function refuseAll(subscriptions: ReturnType<typeof mockSubscriptions>, name = "
 }
 
 describe("refused-stream back-off", () => {
+  // The middle of the jitter, so a window lasts exactly what it was set to.
+  beforeAll(() => void vi.spyOn(Math, "random").mockReturnValue(0.5))
+  afterAll(() => void vi.restoreAllMocks())
+
   it("sends one subscribe per window however often the held records change", () => {
     const { client, live, subscriptions, time, sent } = setup({ refusalBackoff: true })
     hold(client, ["d1"])
@@ -178,8 +182,8 @@ describe("refused-stream back-off", () => {
     client.dispose()
   })
 
-  it("is off by default: a refused stream restarts with the ordinary back-off", () => {
-    const { client, live, subscriptions, time, sent } = setup()
+  it("with the option off, a refused stream restarts with the ordinary back-off", () => {
+    const { client, live, subscriptions, time, sent } = setup({ refusalBackoff: false })
     hold(client, ["d1"])
     live.flush()
     refuseAll(subscriptions)
@@ -194,7 +198,7 @@ describe("refused-stream back-off", () => {
   })
 
   it("with restart off, a refused stream starts again on every change, as in 0.1.0-alpha.6", () => {
-    const { client, live, subscriptions, time, sent } = setup({ restart: false })
+    const { client, live, subscriptions, time, sent } = setup({ restart: false, refusalBackoff: false })
     hold(client, ["d1"])
     live.flush()
     for (let round = 0; round < 4; round += 1) {
