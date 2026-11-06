@@ -52,3 +52,12 @@ Run `pnpm check` (types, tests and the skills listing; there is no lint step) an
 changes need tests for ordering, version conflicts, identity disposal, garbage collection and
 reconnect replay. Do not commit node_modules, build output, test output, credentials or
 .handoff notes.
+
+## Conformance
+
+From a source checkout, `pnpm conformance` runs the built client against the SQLite service and real router
+in `conformance/`, separately from `pnpm check`. Install Chromium with
+`pnpm exec playwright-core install --with-deps chromium`. Set `CONFORMANCE_SCRATCH`
+outside the worktree to cache builds; check disk space first (allow 10 GB). Use only
+ports 42000–42099. A missing local browser is reported as `NOT RUN`; CI requires it.
+See `conformance/README.md` for pinned versions, fixture accommodations and coverage.

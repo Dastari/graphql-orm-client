@@ -10,6 +10,28 @@ entity macro are the same at `graphql-orm-v0.90.1`, so what this table says abou
 too. Findings come from reading source unless a row says it was run. "Proposed" means not yet filed or
 agreed with graphql-orm.
 
+R21 now runs the assertions in `conformance/` against **graphql-orm-v0.90.1
+(revision adfa608d), router 0.8.1, SQLite**, rather than a hand-written entity-event
+subgraph. Verified: empty `Keys` matches no rows; key/keys/unkeyed delivery; managed
+`RecordVersion` delivery and advancement; NodeId agreement and router node lookup;
+filter/sort/count/offset/keyset reads; preimage-gated deletes; reload and connection
+limit frames. NodeId, relation, computed Summary and a hand-written RecordVersion
+produce **`next` with `INVALID_INPUT`, then `complete`**. **Federation changes the fact list:** `Vendor.RemoteName`, owned by the second
+subgraph through a persisted Id key, is admitted and fetched per event. The same
+extension pattern on Widget using the NodeId key produces `INVALID_INPUT`.
+Federated fields cannot all be classified as refused; admission depends on the
+selection the router sends to the source subgraph. Continuity codes run through the real ORM adapter on deterministic test-owned
+lagged/closed channels, not by overflowing a generated event bus over a slow socket.
+
+**Server integration gap found by R21:** 0.90.1's operation catalogue omits
+`ExpectedVersion` on managed mutations, which prevents the router accepting its
+generated descriptor unchanged. The fixture supplies argument metadata from its
+served SDL and recomputes protocol fingerprints. Composite placeholder mutations
+also lack catalogue metadata; Slot uses repository writes and is excluded from
+GraphQL mutations. See [conformance](../conformance/README.md) for reproductions
+and recovery coverage. No server fix is
+included and no later server version is claimed as run.
+
 | Need | Why the client needs it | Status |
 | --- | --- | --- |
 | Complete key on every entity | The store's `NodeId` is built from it | Exists. Every generated entity has a primary key, possibly composite |
@@ -44,6 +66,8 @@ These go in each service, not in graphql-orm or the client:
 - Keep `Id` values stable. The `NodeId` is built on them.
 - Add `#[graphql_orm(version = "managed")]` to rows that are rewritten in place while users watch
   them. A bare `version` is compare-and-swap only, and ordinary writes don't advance it.
+- Give a managed version column an SQL default (the SQLite fixture uses `default = "0"`),
+  since generated create inputs omit it.
 - Set `propagate_change = "up"` on relations whose parent views show child state.
 - Do not add hand-written `NodeId` fields, `node` resolvers or replacement subscriptions.
   Report the gap to graphql-orm instead.
