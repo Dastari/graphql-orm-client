@@ -12,6 +12,15 @@ No artifact or generated-module change.
   records in the same payload either, so no other view updates from it. Fragment references in the
   result still open. It is refused together with `optimisticResponse`, and an unknown `policy` throws.
   Default behaviour (`policy: "store"`) is unchanged. New type `MutationPolicy`.
+- Back-off for refused streams (#13). `live: { refusalBackoff }`, off by default, remembers a stream
+  the server refused (GraphQL errors answering the subscribe, or an error-only frame and then
+  `complete`, before any event): no request for it for a window (`true` is five minutes), however
+  often the held records change, then it subscribes again by itself. `{ ms, types: { Type: ms | true
+  | false } }` sets a window per type and keeps a type on immediate retry with `false`. A stream is
+  a type's `Changed` subscription, per record in `key` mode. `SUBSCRIPTION_CONTINUITY_LOST` and
+  `SUBSCRIPTION_SOURCE_CLOSED` still restart at once, transport failures are never remembered, and
+  disposing the client clears the memory. `client.live.status()` gains `backedOff`. New exports:
+  `DEFAULT_REFUSAL_BACKOFF_MS`, `RefusalBackoff`. Default behaviour is unchanged.
 
 ## 0.1.0-alpha.5 (2026-11-04)
 

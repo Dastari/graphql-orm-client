@@ -10,6 +10,28 @@ export interface SubscriptionSink {
   complete(): void
 }
 
+/** How long a refused stream waits before it is subscribed again: five minutes. */
+export const DEFAULT_REFUSAL_BACKOFF_MS = 5 * 60_000
+
+/**
+ * Back-off for streams the server refuses. A refused stream is not subscribed again for a window,
+ * however often the records it covers change, and is then subscribed again by itself.
+ */
+export interface RefusalBackoff {
+  /**
+   * Window in milliseconds for every type not listed in `types`. Omit it to leave other types on
+   * immediate retry.
+   */
+  readonly ms?: number
+  /**
+   * Per type (the generated `<Type>Changed` subscription is the operation). A number sets that
+   * type's window, `true` uses `DEFAULT_REFUSAL_BACKOFF_MS` and `false` keeps immediate retry: the
+   * stream starts again on the next change to the records it holds, as without the option. Use
+   * `false` for a stream with no poll behind it.
+   */
+  readonly types?: Readonly<Record<string, number | boolean>>
+}
+
 export interface LiveOptions {
   /**
    * Compiled live artifacts per type (`compile(...).live`). Leave it out to use `subscribe` only
@@ -35,6 +57,16 @@ export interface LiveOptions {
    * Spreads the load when one burst ends every client's subscription at once. Default 1000 ms.
    */
   readonly resyncJitterMs?: number
+  /**
+   * Off by default. When a stream ends because the server refused it (see `docs/design.md`), the
+   * live layer remembers that for a window, starts no request for it however often the held
+   * records change, and subscribes again when the window ends. `true` is five minutes for every
+   * type; see `RefusalBackoff` for a window per type and opting a type out. A close that reports
+   * lost events (`SUBSCRIPTION_CONTINUITY_LOST`, `SUBSCRIPTION_SOURCE_CLOSED`) and a transport
+   * failure are never remembered. The memory belongs to the client and goes with it when the
+   * identity changes. Uses `setTimeout` and `clearTimeout` below, so tests can drive the window.
+   */
+  readonly refusalBackoff?: boolean | RefusalBackoff
   readonly setTimeout?: (callback: () => void, ms: number) => unknown
   readonly clearTimeout?: (handle: unknown) => void
 }
@@ -45,6 +77,8 @@ export interface LiveTypeStatus {
   readonly subscriptions: number
   /** Records held but not covered by a subscription; their holders must poll. */
   readonly overflow: number
+  /** At least one of the type's streams is waiting out a refusal window (`refusalBackoff`). */
+  readonly backedOff: boolean
 }
 
 type Targets = ReadonlyMap<string, ReadonlySet<string>>
@@ -65,6 +99,22 @@ function lostContinuity(response: GraphQLResponse): boolean {
   return (response.errors ?? []).some((error) => CONTINUITY_CODES.has(String(error.extensions?.code)))
 }
 
+type GraphQLErrors = readonly { readonly message: string; readonly extensions?: Readonly<Record<string, unknown>> }[]
+
+/**
+ * The GraphQL errors a stream failed with, if the failure was the server answering with errors
+ * (graphql-ws delivers a rejected subscribe as an array; an `OperationError` carries `errors`).
+ * An `Error` without errors, or a socket close event, is a transport failure: null.
+ */
+function graphQLErrorsOf(failure: unknown): GraphQLErrors | null {
+  const list = Array.isArray(failure) ? failure : (failure as { errors?: unknown } | null)?.errors
+  if (!Array.isArray(list) || list.length === 0) return null
+  const errors = list as Record<string, unknown>[]
+  return errors.every((entry) => typeof entry === "object" && entry !== null && typeof entry.message === "string") ? (errors as unknown as GraphQLErrors) : null
+}
+
+const hasContinuityCode = (errors: GraphQLErrors) => errors.some((error) => CONTINUITY_CODES.has(String(error.extensions?.code)))
+
 /**
  * Keeps generated `<Type>Changed` subscriptions open for exactly the records that readers of
  * `@live` fragments currently hold, and writes each event's entity into the store.
@@ -76,6 +126,8 @@ export class LiveManager {
   private disposed = false
   private subscriptionCount = 0
   private readonly resyncs = new Map<string, unknown>()
+  /** Streams waiting out a refusal window, by identity, with the timer that ends the wait. */
+  private readonly refused = new Map<string, { readonly typename: string; readonly handle: unknown }>()
   private readonly artifacts: Readonly<Record<string, LiveArtifact>>
 
   /**
@@ -122,6 +174,7 @@ export class LiveManager {
             held: held.get(artifact.typename)?.size ?? 0,
             subscriptions: active?.subscriptions.size ?? 0,
             overflow: active?.overflow ?? 0,
+            backedOff: [...this.refused.values()].some((entry) => entry.typename === artifact.typename),
           },
         ]
       })
@@ -140,6 +193,8 @@ export class LiveManager {
     if (this.timer !== null) (this.options.clearTimeout ?? clearTimeout)(this.timer as ReturnType<typeof setTimeout>)
     for (const handle of this.resyncs.values()) (this.options.clearTimeout ?? clearTimeout)(handle as ReturnType<typeof setTimeout>)
     this.resyncs.clear()
+    for (const entry of this.refused.values()) (this.options.clearTimeout ?? clearTimeout)(entry.handle as ReturnType<typeof setTimeout>)
+    this.refused.clear()
     for (const active of this.active.values()) for (const stop of active.subscriptions.values()) stop()
     this.active.clear()
     this.holders.clear()
@@ -209,28 +264,81 @@ export class LiveManager {
 
   private start(artifact: LiveArtifact, active: ActiveType, key: string, variables: Record<string, unknown>): void {
     const { operation } = artifact
+    const identity = refusalIdentity(artifact, key)
+    // A refused stream is not asked for again until its window ends; the end of the window
+    // reconciles, so it starts again by itself if the records are still held.
+    if (this.refused.has(identity)) return
     let ended = false
+    let stopped = false
+    let delivered = false
+    let answeredWithErrors = false
     let dispose: (() => void) | null = null
-    const stop = () => dispose?.()
+    const stop = () => {
+      stopped = true
+      dispose?.()
+    }
     // The stream ended from the server's side. It is started again only when events were lost;
-    // after any other end, the next change to the held records starts it.
-    const end = (lost: boolean) => {
+    // after any other end, the next change to the held records starts it. An end that is a refusal
+    // is also remembered, when the option is on.
+    const end = (lost: boolean, refusal = false) => {
       if (ended) return
       ended = true
+      const requested = !stopped
       if (active.subscriptions.get(key) === stop) active.subscriptions.delete(key)
       stop()
       if (lost) this.scheduleResync(artifact.typename)
+      else if (refusal && requested) this.remember(artifact, identity)
     }
     active.subscriptions.set(key, stop)
     dispose = this.options.subscribe(
       { kind: "subscription", name: operation.name, text: operation.text, hash: operation.hash, variables },
       {
-        next: (response) => (lostContinuity(response) ? end(true) : this.receive(artifact, response, variables)),
-        error: () => end(false),
-        complete: () => end(false),
+        next: (response) => {
+          if (lostContinuity(response)) return end(true)
+          if (response.data) delivered = true
+          else if (response.errors?.length) answeredWithErrors = true
+          this.receive(artifact, response, variables)
+        },
+        error: (failure) => {
+          const errors = graphQLErrorsOf(failure)
+          // The server answered the subscribe with errors, and no event ever arrived: a refusal.
+          // Lost events (a continuity code) and failures of the transport are neither.
+          end(false, errors !== null && !delivered && !hasContinuityCode(errors))
+        },
+        complete: () => end(false, answeredWithErrors && !delivered),
       }
     )
     if (ended) dispose()
+  }
+
+  /** The window for a type's refused streams, in ms; 0 for immediate retry. */
+  private backoffMs(typename: string): number {
+    const config = this.options.refusalBackoff
+    if (!config) return 0
+    const own = config === true ? undefined : config.types?.[typename]
+    const fallback = config === true ? DEFAULT_REFUSAL_BACKOFF_MS : config.ms
+    const value = own === undefined ? fallback : own
+    if (value === true) return DEFAULT_REFUSAL_BACKOFF_MS
+    return typeof value === "number" && value > 0 ? value : 0
+  }
+
+  /** Remember that a stream was refused: no request for it until the window ends. */
+  private remember(artifact: LiveArtifact, identity: string): void {
+    const ms = this.backoffMs(artifact.typename)
+    if (this.disposed || ms === 0 || this.refused.has(identity)) return
+    const set =
+      this.options.setTimeout ??
+      ((callback: () => void, delay: number) => {
+        const timer = setTimeout(callback, delay)
+        // A window must not keep a Node process (SSR, tests) alive.
+        ;(timer as { unref?: () => void }).unref?.()
+        return timer
+      })
+    const handle = set(() => {
+      this.refused.delete(identity)
+      if (!this.disposed) this.reconcile()
+    }, ms)
+    this.refused.set(identity, { typename: artifact.typename, handle })
   }
 
   /**
@@ -273,6 +381,16 @@ export class LiveManager {
     }
     this.store.publish()
   }
+}
+
+/**
+ * What "a stream" is for remembering a refusal: the type's generated `Changed` subscription, and in
+ * `key` mode the record it is for. The chunk of keys in `keys` mode is left out on purpose: it
+ * changes whenever a list refresh changes the held records, which would make every refresh a new
+ * stream. The manager belongs to one client, and so to one identity, so identity is not part of it.
+ */
+function refusalIdentity(artifact: LiveArtifact, key: string): string {
+  return artifact.mode === "key" && key !== "all" ? `${artifact.typename}\u0000${key}` : artifact.typename
 }
 
 /** The `Key` value for a record: its single key, or an object of its composite key fields. */

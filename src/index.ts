@@ -10,8 +10,8 @@ export type {
   PagedSpec,
   Selection,
 } from "./artifact.js"
-export { LiveManager } from "./live.js"
-export type { LiveOptions, LiveTypeStatus, SubscriptionSink } from "./live.js"
+export { DEFAULT_REFUSAL_BACKOFF_MS, LiveManager } from "./live.js"
+export type { LiveOptions, LiveTypeStatus, RefusalBackoff, SubscriptionSink } from "./live.js"
 export {
   Client,
   DEFAULT_PAGE_SIZE,
