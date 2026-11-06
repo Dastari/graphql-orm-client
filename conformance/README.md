@@ -49,7 +49,7 @@ Recovery repeats reload, router kill and policy refusal followed by acceptance e
 times with both ws event scheduling modes. Browser reload and kill recovery each
 repeat eight times. Browser HTTP reads use a bridge to the same router so that CORS
 is independent of the WebSocket behaviour under test. Doctor invokes the built CLI
-against real router introspection and streams. Missing uses the real PageInfo type, which has no Changed stream. Invalid and
+against real router introspection and streams. `refused` uses `liveSelection: "as-written"`, whose stream selects NodeId. `fallback-not-refused` uses a computed field, so the server really refuses full and admits thin. Missing uses the real PageInfo type, which has no Changed stream. Invalid and
 required-key unknown deliberately alter the local schema snapshot; they do not
 simulate router responses. The required-key unknown path is a conservative doctor
 classification, not evidence that generated Changed streams require keys. Admission uses a real ORM update, while empty Keys remains quiet.
@@ -82,7 +82,7 @@ On Node 24.13.1, Rust 1.97.1 and Chromium 158.0.8127.18, a fresh Cargo target
 built and installed the service/router in 114.4 seconds. Registry and git source
 caches were already populated; this is not a fresh-machine download measurement.
 Cached build/install runs took 10.8–30.2 seconds. A complete cached run, including
-all 64 recovery cases and six doctor verdicts, took 121.8 seconds on the final run
+all 64 recovery cases and seven doctor verdicts, took 121.8 seconds on the final run
 (an earlier complete run took 111 seconds). The workflow's
 20-minute timeout allows for slower runners and downloads. GitHub Actions has not
 been observed; these are local measurements.
