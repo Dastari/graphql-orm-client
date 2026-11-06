@@ -92,7 +92,7 @@ client = createClient({
 `createHttpNetwork` takes `headers` (an object or a function called per request), `fetch` and
 `credentials`. A response with GraphQL errors is returned whatever its HTTP status; one without
 a GraphQL body throws `HttpError`. Commit mutations with `client.mutate`, or `useMutation` in
-React.
+React; pass `{ policy: "no-store" }` for a result that holds a one-time secret, so none of it is stored.
 
 A table that pages by number marks its list `@paged` and passes graphql-orm's `PageInput` as a
 variable. `usePagedQuery` sets its `Limit` and `Offset` from a zero-based page index and size,
