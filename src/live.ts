@@ -468,14 +468,19 @@ export class LiveManager {
         }
         const handle = this.after(() => {
           active.transition = null
-          // A failed candidate never costs the baseline its coverage.
-          const ready = [...wanted.keys()].every((key) => active.subscriptions.has(key))
+          // An open candidate stays even if another failed. A stream being replaced goes only once a
+          // wanted stream covers every held record it covers, so a failed candidate costs no coverage.
+          const covered = new Set<string>()
+          for (const key of wanted.keys()) {
+            if (active.subscriptions.has(key)) for (const id of active.coverage.get(key) ?? []) covered.add(id)
+          }
+          const heldNow = this.held().get(artifact.typename)
           for (const [key, stop] of [...active.subscriptions]) {
-            if (ready ? !wanted.has(key) : !baseline.has(key)) {
-              stop()
-              active.subscriptions.delete(key)
-              active.coverage.delete(key)
-            }
+            if (wanted.has(key)) continue
+            if ([...(active.coverage.get(key) ?? [])].some((id) => heldNow?.has(id) && !covered.has(id))) continue
+            stop()
+            active.subscriptions.delete(key)
+            active.coverage.delete(key)
           }
           if (confirm && this.options.settleMs !== false && !this.disposed) {
             this.queueConfirmation(holders)

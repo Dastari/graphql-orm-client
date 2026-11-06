@@ -153,6 +153,69 @@ describe("R4 overlap and confirming reads", () => {
     expect(c.clock.pending()).toHaveLength(0)
   })
 
+  it("a first subscribe past the router limit keeps the streams the router accepted", async () => {
+    const c = setup(undefined, 2, 32)
+    const keys = Array.from({ length: 70 }, (_, i) => String(i).padStart(3, "0"))
+    c.hold(keys)
+    expect(c.streams.open.size).toBe(32)
+    const accepted = [...c.streams.open]
+    await c.clock.tick(250)
+    expect(accepted.every((stream) => !stream.closed)).toBe(true)
+    expect(c.client.live!.status().Ticket?.backedOff).toBe(false)
+    expect(c.client.live!.overflows("Ticket")).toBe(true)
+    c.client.dispose()
+  })
+
+  it("one refused record in key mode leaves the other records' streams open", async () => {
+    const clock = createTestClock()
+    const streams = createMockStreams()
+    const { network } = mockNetwork(() => ({ data: catalog([]) }))
+    const client = createClient({ network, polling: clock.polling, store: clock.store,
+      live: { artifacts: { Widget: compiled.live.Widget! }, subscribe: (request, sink) => {
+        if (request.variables.Key === "refused") {
+          sink.error([{ message: "no", extensions: { code: "INVALID_INPUT" } }])
+          return () => {}
+        }
+        return streams.subscribe(request, sink)
+      }, debounceMs: 0, ...clock.live, onDiagnostic: null } })
+    client.live!.hold("manual", new Map([["Widget", new Set(["refused", "a", "b"].map((key) => encodeNodeId("Widget", [key])))]]))
+    client.live!.flush()
+    const opened = [...streams.open]
+    expect(opened).toHaveLength(2)
+    await clock.tick(250)
+    expect(opened.every((stream) => !stream.closed)).toBe(true)
+    client.dispose()
+  })
+
+  it("a partly failed replacement keeps the candidate that opened", async () => {
+    const c = setup(undefined, 2, 2)
+    c.hold(["a", "b"])
+    await c.clock.tick(250)
+    const [old] = [...c.streams.open]
+    c.hold(["a", "b", "c", "d", "e"])
+    // Chunk a,b is unchanged and one more chunk fits; the third is over the limit.
+    expect(c.streams.open.size).toBe(2)
+    const candidate = [...c.streams.open].find((stream) => stream !== old)!
+    await c.clock.tick(250)
+    expect(old!.closed).toBe(false)
+    expect(candidate.closed).toBe(false)
+    expect(c.client.live!.overflows("Ticket")).toBe(true)
+    c.client.dispose()
+  })
+
+  it("a stream being replaced stays until a wanted stream covers what it holds", async () => {
+    const c = setup(undefined, 3, 1)
+    c.hold(["a", "b"])
+    await c.clock.tick(250)
+    const old = c.streams.one("LiveTicket")
+    c.hold(["a", "b", "c"])
+    await c.clock.tick(250)
+    expect(old.closed).toBe(false)
+    expect(c.streams.open.size).toBe(1)
+    expect(c.client.live!.overflows("Ticket")).toBe(true)
+    c.client.dispose()
+  })
+
   it("bounds rapid replacements to a baseline and a candidate", async () => {
     const c = setup()
     c.hold(["b"])
