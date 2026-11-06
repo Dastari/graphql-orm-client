@@ -20,7 +20,7 @@ Status: partly built. Implemented and tested:
 - optimistic mutations, `no-store` mutations, interval polling, and the live polling fallback;
 - `@refetchable` fragments: `client.refetchFragment` and `useRefetchableFragment`.
 
-Proposed, not built: automatic list insertion after mutations, persistence, per-type
+Proposed, not built: persistence, per-type
 `staleMs`/`expiresField` policy, the `scope` store option, sending operations by persisted hash,
 batching writes per tick, refetching a parent on a `PROPAGATED` event, response size and time limits,
 and marking records stale after a failed lookup. Sections below label these. What the client still
@@ -226,8 +226,8 @@ The router counts both old and new operations against its connection limit (defa
 use the polling fallback, and replacement retries until capacity becomes available. Disable that
 fallback only if the application accepts stale uncovered records.
 
-The first load is **read, subscribe, confirming read**, because keys are unknown before the read
-and R3's list streams are not built. Queries whose records gained a stream read once more after
+For keyed record streams the first load is **read, subscribe, confirming read**, because keys
+are unknown before the read. Regenerated lists subscribe before the first read (R3 below). Queries whose records gained a stream read once more after
 `live.settleMs` (default 250 ms). These reads also cover newly subscribed keys during replacement,
 coalesce across types, and use `readAgain`: a read in flight is followed by one more. Queries whose
 records already have streams do not receive a confirming read. This adds a request per query on
@@ -303,7 +303,7 @@ Automatic stale, reconnect and R4 confirming reads share one per-query scheduler
 read and one trailing read when more marks arrive, no faster than `live.minRereadMs` (default 2000).
 A mark during a read follows it with one more, respecting the interval. While `polling.isActive()`
 is false it waits, checking every 100 ms, then runs once on return. Closing the query cancels pending
-work. Manual refetch and interval polls retain their own behavior. R3 list invalidation is proposed.
+work. Manual refetch and interval polls retain their own behavior. List invalidation shares this limiter (R3 below).
 
 In graphql-orm 0.90.1 and main `9d1a482`, `validate_subscription_selection` maps generated
 `RecordVersion` to the managed persisted column before validation. Its subscription policy still
@@ -469,8 +469,8 @@ await client.mutate(RenameWidgetMutation, { Id: id, Name: name }, {
   the real response or an error arrives, the layer is rolled back field by field, and the real
   response is written. A field that changed since (from a live event or another response) is not
   rolled back.
-- **Lists.** Inserting into or removing from a list is not automatic. Refetch the affected query
-  (`refetchQueries`), or rely on the live layer.
+- **Lists.** Regenerated list queries re-read on Changed events. For writes with no delivered event,
+  use `refetchQueries` or polling; the store does not guess membership or sorting.
 - **Refetching after.** `mutate(..., { refetchQueries: [TicketsPageQuery, "CatalogPage"] })` reads
   those open queries again once the mutation succeeds, and resolves after them.
   `client.refetchQueries([...])` does the same at any time, and `"active"` refetches every open query.
@@ -535,11 +535,11 @@ query CatalogScroll($Where: WidgetWhereInput, $Page: KeysetPageInput) {
 - **Loading more.** `loadMore()` (on `watchQuery` and `useQuery`) fetches the next page, with
   the paging variable's `after` set to the stored end cursor, and appends it.
 - **State.** `hasMore` and `loadingMore` are in the query state.
-- **Refreshing.** Refetching the first page (a refresh or poll) replaces the head and keeps the
-  pages loaded after it. The end cursor stays at the last loaded page.
+- **Refreshing.** Regenerated queries refresh the loaded range as described under R3 below.
+  Legacy artifacts replace the head and keep later pages and their end cursor.
 - **Offset input.** When the paging argument is graphql-orm's offset `PageInput` (`Limit`,
   `Offset`, no `after`), the compiler records it and `loadMore()` asks for `Offset` = the number of
-  rows loaded. A first-page refresh keeps the later rows, as for keyset lists; rows that moved
+  rows loaded. With legacy artifacts, a first-page refresh keeps later rows; rows that moved
   between pages can be missed or shown once, so give the root an order with a unique last key
   (`OrderBy: [..., { Id: ASC }]`).
 - **Field names** default to graphql-orm's: `Edges`, `Node`, `Cursor`, `PageInfo`, `EndCursor`,
@@ -754,3 +754,57 @@ The compiler is the largest time cost: local run medians ranged from
 The 30 s limit allows about four times the local median on shared runners.
 A missing browser fails with "window budget not run"; an explicit `--skip-window` reports
 incomplete and never counts as a pass. CI installs Chromium and does not skip.
+
+### List streams (R3)
+
+Regenerated query artifacts include `lists`, the entity types shown in root lists, connections,
+nested relation lists and count-only `PageInfo { TotalCount }` connections. Connection identity
+comes from the schema's `Edges.Node`, not the connection name. The generator emits a stream for
+count-only queries even when no live fragment selects the entity. Old artifacts without `lists`
+retain keyed record behavior until regenerated.
+
+Opening a query registers list interest before its first read, even for an empty list. While any
+list of a type is open, the type uses one un-narrowed stream; otherwise it returns to keyed streams
+and `maxKeyedSubscriptions` still applies. Replacement temporarily overlaps generations using R4.
+An un-narrowed stream costs the server a row-policy check per event per subscriber.
+`live.listStreams: false` opts out and lists poll. A schema requiring a key also forces lists to
+poll. Health reports `list-streams-disabled` or `list-key-required` and names the operation; with
+polling disabled it reports unavailable. Empty lists are `unconfirmed` until an event arrives.
+
+Every event of the type marks every open list query of that type stale. Unheld rows are never
+written to the store. Queries with neither a list of that type nor the changed record do not read.
+Stale, gap-recovery and confirming reads share `live.minRereadMs` (default 2000), including the
+inactive-query pause and single catch-up on return. A 100-event one-second burst produces two
+reads per query. Newly started list streams schedule a confirming read after `live.settleMs`;
+queries opening on an existing stream need none. With no subscribe acknowledgement this narrows
+the first-read gap and does not close it. `settleMs: false` disables confirming reads.
+
+`@paged` re-reads the current variables, so page 3 stays page 3. Regenerated `@connection` queries
+refresh the loaded range, including explicit refetch and polls. Offset connections request the
+loaded row count in one request, bounded by `live.maxRereadRows` (default 100, the generated
+service default maximum). Set this to the service's configured maximum: PageInfo does not expose
+it. Keyset connections follow returned EndCursor/HasNextPage page by page, bounded by
+`live.maxRereadPages` (default 10). Responses are assembled before publishing. Load-more and
+refresh serialize; the requested loaded range survives overlapping membership changes. Existing
+record identities survive, allowing application selection and scroll state to remain attached.
+
+If the bound prevents a complete refresh, the loaded tail stays and
+`QueryState.listRefreshTruncated` is true; health reports `list-refresh-truncated`, never healthy.
+That tail may be stale and its order is not guaranteed. Increase the bound or reopen a smaller
+range. This is not a snapshot across requests: concurrent server writes between keyset pages
+remain a server consistency limit. The existing pagination API manages the first `@connection`
+in a query; put independently managed connections in separate query owners.
+
+With a preimage grant, `DELETED` removes the held record and re-reads lists. Without
+`can_read_deleted_preimage`, graphql-orm sends no delete event; the next event or poll corrects
+the list. With polling disabled and no subsequent event, it may stay stale indefinitely.
+
+Validation against generated graphql-orm 0.90.1 and router 0.8.1: 8/8 runs with default Node `ws`
+and 8/8 with `allowSynchronousEvents: false`, using HTTP mutations from a second connection.
+Each verified first-row creation, filtered/sorted placement, filter entry/exit, TotalCount, page 3,
+and three loaded offset and keyset pages. Preimage deletes passed 16/16; one no-preimage delete
+stayed stale and repaired on the next update. With 40 held records and `maxKeys: 1`, a regenerated
+list used 1 stream with 0 capacity refusals; a legacy artifact hit 32 streams with 8
+SUBSCRIPTION_LIMIT_EXCEEDED refusals. Mocks cover bursts, inactive reads, version conflicts,
+identity disposal, collection, overlap, reconnect recovery and a load-more race. No browser or
+server-main run was performed for R3.

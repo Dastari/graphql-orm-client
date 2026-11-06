@@ -71,3 +71,20 @@ These go in each service, not in graphql-orm or the client:
 - Set `propagate_change = "up"` on relations whose parent views show child state.
 - Do not add hand-written `NodeId` fields, `node` resolvers or replacement subscriptions.
   Report the gap to graphql-orm instead.
+
+## R3 list validation and remaining pagination limits
+
+Run against generated graphql-orm 0.90.1 / router 0.8.1: 16/16 list acceptance runs (8 per
+Node ws delivery setting), real filtered/sorted creation, update, totals and both pagination forms.
+A list of 40 held rows used one stream with no operation-limit refusal; legacy `maxKeys: 1` used
+32 streams and received 8 capacity refusals. Every un-narrowed subscriber incurs a row-policy
+check for every event. One no-preimage deletion emitted nothing and repaired on the next event;
+preimage-enabled deletes corrected lists in 16/16 runs. No claim of delete visibility without that grant.
+
+The schema still gives no effective offset maximum or applied page size. The client exposes
+`live.maxRereadRows` (default 100) to match the service configuration, never infers an offset from
+short pages. Requests beyond that bound retain the loaded tail with explicit truncated state.
+Keyset refresh follows returned cursors, up to `maxRereadPages` (10), with the same retained-tail
+state. A repeatable snapshot across pages is not guaranteed by 0.90.1: writes during traversal
+can change ordering. Proposed server support: a snapshot/revision token for consistent multi-page
+reads. Subscribe acknowledgement and key-only delete notification remain server gaps above.
