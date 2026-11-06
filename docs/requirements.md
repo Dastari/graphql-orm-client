@@ -97,7 +97,7 @@ warning names a fragment whose data can't stay live.
 A stream with no event yet is `unconfirmed`, because a subscribe has no acknowledgement and unknown is
 never shown as healthy.
 *Acceptance:* the refused and unavailable states can be drawn with no consumer bookkeeping.
-*Built, unreleased:* `client.liveHealth()`, `subscribeLiveHealth`, `useLiveHealth`, `graphqlWsTransport` and
+*Built in 0.1.0-alpha.8:* `client.liveHealth()`, `subscribeLiveHealth`, `useLiveHealth`, `graphqlWsTransport` and
 `live.onDiagnostic`.
 
 **R8. A doctor command.** `graphql-orm-client doctor --url <router>`, with credentials from the
@@ -172,7 +172,7 @@ windows.
 **R20. A test kit.** `graphql-orm-client/test`: a mock transport keyed by operation name that validates
 against the schema, and scripted streams including refusal, continuity loss and reconnect, on a
 controllable clock. Consumers currently write these mocks themselves, and so can't test freshness.
-*Built, unreleased:* `createMockNetwork`, `createMockStreams`, `createTestClock`. The client's own tests run
+*Built in 0.1.0-alpha.8:* `createMockNetwork`, `createMockStreams`, `createTestClock`. The client's own tests run
 on it.
 
 **R21. Conformance against the real server.** CI runs an example graphql-orm service behind the router

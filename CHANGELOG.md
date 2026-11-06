@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.1.0-alpha.8 (2026-11-06)
+
+Install from the GitHub release archive:
+`pnpm add https://github.com/Dastari/graphql-orm-client/releases/download/v0.1.0-alpha.8/graphql-orm-client-0.1.0-alpha.8.tgz`.
+No artifact or generated-module change: no need to regenerate.
 
 - **Fix: a stream could stay down after a schema reload on Node (0.1.0-alpha.7).** The socket was closed while
   graphql-ws was still releasing the operation, which started its reconnect loop. On Node, where `ws` delivers
@@ -27,6 +31,20 @@
   `fail`, `end`, and `reconnect` for a recovery the transport makes by itself. `createTestClock()` fills the
   `live`, `store` and `polling` timer seams. It needs `graphql`, which is already a peer dependency, and no
   test runner. Nothing else changes.
+
+What it ran against: unit tests with mocks, and a real `graphql-orm-router` 0.8.1 built from the
+`graphql-orm-v0.90.1` tag, with real sockets and a test-owned subgraph, on Node and in headless Chromium.
+Not run against a generated graphql-orm service, or in Firefox or Safari. The test kit and the status API
+were tested with mocks; the status states were also read during the router runs.
+
+Migration from alpha.7 (from alpha.5 or alpha.6, follow alpha.7's steps as well):
+
+1. Nothing is required. Update the archive URL.
+2. Expect one console warning per fragment and reason for a `@live` fragment that can't stay live, outside
+   production. Pass `live: { onDiagnostic }` to send them elsewhere, or `null` to turn them off. A test that fails
+   on console output needs one of these.
+3. Optional: replace `subscribe: graphqlWsSubscribe(ws)` with `...graphqlWsTransport(ws)`, and remove any
+   `refetchActive` call from graphql-ws's `connected` event.
 
 ## 0.1.0-alpha.7 (2026-11-06)
 
