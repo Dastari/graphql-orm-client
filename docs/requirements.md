@@ -23,7 +23,6 @@ can't be noticed, the design isn't done.
 - `@live` on a type with no stream only adds it to `liveUnavailable`, and falls back to polling.
 - Nothing checks where a query is written, and `pollMs` is one option away.
 - Back-off for a refused stream exists (`live.refusalBackoff`, 0.1.0-alpha.6) but is off by default.
-- `client.live.status()` reports per type, but nothing lets a component draw it, and nothing warns.
 - The compiler adds `NodeId` to every stream selection on a type that has it, and `RecordVersion`
   where it exists. graphql-orm 0.91.1 refuses `NodeId` on a `Changed` payload, and a hand-written
   `RecordVersion` (R2).
@@ -98,6 +97,8 @@ warning names a fragment whose data can't stay live.
 A stream with no event yet is `unconfirmed`, because a subscribe has no acknowledgement and unknown is
 never shown as healthy.
 *Acceptance:* the refused and unavailable states can be drawn with no consumer bookkeeping.
+*Built, unreleased:* `client.liveHealth()`, `subscribeLiveHealth`, `useLiveHealth`, `graphqlWsTransport` and
+`live.onDiagnostic`.
 
 **R8. A doctor command.** `graphql-orm-client doctor --url <router>`, with credentials from the
 environment, checks every document against the served schema and opens each live operation briefly.

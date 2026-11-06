@@ -24,8 +24,8 @@ The client only works against graphql-orm services and their router.
 4. **Network.** Use `createHttpNetwork({ url })` for queries and mutations (a same-origin BFF
    where the project has one; pass `headers` or a wrapped `fetch` for auth). For subscriptions,
    create a graphql-ws client, authenticate it in `connectionParams`, and pass
-   `live: { artifacts: live, subscribe: graphqlWsSubscribe(ws) }`. In its `connected` event,
-   call `client.refetchActive()` when `wasRetry` is true: missed events aren't replayed yet.
+   `live: { artifacts: live, ...graphqlWsTransport(ws) }`. It reads open queries again after a
+   reconnect, because missed events aren't replayed yet.
    Write a custom `Network` only when the project needs something these don't do.
 5. **Provider.** Wrap the application in the React provider from `graphql-orm-client/react`.
 6. **Routes.** Each route that shows data owns one root query. Start it in the route loader

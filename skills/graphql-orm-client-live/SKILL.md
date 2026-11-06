@@ -1,6 +1,6 @@
 ---
 name: graphql-orm-client-live
-description: Keep graphql-orm-client data live with @live fragments and generated Changed subscriptions, back off from refused streams, order writes by record version, use polling fallbacks and diagnose stale data.
+description: Keep graphql-orm-client data live with @live fragments and generated Changed subscriptions, back off from refused streams, order writes by record version, use polling fallbacks, draw live status (useLiveHealth, liveHealth) and diagnose stale data.
 ---
 
 # Live data and cache policy
@@ -35,12 +35,20 @@ Status: early alpha. Check the installed `docs/design.md` and `docs/graphql-orm-
 - A `@live` stream that ends without the client asking restarts by itself, for any reason: a schema
   reload, lost events, a failed socket, a plain `complete`, a refusal. The queries that show the type
   then read again. Repeated ends back off to about once a minute (`live: { restart: { minMs, maxMs } }`).
-  Use `graphqlWsSubscribe`: after a schema reload it closes the retired socket, which a stream needs to
-  come back. A custom `live.subscribe` must do the same. Don't write your own restart, reconnect or
+  Use `graphqlWsTransport(ws)`, spread into `live`: after a schema reload it closes the retired socket,
+  which a stream needs to come back, and it reads open queries again after a socket recovers by itself. A
+  custom `live.subscribe` must get a fresh connection after `SUBSCRIPTION_SCHEMA_RELOAD`. Don't write your own restart, reconnect or
   refetch around a stream. `live: { restart: false }` is the old behaviour, where an ended stream stays
   down until the held records change; it exists for migration and can leave data stale.
-- `client.live.status()` shows it per type: `restarting`, `restartAttempts` and `lastEnd` (`reason`,
-  `code`, `at`).
+- To draw status, use `useLiveHealth(typename?)` or `client.liveHealth()`. Each type has a `state`: `live`,
+  `unconfirmed`, `connecting`, `polling`, `refused`, `unavailable` or `idle`; plus `reason`, `code`, `pollMs`,
+  `lastEventAt`, `lastReadAt`, `retryAt` and the `fragments` held. Draw `unconfirmed` as "no update yet", not
+  as healthy: a stream with no event can't be told from one nobody answered. A null time means it hasn't
+  happened. The socket is `unknown` without `graphqlWsTransport`.
+- A `@live` fragment that can't stay live warns once in development, naming the fragment. Send these
+  somewhere else with `live: { onDiagnostic }`; `null` turns them off.
+- Lower down, `client.live.status()` shows `restarting`, `restartAttempts` and `lastEnd` (`reason`, `code`,
+  `at`) per type.
 - For a stream the server refuses (GraphQL errors answering the subscribe, or an error-only frame then
   `complete`, before any event), `live: { refusalBackoff: true }` waits five minutes between attempts in
   place of the ordinary back-off, and `{ ms, types: { Type: ms | false } }` sets it per type. It reads
@@ -67,15 +75,17 @@ Status: early alpha. Check the installed `docs/design.md` and `docs/graphql-orm-
 2. Does the server emit `Changed` for that write? (Check that the write path goes through the
    ORM and that the relation propagates `up` if the change is on a child.)
 3. Is an older poll result overwriting a newer event? That requires a record version.
-4. Is the stream open? `client.live.status()` shows `held` and `subscriptions` per type. Records held
-   with no subscription mean it ended: `lastEnd.reason` says why, and `restarting` or `backedOff` says
-   what it is waiting for. With `restartAttempts` climbing and `reason: "unavailable"`, the socket is
-   stuck on a retired graph: use `graphqlWsSubscribe`, or close the socket in your own transport. With
+4. What does `client.liveHealth()` say? `state` and `reason` say what's wrong, and `fragments` which
+   fragments it affects. For detail, `client.live.status()` shows `held` and `subscriptions`, and
+   `lastEnd.reason` says why a stream ended. With `restartAttempts` climbing and `reason: "unavailable"`,
+   the socket is stuck on a retired graph: use `graphqlWsTransport`, or get a fresh connection in your own
+   transport. With
    `restart: false`, an ended stream stays down until the held records change, and nothing refetches.
 5. Was the stream refused? Common causes: a relation or computed field in a `@live` fragment, or
    `NodeId` on a graphql-orm older than the release that admits it. `versions: { Type: null }` stops
    the compiler selecting a version field the stream refuses.
-6. When graphql-ws reconnects by itself, did the application call `client.refetchActive()` from its
-   `connected` event? Missed events aren't replayed, and that reconnect doesn't end the stream. After
+6. When graphql-ws reconnects by itself, missed events aren't replayed and the stream doesn't end.
+   `graphqlWsTransport` reads again then; with `graphqlWsSubscribe`, the application calls
+   `client.refetchActive()` from the `connected` event. After
    `SUBSCRIPTION_CONTINUITY_LOST`, the client resubscribes and refetches by itself; if that happens
    often, a bulk writer is outrunning the server's `event_channel_capacity`.
