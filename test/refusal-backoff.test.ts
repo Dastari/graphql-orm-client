@@ -60,6 +60,7 @@ function setup(live: Partial<LiveOptions> = {}) {
   const { network } = mockNetwork(() => ({ data: { Widgets: { __typename: "WidgetConnection", Edges: [], PageInfo: null } } }))
   const options: LiveOptions = {
     artifacts: compiled.live,
+    settleMs: false,
     subscribe,
     debounceMs: 0,
     setTimeout: time.setTimeout,
@@ -360,6 +361,7 @@ describe("refused-stream back-off", () => {
         network,
         live: {
           artifacts: compiled.live,
+          settleMs: false,
           subscribe: (request, sink) => (sent++, subscriptions.subscribe(request, sink)),
           debounceMs: 0,
           refusalBackoff: true,
@@ -398,6 +400,7 @@ describe("refused-stream back-off", () => {
         network,
         live: {
           artifacts: compiled.live,
+          settleMs: false,
           subscribe: (request, sink) => (sent++, subscribe(request, sink)),
           debounceMs: 0,
           setTimeout: time.setTimeout,

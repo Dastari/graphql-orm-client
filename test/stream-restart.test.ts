@@ -32,6 +32,7 @@ function setup(live: Partial<LiveOptions> = {}, responder?: Parameters<typeof mo
     network,
     live: {
       artifacts: compiled.live,
+      settleMs: false,
       subscribe: (request, sink) => {
         subscribes += 1
         order.push(request.name)
@@ -260,6 +261,7 @@ describe("a stream that ends without the client asking", () => {
         },
         live: {
           artifacts: compiled.live,
+          settleMs: false,
           subscribe: subscriptions.subscribe,
           debounceMs: 0,
           ...time.live,
@@ -310,6 +312,7 @@ describe("a stream that ends without the client asking", () => {
         },
         live: {
           artifacts: compiled.live,
+          settleMs: false,
           subscribe: subscriptions.subscribe,
           debounceMs: 0,
           ...time.live,
