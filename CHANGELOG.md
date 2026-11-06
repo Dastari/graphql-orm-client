@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Add `pnpm budgets` and a separate CI job for R22: store, live-event notifications, large-schema
+  compilation, built entry sizes and real Chromium pop-out windows. No runtime API change.
+
 ## 0.1.0-alpha.9 (2026-11-06)
 
 Install from the GitHub release archive:

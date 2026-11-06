@@ -180,6 +180,10 @@ behaviour. Mocks can't prove a document is accepted.
 **R22. Budgets.** Checked in CI: 10,000 rows in the store, a burst of 100 events a second, the
 compile time of 250 documents against a 45,000-line schema, the bundle size of the main and react
 entry points, and the cost of one socket and store per window with pop-out tool windows open (R19).
+*Built:* `pnpm budgets` and the separate budgets CI workflow. Thresholds, baselines and margins
+are in `budgets/limits.json`; the method and one-machine window measurement are in
+[the design](design.md#several-windows-r19-and-budgets-r22). A skipped browser measurement is incomplete,
+never a pass.
 
 **R24. Release discipline.** While pre-1.0, every breaking change has migration steps in the changelog
 and a generator error or warning where one is possible. A behaviour change that alters what a working
