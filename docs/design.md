@@ -351,8 +351,13 @@ type: `restarting`, `restartAttempts`, and `lastEnd` with its `reason`, `code` a
   stream, and any other end waits for the next change to the held records, with nothing read. Data can
   stay stale indefinitely with it. `lastEnd` is still reported.
 
-This was exercised against a real `graphql-orm-router` 0.8.1 with a test-owned subgraph, in headless
-Chromium and on Node. A stream started with `client.subscribe` is the application's own and doesn't restart.
+The original recovery runs used a real router with a hand-written Node subgraph.
+R21 adds `pnpm conformance`: a generated SQLite service and router built from
+`graphql-orm-v0.90.1` (adfa608d, router 0.8.1), with repeated Node scheduling-mode
+and Chromium recovery assertions. Its NodeId admission test reproduces the current
+compiler/server mismatch; recovery removes NodeId from the stream document to test
+transport recovery independently. See [coverage and limits](../conformance/README.md),
+including descriptor catalogue gaps and deterministic ORM continuity channels. A stream started with `client.subscribe` is the application's own and doesn't restart.
 
 ### Live health
 

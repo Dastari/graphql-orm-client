@@ -178,6 +178,11 @@ on it.
 **R21. Conformance against the real server.** CI runs an example graphql-orm service behind the router
 and proves stream admission, keyed streams, continuity codes, node lookup, version ordering and list
 behaviour. Mocks can't prove a document is accepted.
+*Built:* `pnpm conformance`, separate from `pnpm check`, runs the SQLite example and router
+from `graphql-orm-v0.90.1` (router 0.8.1), with a version matrix in CI. It asserts admission,
+key modes, continuity frames, node lookup, managed version ordering and pagination, and repeats
+Node and Chromium recovery. See [the coverage and fixture limits](../conformance/README.md).
+A conformance failure remains a failure; this does not claim the proposed R2/R3 behaviour is built.
 
 **R22. Budgets.** Checked in CI: 10,000 rows in the store, a burst of 100 events a second, the
 compile time of 250 documents against a 45,000-line schema, the bundle size of the main and react

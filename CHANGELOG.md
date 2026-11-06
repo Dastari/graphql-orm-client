@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Add `pnpm conformance` and a CI version matrix for a SQLite graphql-orm example service
+  behind the real router, in this repository only. The suite checks admission, events, NodeIds, versions,
+  pagination, doctor verdicts and repeated Node and Chromium recovery. The default is
+  graphql-orm-v0.90.1 / router 0.8.1. No runtime API or migration change.
+
 ## 0.1.0-alpha.10 (2026-11-06)
 
 Install from the GitHub release archive:
