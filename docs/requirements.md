@@ -119,7 +119,9 @@ keeping such values out of persistence (R17) and any inspector.
 *Acceptance:* an operation declared sensitive leaves its values nowhere in the store, with no call-site
 option, and a test proves it.
 
-**R10. Honest write outcomes.** A mutation is sent once and never retried automatically. The result
+**R10. Honest write outcomes.** *Built:* opt-in `mutateOutcome` / `commitOutcome`, explicit reconciliation reads and independent HTTP write bounds. Refused/failed server evidence is a proposed contract addition; absent evidence remains unconfirmed.
+
+ A mutation is sent once and never retried automatically. The result
 separates **refused** (it didn't happen), **failed**, and **unconfirmed** (the connection was lost
 after sending, or the server committed and then refused the read-back, so it may have happened).
 Writes have their own deadline and response limit, apart from reads. A hook supports an explicit

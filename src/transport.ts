@@ -1,3 +1,4 @@
+import { WriteNotSentError } from "./outcome.js"
 import type { GraphQLResponse, Network, OperationRequest } from "./client.js"
 import type { LiveSocketState } from "./health.js"
 import type { LiveConnection, SubscriptionSink } from "./live.js"
@@ -13,6 +14,10 @@ export class HttpError extends Error {
 export interface HttpNetworkOptions {
   /** The router's GraphQL endpoint. */
   readonly url: string | URL
+  /** Opt-in read bounds; omitted fields preserve the previous unlimited behaviour. */
+  readonly reads?: { readonly deadlineMs?: number; readonly maxResponseBytes?: number }
+  /** Independent write bounds. No request is automatically retried. */
+  readonly writes?: { readonly deadlineMs?: number; readonly maxResponseBytes?: number }
   /** Defaults to the global `fetch`. Pass a wrapper to add retries, timeouts or logging. */
   readonly fetch?: typeof globalThis.fetch
   /** Extra headers, such as `authorization`; a function is called for every request. */
@@ -30,7 +35,14 @@ export function createHttpNetwork(options: HttpNetworkOptions): Network {
   const send = options.fetch ?? ((input, init) => globalThis.fetch(input, init))
   return {
     async execute(request: OperationRequest, { signal }) {
-      const extra = typeof options.headers === "function" ? await options.headers() : options.headers
+      let extra: HeadersInit | undefined
+      try {
+        extra = typeof options.headers === "function" ? await options.headers() : options.headers
+        if (signal?.aborted) throw signal.reason
+      } catch (error) { throw new WriteNotSentError(error) }
+      const bounds = request.kind === "mutation" ? options.writes : options.reads
+      const boundedSignal = bounds?.deadlineMs === undefined ? signal
+        : signal ? AbortSignal.any([signal, AbortSignal.timeout(bounds.deadlineMs)]) : AbortSignal.timeout(bounds.deadlineMs)
       const headers = new Headers(extra)
       headers.set("content-type", "application/json")
       headers.set("accept", "application/graphql-response+json, application/json;q=0.9")
@@ -39,9 +51,27 @@ export function createHttpNetwork(options: HttpNetworkOptions): Network {
         headers,
         credentials: options.credentials ?? "same-origin",
         body: JSON.stringify({ operationName: request.name, query: request.text, variables: request.variables }),
-        ...(signal ? { signal } : {}),
+        ...(boundedSignal ? { signal: boundedSignal } : {}),
       })
-      const body: unknown = await response.json().catch(() => null)
+      let body: unknown
+      if (bounds?.maxResponseBytes !== undefined) {
+        const reader = response.body?.getReader()
+        const chunks: Uint8Array[] = []
+        let length = 0
+        try {
+          while (reader) {
+            const next = await reader.read()
+            if (next.done) break
+            length += next.value.byteLength
+            if (length > bounds.maxResponseBytes) throw new Error("GraphQL response exceeds configured byte limit")
+            chunks.push(next.value)
+          }
+        } catch (error) { await reader?.cancel().catch(() => {}); throw error }
+        const joined = new Uint8Array(length)
+        let offset = 0
+        for (const chunk of chunks) { joined.set(chunk, offset); offset += chunk.length }
+        try { body = JSON.parse(new TextDecoder().decode(joined)) } catch { body = null }
+      } else body = await response.json().catch(() => null)
       if (!isResponse(body) || (!response.ok && !body.errors?.length)) throw new HttpError(response.status)
       return body
     },

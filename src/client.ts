@@ -1,3 +1,4 @@
+import { WriteNotSentError, writeStatus, type WriteOutcome } from "./outcome.js"
 import type { ConnectionSpec, FragmentArtifact, FragmentRefFor, LinkSelection, OperationArtifact, PagedSpec, Selection } from "./artifact.js"
 import { fieldStorageKey, stableStringify, type Variables } from "./store/arguments.js"
 import { contextOf, normalize } from "./store/normalize.js"
@@ -961,6 +962,8 @@ export class Client {
        * alive. Mutations only (see `mutate`'s `policy: "no-store"`).
        */
       isolated?: boolean
+      observeResponse?: (response: GraphQLResponse) => void
+      beforeSend?: () => void
     } = {}
   ): Promise<{ snapshot: Snapshot<T>; errors: readonly GraphQLErrorLike[] }> {
     if (this.store.isDisposed) throw new Error("This client was disposed with its identity")
@@ -974,12 +977,14 @@ export class Client {
     try {
       // A request cancelled before it starts is never sent.
       if (controller.signal.aborted) throw new DOMException("The request was cancelled", "AbortError")
+      options.beforeSend?.()
       const response = await this.network.execute(
         { kind: artifact.kind, name: artifact.name, text: artifact.text, hash: artifact.hash, variables },
         { signal: controller.signal }
       )
       if (this.store.isDisposed || controller.signal.aborted)
         throw new DOMException("The request was cancelled", "AbortError")
+      options.observeResponse?.(response)
       const errors = response.errors ?? []
       options.beforeWrite?.()
       if (!response.data) throw new OperationError(artifact.name, errors)
@@ -1104,6 +1109,10 @@ export class Client {
       refetchQueries?: readonly (OperationArtifact<any, any> | string)[]
       /** `store` (default) or `no-store`: return the response without writing any of it into the store. */
       policy?: MutationPolicy
+      /** Observe certainty without changing this method's returned/thrown behaviour. */
+      onOutcome?: (outcome: WriteOutcome) => void
+      /** Explicit read for known affected records after an unconfirmed write; never a write replay. */
+      reconcile?: () => Promise<unknown>
     } = {}
   ): Promise<{ data: T; errors: readonly GraphQLErrorLike[] }> {
     if (artifact.kind !== "mutation") throw new Error(`${artifact.name} is not a mutation`)
@@ -1126,18 +1135,54 @@ export class Client {
       layer = null
     }
     let result: { data: T; errors: readonly GraphQLErrorLike[] }
+    let sent = false
+    let response: GraphQLResponse | undefined
+    let failure: unknown
     try {
       const { snapshot, errors } = await this.execute<T>(artifact, variables, {
+        observeResponse: value => { response = value },
+        beforeSend: () => { sent = true },
         beforeWrite: rollback,
         ...(isolated ? { isolated } : {}),
         ...(options.signal ? { signal: options.signal } : {}),
       })
       result = { data: snapshot.data, errors }
+    } catch (error) {
+      failure = error
+      throw error
     } finally {
       rollback()
+      const status = response ? writeStatus(response)
+        : failure instanceof WriteNotSentError || !sent ? "failed" : "unconfirmed"
+      let reconciliation: WriteOutcome["reconciliation"] = status === "unconfirmed" ? "unavailable" : "not-needed"
+      if (status === "unconfirmed" && options.reconcile && !this.store.isDisposed) {
+        try { await options.reconcile(); reconciliation = "reread" }
+        catch { reconciliation = "failed" }
+      }
+      options.onOutcome?.({ status, reconciliation })
     }
     if (options.refetchQueries?.length) await this.refetchQueries(options.refetchQueries)
     return result
+  }
+
+  /**
+   * Opt into explicit write certainty. Never retries; call again with fresh variables after
+   * authentication. Supply a reconciliation read for known records, such as refetchFragment.
+   */
+  async mutateOutcome<T, V extends Variables>(
+    artifact: OperationArtifact<T, V>, variables: V,
+    options: NonNullable<Parameters<Client["mutate"]>[2]> = {}
+  ): Promise<{ data?: T; errors: readonly GraphQLErrorLike[]; error?: unknown; outcome: WriteOutcome }> {
+    let outcome: WriteOutcome = { status: "failed", reconciliation: "not-needed" }
+    try {
+      const result = await this.mutate(artifact, variables, { ...options, onOutcome: value => {
+        outcome = value
+        options.onOutcome?.(value)
+      } })
+      return { ...result, outcome }
+    } catch (error) {
+      return { error, errors: error instanceof OperationError ? error.errors : [], outcome }
+    }
   }
 
   /**

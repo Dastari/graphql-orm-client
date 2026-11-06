@@ -758,3 +758,34 @@ reject them because those retain results. Sensitive mutations reject optimistic 
 Live fragments anywhere in a sensitive operation, and operation-level `@live`, fail the build.
 Persistence is proposed (R17); it must exclude these results. Callers own the returned values
 and must avoid logging or retaining secrets themselves. No server change is required.
+
+### Write certainty (R10)
+
+`client.mutateOutcome` and React `useMutation(...).commitOutcome` return an outcome even
+when legacy `mutate` / `commit` would throw; those existing APIs still return or throw as before.
+Statuses are `confirmed`, `refused`, `failed`, `unconfirmed`. No write is retried.
+After step-up authentication call `commitOutcome` again explicitly with fresh variables;
+the hook queues no replay and holds no credential. Supply `reconcile: () => client.refetchFragment(F, ref)`
+(or an explicit network-only query) for known affected records. Unconfirmed writes await that read
+and report `reread`, `failed`, or `unavailable` when no record/read is known.
+A re-read observes current state; it does not prove this write committed.
+
+The classifier requires evidence: all selected root results with `Success: true` and no errors
+confirm a write. Explicit server `extensions.outcome: "refused"` / `"failed"` distinguish those
+outcomes; these two signals are proposed server contract additions and tested with mocks.
+Transport evidence of no send (`WriteNotSentError`) or cancellation before sending is failed.
+Connection loss, cancellation after send, HTTP errors, partial errors and GraphQL `data: null`
+are unconfirmed. Neither HTTP status nor error message text proves a refusal. Missing Success,
+`Success: false`, and mixed multi-root outcomes are conservatively unconfirmed.
+
+Source checked: graphql-orm tag `graphql-orm-v0.90.1`, router 0.8.1:
+runtime/mutation.rs marks post-commit payload denial/failure/timeout with
+`extensions.outcome: "committed", retryable: false`; outcome unknown also forbids automatic retry.
+Generated operations.rs uses boolean Success and free-form Error; these are insufficient for
+uniform refusal classification. No client inference from error text is used.
+
+HTTP limits are opt-in to preserve existing applications: configure
+`createHttpNetwork({ url, writes: { deadlineMs: 15000, maxResponseBytes: 1048576 } })`.
+`reads` has independent bounds; omitted bounds retain unlimited behaviour.
+Limits cover response streaming and are not mutation retries. Custom networks must implement
+their own bounds and must not automatically retry mutations.
