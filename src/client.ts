@@ -338,6 +338,9 @@ class QueryResource<T> implements WatchedQuery<T> {
     this.users -= 1
     if (this.users > 0) return
     this.users = 0
+    if (this.rereadTimer !== null) this.client.cancelReread(this.rereadTimer)
+    this.rereadTimer = null
+    this.rereadPending = false
     this.schedulePoll()
     // Forget the request as well: a reopen in the same tick (React's StrictMode replays effects)
     // must start a new one, not wait on this one, whose result is dropped.
@@ -446,21 +449,45 @@ class QueryResource<T> implements WatchedQuery<T> {
     return this.inflight
   }
 
-  private readAgainAfter = false
+  private rereadWaiting = false
+  private rereadPending = false
+  private rereadTimer: unknown = null
+  private rereadAt = -Infinity
 
-  /**
-   * Read again after a stream restarted. A read already under way may have been answered before the
-   * gap ended, so its result doesn't count: one more read follows it.
-   */
+  /** Mark stale, coalescing bursts and following an in-flight read with one more. */
   readAgain(): void {
-    if (!this.inflight) return void this.fetch()
-    if (this.readAgainAfter) return
-    this.readAgainAfter = true
-    const finish = () => {
-      this.readAgainAfter = false
-      if (this.users > 0 && !this.client.store.isDisposed) void this.fetch()
+    this.rereadPending = true
+    this.drainReread()
+  }
+
+  private drainReread(): void {
+    if (this.rereadWaiting || !this.rereadPending || this.rereadTimer !== null || this.users === 0 || this.client.store.isDisposed) return
+    const delay = Math.max(0, this.rereadAt + this.client.minRereadMs - this.client.now())
+    const active = (this.client.polling.isActive ?? defaultActive)()
+    if (delay > 0 || !active) {
+      this.rereadTimer = this.client.afterReread(() => {
+        this.rereadTimer = null
+        this.drainReread()
+      }, Math.max(delay, active ? 0 : 100))
+      return
     }
-    void this.inflight.then(finish, finish)
+    if (this.inflight) {
+      this.rereadWaiting = true
+      void this.inflight.finally(() => {
+        this.rereadWaiting = false
+        this.drainReread()
+      })
+      return
+    }
+    this.rereadPending = false
+    this.rereadAt = this.client.now()
+    void this.fetch()
+  }
+
+  /** Whether a projection omits something selected by this query's held fragments. */
+  needsEventReread(typename: string, thin: boolean, fragments: readonly string[]): boolean {
+    const holding = this.liveHoldings.get(typename)
+    return !!holding && (thin || this.artifact.liveReread?.includes(typename) === true || fragments.some((name) => this.artifact.fragments[name] !== undefined))
   }
 
   private watch(snapshot: Snapshot<T>): void {
@@ -679,12 +706,34 @@ export class Client {
           (timing) => this.healthChanged(timing),
           () => {
             for (const resource of this.resources.values()) resource.refreshFallbackPoll()
+          },
+          (holders, typename, thin, fragments) => {
+            for (const resource of this.resources.values()) {
+              if (holders.has(resource.key) && resource.needsEventReread(typename, thin, fragments)) resource.readAgain()
+            }
           }
         )
       : null
+    this.rereadOptions = options.live
+    this.minRereadMs = Math.max(1, options.live?.minRereadMs ?? 2000)
     this.clock = options.live?.now ?? Date.now
     const fallback = options.live?.onDiagnostic === undefined ? defaultDiagnostic : options.live.onDiagnostic
     this.onDiagnostic = fallback
+  }
+
+  /** Interval for automatic stale and confirming reads. */
+  readonly minRereadMs: number
+  private readonly rereadOptions: LiveOptions | undefined
+  /** Schedule a stale-read check on the live clock. */
+  afterReread(callback: () => void, ms: number): unknown {
+    if (this.rereadOptions?.setTimeout) return this.rereadOptions.setTimeout(callback, ms)
+    const timer = setTimeout(callback, ms)
+    timer.unref?.()
+    return timer
+  }
+  /** Cancel a pending stale-read check. */
+  cancelReread(handle: unknown): void {
+    (this.rereadOptions?.clearTimeout ?? clearTimeout)(handle as ReturnType<typeof setTimeout>)
   }
 
   private readonly clock: () => number

@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- Generate flattened full/thin live projections. Unsupported full selections fall back to keys only;
+  events re-read holders for omitted fields and changed relation links. Health retains
+  `selection-refused`, and doctor distinguishes admitted/quiet fallback. Quiet fallback fails strict
+  mode; working fallback otherwise passes.
+- Automatic stale, restart and R4 confirming reads share `live.minRereadMs` (default 2000). Repeated
+  confirmations from changing query membership are bounded, and inactive queries catch up on return.
+- Infer composite keys from `<Type>KeyInput` and build key arguments from stored fields.
+
+Migration: before regeneration, set `liveSelection: "as-written"` to retain previous stream text,
+then review generator warnings naming excluded fragment fields. Existing generated modules keep
+legacy behavior without a version bump. To adopt projections, remove the setting and regenerate.
+Re-pull older schema snapshots for composite keys: schema pull now preserves KeyInput primary-key
+order instead of sorting those fields; retain explicit ordered `keys` overrides for snapshots whose
+original order is unavailable. Review `live.minRereadMs` if automatic re-read timing matters, and run
+doctor against the deployed identity. Managed RecordVersion remains in full; thin streams carry no
+version and use last-arrival-wins when neither write carries one.
+
 - R4: stable key chunks, bounded stream overlap, and confirming reads for newly subscribed records.
   A failed replacement retains the old streams. Router operation-limit errors retry with ordinary
   back-off, retaining old coverage and polling uncovered records until capacity becomes available.

@@ -1,7 +1,6 @@
 import type { LiveArtifact, LiveMode } from "./artifact.js"
 import type { GraphQLResponse, OperationRequest } from "./client.js"
 import type { LiveDiagnostic, LiveSocketState } from "./health.js"
-import { decodeNodeId } from "./node-id.js"
 import { contextOf, identify, normalize } from "./store/normalize.js"
 import type { Store } from "./store/store.js"
 
@@ -75,6 +74,8 @@ export interface LiveConnection {
 }
 
 export interface LiveOptions {
+  /** Minimum interval between automatic re-reads of a query. Default 2000 ms. */
+  readonly minRereadMs?: number
   /**
    * Compiled live artifacts per type (`compile(...).live`). Leave it out to use `subscribe` only
    * for plain subscriptions (`client.subscribe`).
@@ -143,6 +144,8 @@ export interface LiveOptions {
 }
 
 export interface LiveTypeStatus {
+  /** Full projection was refused; this client uses keys only. */
+  readonly selectionRefused?: boolean
   readonly mode: LiveMode
   readonly held: number
   readonly subscriptions: number
@@ -240,6 +243,7 @@ interface RestartState {
  * `@live` fragments currently hold, and writes each event's entity into the store.
  */
 export class LiveManager {
+  private readonly thin = new Set<string>()
   private readonly holders = new Map<string, Targets>()
   private readonly active = new Map<string, ActiveType>()
   private timer: unknown = null
@@ -260,7 +264,8 @@ export class LiveManager {
     private readonly options: LiveOptions,
     private readonly resync: (holders: ReadonlySet<string>) => void = () => {},
     private readonly onChange: (timing?: boolean) => void = () => {},
-    private readonly onRefusalChange: () => void = () => {}
+    private readonly onRefusalChange: () => void = () => {},
+    private readonly onEvent: (holders: ReadonlySet<string>, typename: string, thin: boolean, fragments: readonly string[]) => void = () => {}
   ) {
     this.artifacts = options.artifacts ?? {}
     this.disconnect =
@@ -318,6 +323,7 @@ export class LiveManager {
         return [
           artifact.typename,
           {
+            selectionRefused: this.thin.has(artifact.typename),
             mode: artifact.mode,
             held: held.get(artifact.typename)?.size ?? 0,
             subscriptions: active?.subscriptions.size ?? 0,
@@ -402,7 +408,7 @@ export class LiveManager {
           if (ids.length > max && artifact.keyOptional) {
             wanted.set("all", {})
           } else {
-            for (const id of ids.slice(0, max)) wanted.set(id, { [artifact.keyArgument!]: keyValue(artifact, id) })
+            for (const id of ids.slice(0, max)) wanted.set(id, { [artifact.keyArgument!]: keyValue(this.store, artifact, id) })
             active.overflow = Math.max(0, ids.length - max)
           }
         } else {
@@ -421,11 +427,14 @@ export class LiveManager {
           for (const chunk of active.chunks) {
             if (!chunk.size) continue
             const keys = [...chunk].sort()
-            wanted.set(`keys:${keys.join(",")}`, { [artifact.keyArgument!]: keys.map((id) => keyValue(artifact, id)) })
+            wanted.set(`keys:${keys.join(",")}`, { [artifact.keyArgument!]: keys.map((id) => keyValue(this.store, artifact, id)) })
           }
         }
       }
-      if (active.subscriptions.has("all")) active.coverage.set("all", new Set(ids))
+      if (this.thin.has(artifact.typename)) {
+        for (const [key, variables] of [...wanted]) { wanted.delete(key); wanted.set(`thin:${key}`, variables) }
+      }
+      for (const key of ["all", "thin:all"]) if (active.subscriptions.has(key)) active.coverage.set(key, new Set(ids))
       const heldIds = new Set(ids)
       for (const [key, stop] of [...active.subscriptions]) {
         if (![...(active.coverage.get(key) ?? [])].some((id) => heldIds.has(id))) {
@@ -449,9 +458,10 @@ export class LiveManager {
       let started = false
       for (const [key, variables] of wanted) {
         if (active.subscriptions.has(key)) continue
+        const rawKey = key.replace(/^thin:/, "")
         const covered = artifact.mode === "keys"
-          ? new Set(active.chunks.find((chunk) => key === `keys:${[...chunk].sort().join(",")}`))
-          : new Set(key === "all" ? ids : [key])
+          ? new Set(active.chunks.find((chunk) => rawKey === `keys:${[...chunk].sort().join(",")}`))
+          : new Set(rawKey === "all" ? ids : [rawKey])
         active.coverage.set(key, covered)
         this.start(artifact, active, key, variables)
         if (!active.subscriptions.has(key)) {
@@ -513,7 +523,10 @@ export class LiveManager {
   }
 
   private start(artifact: LiveArtifact, active: ActiveType, key: string, variables: Record<string, unknown>): void {
-    const { operation } = artifact
+    const isThin = key.startsWith("thin:")
+    if (this.thin.has(artifact.typename) && !isThin) return
+    const operation = isThin ? artifact.thinOperation! : artifact.operation
+    const selected = { ...artifact, operation }
     const identity = refusalIdentity(artifact, key)
     // A refused stream is not asked for again until its window ends; the end of the window
     // reconciles, so it starts again by itself if the records are still held.
@@ -536,7 +549,10 @@ export class LiveManager {
         active.coverage.delete(key)
       }
       stop()
-      this.ended(artifact, identity, reason, code)
+      if (reason === "refused" && code === "INVALID_INPUT" && artifact.thinOperation && !isThin) {
+        this.thin.add(artifact.typename)
+        this.schedule()
+      } else this.ended(artifact, identity, reason, code)
       this.onRefusalChange()
       this.onChange()
     }
@@ -550,7 +566,7 @@ export class LiveManager {
           if (hasCode(errors, CONTINUITY_CODES) || hasCode(errors, RELOAD_CODES)) return end(reasonFor(errors, delivered), firstCode(errors))
           if (response.data) delivered = true
           else if (errors.length) answered = errors
-          this.receive(artifact, response, variables)
+          this.receive(selected, response, variables, isThin)
         },
         error: (failure) => {
           const errors = graphQLErrorsOf(failure)
@@ -688,7 +704,7 @@ export class LiveManager {
     this.onChange(true)
   }
 
-  private receive(artifact: LiveArtifact, response: GraphQLResponse, variables: Record<string, unknown>): void {
+  private receive(artifact: LiveArtifact, response: GraphQLResponse, variables: Record<string, unknown>, thin = false): void {
     if (this.disposed || this.store.isDisposed) return
     const payload = response.data?.[artifact.field] as Record<string, unknown> | null | undefined
     const entity = payload?.[artifact.entityField] as Record<string, unknown> | null | undefined
@@ -710,6 +726,13 @@ export class LiveManager {
       for (const embeddedId of embedded) if (embeddedId.startsWith(`${root}.`)) this.store.delete(embeddedId)
     }
     this.store.publish()
+    if (artifact.thinOperation) {
+      const holders = new Set<string>()
+      for (const [holder, targets] of this.holders) {
+        if (targets.get(artifact.typename)?.has(id)) holders.add(holder)
+      }
+      this.onEvent(holders, artifact.typename, thin, artifact.rereadFragments ?? [])
+    }
   }
 }
 
@@ -724,9 +747,9 @@ function refusalIdentity(artifact: LiveArtifact, key: string): string {
 }
 
 /** The `Key` value for a record: its single key, or an object of its composite key fields. */
-function keyValue(artifact: LiveArtifact, id: string): unknown {
-  const decoded = decodeNodeId(id)
-  if (!decoded) throw new Error(`Not a NodeId: ${id}`)
-  if (artifact.keyFields.length === 1) return decoded.keyParts[0]
-  return Object.fromEntries(artifact.keyFields.map((field, index) => [field, decoded.keyParts[index]]))
+function keyValue(store: Store, artifact: LiveArtifact, id: string): unknown {
+  const record = store.get(id)
+  const values = artifact.keyFields.map((field) => record?.fields.get(field))
+  if (values.some((value) => value === undefined)) throw new Error(`Missing stored key fields for ${artifact.typename}`)
+  return values.length === 1 ? values[0] : Object.fromEntries(artifact.keyFields.map((field, i) => [field, values[i]]))
 }

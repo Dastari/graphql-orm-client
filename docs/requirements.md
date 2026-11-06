@@ -17,22 +17,13 @@ can't be noticed, the design isn't done.
 ## Verified gaps in the current code
 
 - `@live` is opt-in per fragment, so it can be forgotten.
-- The compiler spreads a `@live` fragment into the stream unchanged, relations and computed fields
-  included. The build passes and the server can refuse the stream at runtime.
 - `@live` only updates records already held. New rows, removed rows and changed totals need a poll.
 - `@live` on a type with no stream only adds it to `liveUnavailable`, and falls back to polling.
 - Nothing checks where a query is written, and `pollMs` is one option away.
-- The compiler adds `NodeId` to every stream selection on a type that has it, and `RecordVersion`
-  where it exists. graphql-orm 0.91.1 refuses `NodeId` on a `Changed` payload, and a hand-written
-  `RecordVersion` (R2).
 - A stream narrowed by `Keys` or `Key` can't see a new row, or a row moving into a filtered list, so
   R3 needs a stream that isn't narrowed.
 - `DELETED` reaches subscribers only when the host grants `can_read_deleted_preimage`, so a row deleted
   elsewhere usually sends nothing (R3, R16).
-- `key` mode decodes the `NodeId` to build the `Key` argument (`keyValue` in `src/live.ts`), though
-  `AGENTS.md` says clients never parse it.
-- Composite keys on a type with `NodeId` still need `keys` configuration to go live, though the
-  schema's `<Type>KeyInput` names them.
 
 ## 1. Staying live without thinking about it
 
@@ -42,12 +33,16 @@ applications migrate one area at a time, and goes away at 1.0. Accepted by the o
 and R6 hold; check with the owner before turning it on.
 *Acceptance:* a new fragment with no directive updates from a stream.
 
-**R2. The compiler decides what goes in a stream.** Only fields the stream can carry are selected:
-scalars and relation keys. A related record is kept current by its own stream. Computed and
-federated fields are refreshed by a refetch of the record, so they need the server to mark them
-(contract table below).
-*Acceptance:* the natural row fragment, with a relation and a computed field, compiles to a stream
-that the server accepts, and all of its fields stay current.
+**R2. The compiler decides what goes in a stream. Built.** Full projections carry keys,
+version and scalars without arguments; thin projections carry keys only. Relations/composites and
+`NodeId` never enter a new stream. `INVALID_INPUT` switches a type to thin for this client, with
+health reason `selection-refused`. Omitted fields and changed relation links refresh through bounded
+holder re-reads (`live.minRereadMs`, default 2000), including R4 confirmation. Composite keys come
+from `<Type>KeyInput`; key arguments read stored fields. `liveSelection: "as-written"` and old
+artifacts preserve legacy selection/refusal behavior. A server marker remains proposed, not required.
+*Acceptance:* the natural row fragment with a relation and computed field falls back to an accepted
+thin stream and refreshes all fields. Verified 8/8 runs per `ws` setting (16 total), against generated
+graphql-orm 0.90.1 and router 0.8.1, including actual admission refusal and a changed relation link.
 
 **R3. Lists stay correct.** When a `Changed` event of the type arrives, or a stream resumes, a list
 query re-reads what it has on screen, in the same order. This covers new rows, removed rows,

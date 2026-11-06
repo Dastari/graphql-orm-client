@@ -14,7 +14,7 @@ import type { LiveEnd, LiveTypeStatus } from "./live.js"
 export type LiveState = "live" | "unconfirmed" | "connecting" | "polling" | "refused" | "unavailable" | "idle"
 
 /**
- * Why a type isn't `live`.
+ * Why coverage is degraded (thin fallback can still deliver live events).
  * - `no-live-layer`: the client was created without `live`.
  * - `no-stream`: a `@live` fragment's type has no usable `Changed` subscription.
  * - `selection-refused`: the server refused the stream with `INVALID_INPUT`, the code it gives for a
@@ -31,7 +31,7 @@ export type LiveSocketState = "connected" | "connecting" | "closed" | "unknown"
 
 export interface LiveTypeHealth {
   readonly state: LiveState
-  /** Null when `live`, `unconfirmed` or `idle`, or for a stream simply starting up. */
+  /** Null when coverage has no known limitation, or when idle/starting. Thin retains selection-refused. */
   readonly reason: LiveReason | null
   /** The server's `extensions.code` behind `reason`, when it gave one. Null when there's no `reason`. */
   readonly code: string | null
@@ -142,7 +142,7 @@ export function typeHealth(status: LiveTypeStatus | undefined, holdings: readonl
     return { ...base, state: "connecting", reason: null }
   }
   if (options.socket === "closed" || options.socket === "connecting") return { ...base, state: "connecting", reason: "socket-down" }
-  return { ...base, state: status.confirmed ? "live" : "unconfirmed", reason: null }
+  return { ...base, state: status.confirmed ? "live" : "unconfirmed", reason: status.selectionRefused ? "selection-refused" : null }
 }
 
 export const IDLE_TYPE_HEALTH: LiveTypeHealth = {

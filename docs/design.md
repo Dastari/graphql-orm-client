@@ -102,7 +102,7 @@ render records one component at a time.
 ## Schema snapshots
 
 `graphql-orm-client schema pull --url <router>` uses only introspection and writes the configured
-`schema` path as lexicographically sorted SDL. A SHA-256 of its exact bytes lives beside it in
+`schema` path as lexicographically sorted SDL (except `<Type>KeyInput` fields, whose key order is preserved). A SHA-256 of its exact bytes lives beside it in
 `<schema>.sha256`; a sidecar keeps the SDL usable by ordinary GraphQL tools. Commit both files.
 `schema pull --check` compares both without writing and names differing paths. Unreachable servers
 are unknown, never a match. Credentials use `--token-env NAME` or repeated
@@ -131,7 +131,7 @@ artifact per root:
 - **Fragment readers.** One per fragment: the fields to read from the store and the child
   fragment references to hand down.
 - **Live subscription document.** For roots that contain `@live` fragments, a subscription
-  whose selection is the union of those fragments for each type.
+  with full and keys-only projections for each type; legacy generation can retain fragment spreading.
 - **Types.** TypeScript result, variable and fragment-reference types.
 
 The compiler validates the documents against the router's schema snapshot. A fragment on a
@@ -240,13 +240,14 @@ confirming timers, closes both generations, and prevents late event writes.
 1. **Collect.** After a root's query resolves, the live layer collects the `NodeId`s of
    records read by `@live` fragments that are still retained.
 2. **Subscribe.** It subscribes to each type's generated `<Entity>Changed` subscription for
-   those keys, with the union selection from the compiler (see [Live modes](#live-modes)). That
-   selection is the fragments as written, plus `NodeId` and `RecordVersion`. The server refuses the
-   whole stream if any field in it isn't a persisted, subscribable scalar, so one relation or computed
-   field in one fragment stops updates for every fragment of the type. See R2.
-3. **Write.** It writes each event's entity into the store, ordered by version. A `PROPAGATED`
-   event is written like any other. Proposed: refetching the parent's fields computed from its
-   children.
+   those keys, with a flattened full projection: keys, version and scalars without arguments.
+   Relations, composite fields and `NodeId` are excluded. An `INVALID_INPUT` refusal switches the
+   type to its keys-only thin projection for the lifetime of this client; thin refusal uses the
+   normal refusal window. Health retains reason `selection-refused` while using thin.
+3. **Write and mark stale.** An event writes what it carries, ordered by version. A holder whose
+   fragments select omitted fields re-reads, including when a relation link changes. Every thin
+   event re-reads holders. Without a carried version, writes remain last-arrival-wins.
+
 4. **Recover.** graphql-orm (0.88) ends a `Changed` stream that lost events with one error,
    `SUBSCRIPTION_CONTINUITY_LOST` (the subscriber fell behind the event channel) or
    `SUBSCRIPTION_SOURCE_CLOSED`. After a random delay below `live.resyncJitterMs` (default
@@ -278,6 +279,31 @@ by name. Types with `@live` fragments but no usable subscription are listed in
 `compile(...).liveUnavailable`, and their holders must poll. `client.live.status()` reports
 per-type counts, including overflow beyond the `key`-mode limit. A `DELETED` event removes the
 record, and any query that showed it reads again.
+
+### Stream projections and re-read scheduling
+
+New generation emits `LiveArtifact.operation` (full), `thinOperation` (keys only), and
+`rereadFragments` (fragments selecting fields the full stream omits). Operations also carry
+`liveReread` for omitted fields selected directly in the query. Streams never select
+`NodeId`; the store encodes identity from complete key fields, using shared NodeId vectors.
+Composite keys use `<Type>KeyInput` field order. `schema pull` preserves that order while sorting
+other fields. Re-pull old sorted snapshots before regenerating composite types, or retain an
+explicit ordered `keys` override. A server must preserve primary-key order in this input.
+
+`liveSelection: "as-written"` in generator config preserves previous subscription text. Generation
+warns, naming each fragment and field the new projection would exclude. Old artifacts without
+`thinOperation` retain their subscription and refusal behavior; no artifact version bump is needed.
+
+Automatic stale, reconnect and R4 confirming reads share one per-query scheduler. It runs a leading
+read and one trailing read when more marks arrive, no faster than `live.minRereadMs` (default 2000).
+A mark during a read follows it with one more, respecting the interval. While `polling.isActive()`
+is false it waits, checking every 100 ms, then runs once on return. Closing the query cancels pending
+work. Manual refetch and interval polls retain their own behavior. R3 list invalidation is proposed.
+
+In graphql-orm 0.90.1 and main `9d1a482`, `validate_subscription_selection` maps generated
+`RecordVersion` to the managed persisted column before validation. Its subscription policy still
+applies. A hand-written computed `RecordVersion` is refused. It is incorrect to say all versions
+are refused: full does not degrade every managed entity to thin. `NodeId` has no such mapping.
 
 ### Ended streams
 
@@ -360,7 +386,9 @@ with no live layer. `client.subscribeLiveHealth(listener)` and `useLiveHealth(ty
 each one against the schema the router serves, and opens each stream on one connection for up to `--stream-ms`.
 A `Keys` stream opens with an empty list, which graphql-orm admits and which matches no rows; an optional `Key`
 opens with none, so it can receive events it ignores. A required `Key` can't be opened without naming a record, so
-it reports `unknown`. Only an event earns `admitted`: a quiet stream is `not-refused`. `SUBSCRIPTION_SCHEMA_RELOAD`,
+it reports `unknown`. Only an event earns `admitted`: a quiet stream is `not-refused`. Full refused with `INVALID_INPUT`
+is retried using thin: the verdict is `fallback-admitted` or `fallback-not-refused`. Working fallback
+passes normally; `--strict` also fails `fallback-not-refused`, preserving the uncertainty rule. `SUBSCRIPTION_SCHEMA_RELOAD`,
 `SERVICE_UNAVAILABLE` and `SUBSCRIPTION_LIMIT_EXCEEDED` report `unknown`, not `refused`. One function (`assertReadOnly`)
 guards everything it sends. Credentials come only from named environment variables and aren't in its output.
 

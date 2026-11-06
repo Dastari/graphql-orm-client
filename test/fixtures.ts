@@ -143,6 +143,7 @@ export const documents = [
 ]
 
 export const compiled = compile(schema, documents, {
+  liveSelection: "as-written",
   keys: { Slot: ["Site", "Name"], PageInfo: null },
   versions: { Widget: "RowVersion" },
 })
@@ -249,5 +250,24 @@ export function ticketServer(count: number) {
     ...mock,
     tickets: () => tickets,
     setTickets: (next: ReturnType<typeof ticket>[]) => (tickets = next),
+  }
+}
+
+const manualHoldClients = new WeakSet<import("../src/client.js").Client>()
+
+/** Seed records for tests that hold ids directly rather than opening a query. */
+export function seedManualHolds(client: import("../src/client.js").Client): void {
+  if (manualHoldClients.has(client)) return
+  manualHoldClients.add(client)
+  const live = client.live!
+  const hold = live.hold.bind(live)
+  live.hold = (holder, targets) => {
+    for (const [type, ids] of targets) for (const id of ids) {
+      const parts = JSON.parse(Buffer.from(id, "base64url").toString()) as unknown[]
+      const keys = compiled.live[type]!.keyFields
+      const record = client.store.getOrCreate(id, type)
+      keys.forEach((key, i) => { if (!record.fields.has(key)) client.store.setField(record, key, parts[i + 1]) })
+    }
+    hold(holder, targets)
   }
 }

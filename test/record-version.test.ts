@@ -27,7 +27,8 @@ describe("RecordVersion", () => {
     const page = compiled.operations.TicketPage!
     expect(page.versions).toEqual({ Ticket: "RecordVersion" })
     expect(page.text).toMatch(/Ticket\(Id: \$Id\) \{\s*__typename\s+NodeId\s+Id\s+RecordVersion/)
-    expect(compiled.live.Ticket?.operation.text).toMatch(/Ticket \{\s*__typename\s+NodeId\s+Id\s+RecordVersion/)
+    expect(compiled.live.Ticket?.operation.text).toContain("RecordVersion")
+    expect(compiled.live.Ticket?.operation.text).not.toContain("NodeId")
     // A type without one is unchanged.
     expect(compiled.operations.NoteList!.text).not.toContain("RecordVersion")
     expect(compiled.operations.NoteList!.versions).toEqual({})

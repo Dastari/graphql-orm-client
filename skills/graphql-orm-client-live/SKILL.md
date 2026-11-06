@@ -1,6 +1,6 @@
 ---
 name: graphql-orm-client-live
-description: Keep graphql-orm-client data live with @live fragments and generated Changed subscriptions, overlap replacements and confirm first reads (settleMs), back off from refused streams, order writes by record version, use polling fallbacks, draw live status (useLiveHealth, liveHealth), check streams against a real router (doctor) and diagnose stale data.
+description: Use full/thin stream projections and bounded holder re-reads (minRereadMs); Keep graphql-orm-client data live with @live fragments and generated Changed subscriptions, overlap replacements and confirm first reads (settleMs), back off from refused streams, order writes by record version, use polling fallbacks, draw live status (useLiveHealth, liveHealth), check streams against a real router (doctor) and diagnose stale data.
 ---
 
 # Live data and cache policy
@@ -12,9 +12,16 @@ Status: early alpha. Check the installed `docs/design.md` and `docs/graphql-orm-
 - Mark a fragment `@live` when its fields should update while on screen. The live layer
   subscribes to the type's generated `<Entity>Changed` events for the records that are
   retained. Do not write subscription operations by hand for this.
-- A `@live` fragment may select only persisted scalars of its type. A relation or computed field
-  in any `@live` fragment makes the server refuse the type's whole stream, and the build doesn't
-  catch it. Move those fields to a fragment without `@live`, and refresh them with a poll or a refetch.
+- A `@live` fragment can include relations and computed fields. New generation flattens keys,
+  version and scalars without arguments; it omits relations/composites, argument scalars and NodeId.
+  Full refused with INVALID_INPUT switches to keys-only thin for this client. Health retains
+  `selection-refused`; thin refusal uses normal back-off. Every thin event, and full events for
+  holders selecting omitted fields, schedule re-reads, which catch changed relation links too.
+- Automatic stale, reconnect and confirming reads share `live.minRereadMs` (default 2000): leading
+  and trailing reads, following an in-flight read and paused while `polling.isActive()` is false.
+  Missing versions remain last-arrival-wins. `liveSelection: "as-written"` preserves legacy stream
+  text; old artifacts have no thin fallback. Doctor reports fallback separately; quiet thin is
+  still uncertain and fails `--strict`.
 - `@live` updates records already held. A new row, a removed row or a changed total needs a refetch
   (`refetchQueries`) or a poll.
 - Live delivery needs the server to write that state through the ORM. If a type's state is
