@@ -187,6 +187,9 @@ An agent following them, with no other knowledge, passes the acceptance test at 
 
 ## Suggested order
 
+The design for groups 1 and 2, proposed and not built, is in
+[proposals/live-by-default.md](proposals/live-by-default.md).
+
 1. **R7, R8, R20, and R6's default.** Failures become visible and testable.
 2. **R4, then R2, then R3, then R1.** Live by default turns on last, after what makes it safe.
 3. **R5, R11.** Strictness arrives once the default path works, and the exception exists.
