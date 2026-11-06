@@ -22,6 +22,7 @@ import {
   type PagedState,
   type QueryState,
 } from "../client.js"
+import type { LiveHealth, LiveTypeHealth } from "../health.js"
 import { stableStringify, type Variables } from "../store/arguments.js"
 import { recycle, type Snapshot } from "../store/store.js"
 
@@ -36,6 +37,21 @@ export function useClient(): Client {
   const client = useContext(ClientContext)
   if (!client) throw new Error("useClient needs a ClientProvider")
   return client
+}
+
+/**
+ * What keeps `@live` data fresh right now, for drawing "live updates unavailable". With a type name, that
+ * type's health; a type nothing holds is `idle`. A stream with no event yet is `unconfirmed`, not `live`.
+ */
+export function useLiveHealth(): LiveHealth
+export function useLiveHealth(typename: string): LiveTypeHealth
+export function useLiveHealth(typename?: string): LiveHealth | LiveTypeHealth {
+  const client = useClient()
+  const getSnapshot = useCallback(
+    (): LiveHealth | LiveTypeHealth => (typename === undefined ? client.liveHealth() : client.liveTypeHealth(typename)),
+    [client, typename]
+  )
+  return useSyncExternalStore(client.subscribeLiveHealth, getSnapshot, getSnapshot)
 }
 
 const IDLE: QueryState<never> = {

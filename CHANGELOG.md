@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- **Fix: a stream could stay down after a schema reload on Node (0.1.0-alpha.7).** The socket was closed while
+  graphql-ws was still releasing the operation, which started its reconnect loop. On Node, where `ws` delivers
+  the router's `error` and `complete` in one tick, 1 run in 8 then ended every restart as soon as it started.
+  `graphqlWsSubscribe` now waits a task before closing. Not seen in headless Chromium, where alpha.7 recovered
+  in 5 of 5 runs; if your client runs on Node, see [the design](docs/design.md#ended-streams).
+- Live health (R7). `client.liveHealth()`, `client.subscribeLiveHealth(listener)` and, in the React bindings,
+  `useLiveHealth(typename?)` report `live`, `unconfirmed`, `connecting`, `polling`, `refused`, `unavailable` or
+  `idle` per type, with the reason, code, poll, times and fragments, and the socket's state. It works with no
+  live layer.
+- `graphqlWsTransport(ws)` gives `subscribe` and `connection`: spread it into `live`. It reports the socket, and
+  a socket that recovers by itself reads the queries holding live records again, so you can remove a
+  `refetchActive` call from graphql-ws's `connected` event. `graphqlWsSubscribe` is unchanged and still needs that
+  call.
+- **New console output:** a `@live` fragment that settles into `refused`, `unavailable` or `polling` warns once,
+  naming the fragment, except where `process.env.NODE_ENV` is `production`. Pass `live: { onDiagnostic }` to send
+  these elsewhere, or `null` to turn them off. A client with no `live` option uses the default.
+- `client.live.status()` gains `lastEventAt`, `retryAt` and `confirmed`. Existing fields are unchanged. No
+  regeneration needed.
+
 - A test kit, `graphql-orm-client/test` (R20). `createMockNetwork({ schema, operations })` answers by
   operation name and fails anything unanswered or not valid for the schema. `createMockStreams({ schema })`
   is a `live.subscribe` with the router's frames: `emit`, `refuse`, `loseContinuity`, `reload`, `unavailable`,
@@ -32,6 +51,10 @@ No artifact or generated-module change: no need to regenerate.
   type. Existing fields are unchanged. New exports: `LiveEnd`, `LiveEndReason`, `StreamRestart`. `live` gains
   `restart` and a `now` test seam.
 - A window under `refusalBackoff` now ends with a read of the queries that show the type.
+
+**Known issue, found after publishing:** on Node, where `ws` delivers the router's `error` and `complete` in one
+tick, 1 run in 8 stayed down after a schema reload. In headless Chromium it recovered in 5 of 5 runs. The fix is in
+the next release.
 
 What it ran against: unit tests with mocks, and a real `graphql-orm-router` 0.8.1 built from the
 `graphql-orm-v0.90.1` tag, with real `graphql-ws` 6.4.1 sockets and a test-owned Node subgraph that speaks

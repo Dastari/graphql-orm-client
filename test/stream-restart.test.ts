@@ -452,6 +452,7 @@ describe("a stream that ends without the client asking", () => {
 })
 
 describe("graphqlWsSubscribe and a retired connection", () => {
+  const task = () => new Promise((resolve) => setTimeout(resolve, 0))
   function fake(withTerminate = true) {
     const sinks: { next(value: unknown): void; error(error: unknown): void; complete(): void }[] = []
     let terminated = 0
@@ -465,51 +466,87 @@ describe("graphqlWsSubscribe and a retired connection", () => {
   }
 
   for (const code of ["SUBSCRIPTION_SCHEMA_RELOAD", "SERVICE_UNAVAILABLE"]) {
-    it(`opens a fresh connection once the last operation has ended after ${code}`, () => {
+    it(`opens a fresh connection once the last operation has ended after ${code}`, async () => {
       const { sinks, subscribe, sink, request, terminated } = fake()
       const transport = subscribe()
       transport(request, sink())
       transport(request, sink())
       sinks[0]!.error(errors(code))
+      await task()
       expect(terminated()).toBe(0)
       sinks[1]!.error(errors(code))
+      await task()
       expect(terminated()).toBe(1)
     })
   }
 
-  it("terminates before the sink hears, so a restart can't reach the old socket", () => {
-    const { sinks, subscribe, request, terminated } = fake()
-    let atError = -1
-    subscribe()(request, { next() {}, error: () => void (atError = terminated()), complete() {} })
+  it("waits a task, so graphql-ws finishes releasing the operation before the socket goes", async () => {
+    const { sinks, subscribe, sink, request, terminated } = fake()
+    subscribe()(request, sink())
     sinks[0]!.error(errors("SUBSCRIPTION_SCHEMA_RELOAD"))
-    expect(atError).toBe(1)
+    // Not during the error callback, and not in the microtasks after it, where graphql-ws releases.
+    expect(terminated()).toBe(0)
+    await Promise.resolve()
+    expect(terminated()).toBe(0)
+    await task()
+    expect(terminated()).toBe(1)
   })
 
-  it("leaves the socket alone for any other end", () => {
+  it("leaves the socket alone if an operation opens before the task runs", async () => {
+    const { sinks, subscribe, sink, request, terminated } = fake()
+    const transport = subscribe()
+    transport(request, sink())
+    sinks[0]!.error(errors("SUBSCRIPTION_SCHEMA_RELOAD"))
+    transport(request, sink())
+    await task()
+    expect(terminated()).toBe(0)
+    // That operation answers from the retired connection in turn, and then it goes.
+    sinks[1]!.error(errors("SERVICE_UNAVAILABLE"))
+    await task()
+    expect(terminated()).toBe(1)
+  })
+
+  it("terminates once, however many operations end in the same task", async () => {
+    const { sinks, subscribe, sink, request, terminated } = fake()
+    const transport = subscribe()
+    transport(request, sink())
+    transport(request, sink())
+    sinks[0]!.error(errors("SUBSCRIPTION_SCHEMA_RELOAD"))
+    sinks[1]!.complete()
+    await task()
+    await task()
+    expect(terminated()).toBe(1)
+  })
+
+  it("leaves the socket alone for any other end", async () => {
     const { sinks, subscribe, sink, request, terminated } = fake()
     const transport = subscribe()
     for (let index = 0; index < 3; index += 1) transport(request, sink())
     sinks[0]!.error(errors("INVALID_INPUT"))
     sinks[1]!.complete()
     sinks[2]!.error(new Error("socket gone"))
+    await task()
     expect(terminated()).toBe(0)
   })
 
-  it("works with a client that has no terminate", () => {
+  it("works with a client that has no terminate", async () => {
     const { sinks, subscribe, sink, request } = fake(false)
     subscribe()(request, sink())
-    expect(() => sinks[0]!.error(errors("SUBSCRIPTION_SCHEMA_RELOAD"))).not.toThrow()
+    sinks[0]!.error(errors("SUBSCRIPTION_SCHEMA_RELOAD"))
+    await expect(task()).resolves.toBeUndefined()
   })
 
-  it("counts an operation the application stopped as ended", () => {
+  it("counts an operation the application stopped as ended", async () => {
     const { sinks, subscribe, sink, request, terminated } = fake()
     const transport = subscribe()
     const stop = transport(request, sink())
     transport(request, sink())
     sinks[1]!.error(errors("SUBSCRIPTION_SCHEMA_RELOAD"))
+    await task()
     expect(terminated()).toBe(0)
     stop()
     stop()
+    await task()
     expect(terminated()).toBe(1)
   })
 })

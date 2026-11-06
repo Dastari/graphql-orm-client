@@ -1,5 +1,6 @@
 import type { GraphQLResponse, Network, OperationRequest } from "./client.js"
-import type { SubscriptionSink } from "./live.js"
+import type { LiveSocketState } from "./health.js"
+import type { LiveConnection, SubscriptionSink } from "./live.js"
 
 /** The server answered with an HTTP status and no GraphQL result. */
 export class HttpError extends Error {
@@ -59,6 +60,8 @@ export interface GraphQLWsClientLike {
   ): () => void
   /** Closes the socket and forgets it, so the next subscribe opens a fresh connection. */
   terminate?(): void
+  /** Socket events; `graphqlWsTransport` needs `connecting`, `connected` and `closed`. */
+  on?(event: "connecting" | "connected" | "closed", listener: (...args: any[]) => void): () => void
 }
 
 /** Codes the router uses on a connection whose graph it has retired. */
@@ -75,14 +78,26 @@ function endsConnection(errors: unknown): boolean {
  * The router pins a connection to the graph it selected. Once that graph is retired, the connection
  * answers every new subscribe with `SERVICE_UNAVAILABLE`, so a stream can only come back on a fresh
  * connection. When the last operation has ended after such an answer, this closes the socket through
- * `ws.terminate()`; graphql-ws's own idle close can't be relied on here, because the router's `error`
- * and `complete` for one operation can count as two releases in graphql-ws.
+ * `ws.terminate()`, for a client graphql-ws wouldn't close by itself (`lazy: false`, or another operation
+ * opening meanwhile). It waits a task first: graphql-ws has to finish releasing the operation, because
+ * terminating while one is still releasing starts graphql-ws's reconnect loop for an operation that's over.
  */
 export function graphqlWsSubscribe(
   ws: GraphQLWsClientLike
 ): (request: OperationRequest, sink: SubscriptionSink) => () => void {
   let open = 0
   let retired = false
+  let waiting = false
+  const closeIfRetired = () => {
+    if (!retired || open > 0 || waiting) return
+    waiting = true
+    setTimeout(() => {
+      waiting = false
+      if (!retired || open > 0) return
+      retired = false
+      ws.terminate?.()
+    }, 0)
+  }
   return (request, sink) => {
     open += 1
     let ended = false
@@ -90,10 +105,7 @@ export function graphqlWsSubscribe(
       if (ended) return
       ended = true
       open -= 1
-      if (retired && open === 0) {
-        retired = false
-        ws.terminate?.()
-      }
+      closeIfRetired()
     }
     const dispose = ws.subscribe(
       { operationName: request.name, query: request.text, variables: request.variables },
@@ -101,7 +113,6 @@ export function graphqlWsSubscribe(
         next: (value: GraphQLResponse) => sink.next(value),
         error: (error) => {
           if (endsConnection(error)) retired = true
-          // Release first: the sink may subscribe again at once, and that must reach a fresh socket.
           release()
           sink.error(error)
         },
@@ -115,5 +126,39 @@ export function graphqlWsSubscribe(
       release()
       dispose()
     }
+  }
+}
+
+/**
+ * `live.subscribe` and `live.connection` for a graphql-ws client: spread it into `live`. As well as
+ * `graphqlWsSubscribe`, `client.liveHealth()` reports the socket, and a socket that recovers by itself reads
+ * the queries holding live records again, so there's no need to call `refetchActive` for those.
+ */
+export function graphqlWsTransport(ws: GraphQLWsClientLike): {
+  readonly subscribe: (request: OperationRequest, sink: SubscriptionSink) => () => void
+  readonly connection: LiveConnection
+} {
+  let state: LiveSocketState = "closed"
+  const listeners = new Set<(change: { readonly reconnected: boolean }) => void>()
+  const set = (next: LiveSocketState, reconnected = false) => {
+    state = next
+    for (const listener of [...listeners]) listener({ reconnected })
+  }
+  if (ws.on) {
+    ws.on("connecting", () => set("connecting"))
+    ws.on("connected", (_socket: unknown, _payload: unknown, wasRetry: boolean) => set("connected", wasRetry === true))
+    ws.on("closed", () => set("closed"))
+  } else {
+    state = "unknown"
+  }
+  return {
+    subscribe: graphqlWsSubscribe(ws),
+    connection: {
+      state: () => state,
+      subscribe(listener) {
+        listeners.add(listener)
+        return () => void listeners.delete(listener)
+      },
+    },
   }
 }

@@ -1,5 +1,6 @@
 import type { LiveArtifact, LiveMode } from "./artifact.js"
 import type { GraphQLResponse, OperationRequest } from "./client.js"
+import type { LiveDiagnostic, LiveSocketState } from "./health.js"
 import { decodeNodeId } from "./node-id.js"
 import { contextOf, identify, normalize } from "./store/normalize.js"
 import type { Store } from "./store/store.js"
@@ -64,6 +65,14 @@ export interface LiveEnd {
   readonly at: number
 }
 
+/** What a transport can say about its socket. `graphqlWsTransport` provides it. */
+export interface LiveConnection {
+  /** The socket's state now. */
+  state(): LiveSocketState
+  /** Call `listener` when it changes; `reconnected` is true on a connect that recovered a lost socket. */
+  subscribe(listener: (change: { readonly reconnected: boolean }) => void): () => void
+}
+
 export interface LiveOptions {
   /**
    * Compiled live artifacts per type (`compile(...).live`). Leave it out to use `subscribe` only
@@ -113,6 +122,16 @@ export interface LiveOptions {
   readonly clearTimeout?: (handle: unknown) => void
   /** Clock seam for tests. Defaults to `Date.now`. */
   readonly now?: () => number
+  /**
+   * The socket's state, for `client.liveHealth()`. With it, a socket that recovers by itself also reads
+   * the queries that hold live records, because events in the gap weren't replayed.
+   */
+  readonly connection?: LiveConnection
+  /**
+   * Called once per fragment and reason when a `@live` fragment can't stay live. Defaults to `console.warn`
+   * unless `process.env.NODE_ENV` is `production`. `null` turns it off.
+   */
+  readonly onDiagnostic?: ((diagnostic: LiveDiagnostic) => void) | null
 }
 
 export interface LiveTypeStatus {
@@ -129,6 +148,12 @@ export interface LiveTypeStatus {
   readonly restartAttempts: number
   /** The last end the client didn't ask for; null if there has been none. */
   readonly lastEnd: LiveEnd | null
+  /** The last event delivered for the type; null if none has been. */
+  readonly lastEventAt: number | null
+  /** When a waiting restart or refusal window ends; null if nothing is waiting. */
+  readonly retryAt: number | null
+  /** An event has arrived since the type's streams last started. Nothing else confirms a stream. */
+  readonly confirmed: boolean
 }
 
 type Targets = ReadonlyMap<string, ReadonlySet<string>>
@@ -192,6 +217,8 @@ interface RestartState {
   attempts: number
   startedAt: number
   lastEnd: LiveEnd | null
+  retryAt: number | null
+  lastEventAt: number | null
 }
 
 /**
@@ -206,7 +233,8 @@ export class LiveManager {
   private subscriptionCount = 0
   private readonly restarts = new Map<string, RestartState>()
   /** Streams waiting out a refusal window, by identity, with the timer that ends the wait. */
-  private readonly refused = new Map<string, { readonly typename: string; readonly handle: unknown }>()
+  private readonly refused = new Map<string, { readonly typename: string; readonly handle: unknown; readonly until: number }>()
+  private lastEventNotice = -Infinity
   private readonly artifacts: Readonly<Record<string, LiveArtifact>>
 
   /**
@@ -216,9 +244,22 @@ export class LiveManager {
   constructor(
     private readonly store: Store,
     private readonly options: LiveOptions,
-    private readonly resync: (holders: ReadonlySet<string>) => void = () => {}
+    private readonly resync: (holders: ReadonlySet<string>) => void = () => {},
+    private readonly onChange: (timing?: boolean) => void = () => {}
   ) {
     this.artifacts = options.artifacts ?? {}
+    this.disconnect =
+      options.connection?.subscribe(({ reconnected }) => {
+        this.onChange()
+        if (reconnected && !this.disposed && this.holders.size) this.resync(new Set(this.holders.keys()))
+      }) ?? null
+  }
+
+  private readonly disconnect: (() => void) | null
+
+  /** The socket's state, or `unknown` when the transport doesn't report it. */
+  get socket(): LiveSocketState {
+    return this.options.connection?.state() ?? "unknown"
   }
 
   /** Whether a type has a usable live subscription. */
@@ -239,6 +280,7 @@ export class LiveManager {
     if (targets.size === 0) this.holders.delete(holder)
     else this.holders.set(holder, targets)
     this.schedule()
+    this.onChange()
   }
 
   status(): Readonly<Record<string, LiveTypeStatus>> {
@@ -258,6 +300,9 @@ export class LiveManager {
             restarting: (restart?.handle ?? null) !== null,
             restartAttempts: restart && (restart.handle !== null || this.now() - restart.startedAt < this.restartMaxMs()) ? restart.attempts : 0,
             lastEnd: restart?.lastEnd ?? null,
+            lastEventAt: restart?.lastEventAt ?? null,
+            retryAt: this.retryAt(artifact.typename),
+            confirmed: restart !== undefined && restart.lastEventAt !== null && restart.lastEventAt >= restart.startedAt,
           },
         ]
       })
@@ -273,6 +318,7 @@ export class LiveManager {
 
   dispose(): void {
     this.disposed = true
+    this.disconnect?.()
     if (this.timer !== null) (this.options.clearTimeout ?? clearTimeout)(this.timer as ReturnType<typeof setTimeout>)
     for (const restart of this.restarts.values()) {
       if (restart.handle !== null) (this.options.clearTimeout ?? clearTimeout)(restart.handle as ReturnType<typeof setTimeout>)
@@ -347,6 +393,7 @@ export class LiveManager {
         this.start(artifact, active, key, variables)
       }
     }
+    this.onChange()
   }
 
   private start(artifact: LiveArtifact, active: ActiveType, key: string, variables: Record<string, unknown>): void {
@@ -373,6 +420,7 @@ export class LiveManager {
       stop()
       if (requested) return
       this.ended(artifact, identity, reason, code)
+      this.onChange()
     }
     active.subscriptions.set(key, stop)
     dispose = this.options.subscribe(
@@ -410,6 +458,13 @@ export class LiveManager {
     return (typeof this.options.restart === "object" ? this.options.restart.maxMs : undefined) ?? DEFAULT_RESTART_MAX_MS
   }
 
+  private retryAt(typename: string): number | null {
+    const windows = [...this.refused.values()].filter((entry) => entry.typename === typename).map((entry) => entry.until)
+    const restart = this.restarts.get(typename)?.retryAt
+    const all = restart === undefined || restart === null ? windows : [...windows, restart]
+    return all.length ? Math.min(...all) : null
+  }
+
   private now(): number {
     return (this.options.now ?? Date.now)()
   }
@@ -417,7 +472,7 @@ export class LiveManager {
   private restartState(typename: string): RestartState {
     const existing = this.restarts.get(typename)
     if (existing) return existing
-    const state: RestartState = { handle: null, attempts: 0, startedAt: this.now(), lastEnd: null }
+    const state: RestartState = { handle: null, attempts: 0, startedAt: this.now(), lastEnd: null, retryAt: null, lastEventAt: null }
     this.restarts.set(typename, state)
     return state
   }
@@ -449,7 +504,7 @@ export class LiveManager {
       // Nothing was delivered during the window, so the records may have changed.
       if (!this.disposed) this.restartNow(artifact.typename)
     }, ms)
-    this.refused.set(identity, { typename: artifact.typename, handle })
+    this.refused.set(identity, { typename: artifact.typename, handle, until: this.now() + ms })
   }
 
   /**
@@ -471,8 +526,10 @@ export class LiveManager {
       attempts === 0 || this.options.restart === false
         ? Math.random() * (this.options.resyncJitterMs ?? 1000)
         : Math.min(maxMs, (config.minMs ?? DEFAULT_RESTART_MIN_MS) * 2 ** (attempts - 1)) * (0.5 + Math.random() * 0.5)
+    state.retryAt = this.now() + delay
     state.handle = this.after(() => {
       state.handle = null
+      state.retryAt = null
       state.startedAt = this.now()
       if (!this.disposed) this.restartNow(typename)
     }, delay)
@@ -495,6 +552,17 @@ export class LiveManager {
     return timer
   }
 
+  /** An event arrived. Say so at once if it confirms the stream, and at most once a second otherwise. */
+  private noteEvent(typename: string): void {
+    const state = this.restartState(typename)
+    const now = this.now()
+    const confirming = state.lastEventAt === null || state.lastEventAt < state.startedAt
+    state.lastEventAt = now
+    if (!confirming && now - this.lastEventNotice < 1000) return
+    this.lastEventNotice = now
+    this.onChange(true)
+  }
+
   private receive(artifact: LiveArtifact, response: GraphQLResponse, variables: Record<string, unknown>): void {
     if (this.disposed || this.store.isDisposed) return
     const payload = response.data?.[artifact.field] as Record<string, unknown> | null | undefined
@@ -504,6 +572,7 @@ export class LiveManager {
     if (id === null) return
     // A stream without keys carries every record of the type; only held records are written.
     if (!this.held().get(artifact.typename)?.has(id)) return
+    this.noteEvent(artifact.typename)
     if (payload[artifact.actionField] === "DELETED") {
       this.store.delete(id)
     } else {

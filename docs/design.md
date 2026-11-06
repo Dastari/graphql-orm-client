@@ -6,7 +6,7 @@ Status: partly built. Implemented and tested:
 - the store: normalisation, version ordering, masked reads, subscriptions, retention and garbage collection, disposal;
 - `Client`: `execute`, `watchQuery`, `watchPagedQuery`, `preload`, `query`, `mutate`, `subscribe`
   and `refetchQueries`;
-- transport: `createHttpNetwork` (GraphQL over HTTP) and `graphqlWsSubscribe` (a graphql-ws
+- transport: `createHttpNetwork` (GraphQL over HTTP) and `graphqlWsTransport` (a graphql-ws
   client for the live layer);
 - `readFragment`;
 - React: `ClientProvider`, `useQuery`, `usePagedQuery`, `useFragment`, `useFragmentList`,
@@ -172,7 +172,7 @@ const client = createClient({
     },
     persistence: null,             // or indexedDbPersistence({ name, maxBytes })
   },
-  live: { artifacts: live, subscribe: graphqlWsSubscribe(ws) },
+  live: { artifacts: live, ...graphqlWsTransport(ws) },
   polling: { liveFallbackMs: 30_000 },
 })
 ```
@@ -211,7 +211,8 @@ variables within the same hold scope (a new search term on the same vendor), as
    [Ended streams](#ended-streams): every other end the client didn't ask for takes the same path. A
    stream the server refuses can be held back for a window instead (see
    [Refused streams](#refused-streams)). When graphql-ws reconnects by itself, without ending the
-   stream, the application still calls `client.refetchActive()` from its `connected` event, until the
+   stream, `graphqlWsTransport` reads the open queries that hold live records again; with plain
+   `graphqlWsSubscribe` the application calls `client.refetchActive()` from its `connected` event, until the
    server supports replay from a sequence number.
 5. **Release.** When records are released, it narrows or ends the subscriptions.
 
@@ -264,18 +265,51 @@ type: `restarting`, `restartAttempts`, and `lastEnd` with its `reason`, `code` a
 - **While waiting.** The stream isn't started early, however the held records change, and the page keeps
   what it has. A re-read that fails sets the query's `status` to `error` and keeps its `data`.
 - **A retired connection.** The router pins a connection to its graph, so a stream can only come back on a
-  fresh connection. `graphqlWsSubscribe` closes the socket through `ws.terminate()` once the last operation
-  has ended after one of these codes. A custom `live.subscribe` has to do the same, or its restarts go on
-  answering `unavailable`. Relying on graphql-ws's idle close doesn't work: the router sends `complete`
-  after `error`, graphql-ws counts both as releases when they arrive together, and with its default `lazy`
-  option the socket then stays open (router 0.8.1, graphql-ws 6.4.1).
+  fresh connection. `graphqlWsSubscribe` and `graphqlWsTransport` close the socket through `ws.terminate()`,
+  a task after the last operation has ended after one of these codes. A custom `live.subscribe` has to get
+  a fresh connection too, or its restarts go on answering `unavailable`. In a browser, graphql-ws's default
+  `lazy` socket closes by itself once nothing is open, and terminating covers `lazy: false`. On Node, where
+  `ws` delivers several frames in one tick by default, the router's `complete` after `error` makes graphql-ws
+  release the operation twice, its lock count goes negative, and a later socket failure can leave a stream
+  ending as soon as it starts. To run this on Node, pass `{ allowSynchronousEvents: false }` to `ws`, as a
+  `webSocketImpl` subclass (router 0.8.1, graphql-ws 6.4.1, ws 8).
 - **`live.restart: false`** is the 0.1.0-alpha.6 behaviour, for migration: only lost events restart a
   stream, and any other end waits for the next change to the held records, with nothing read. Data can
   stay stale indefinitely with it. `lastEnd` is still reported.
 
-This was exercised against a real `graphql-orm-router` 0.8.1 with a test-owned subgraph; see the changelog
-entry for 0.1.0-alpha.7 for what ran. A stream started with `client.subscribe` is the application's own
-and doesn't restart.
+This was exercised against a real `graphql-orm-router` 0.8.1 with a test-owned subgraph, in headless
+Chromium and on Node. A stream started with `client.subscribe` is the application's own and doesn't restart.
+
+### Live health
+
+`client.liveHealth()` says what keeps `@live` data fresh right now, per type and for the socket, and works
+with no live layer. `client.subscribeLiveHealth(listener)` and `useLiveHealth(typename?)` follow it.
+`client.live.status()` keeps its shape underneath.
+
+| `state` | Meaning |
+| --- | --- |
+| `live` | A stream is open and has delivered an event since it started |
+| `unconfirmed` | Subscribed and not refused, with no event yet. Nothing confirms a subscribe, so a quiet stream can't be told from an unanswered one |
+| `connecting` | Starting or restarting, or its socket is reconnecting |
+| `polling` | No stream covers the records and a poll does; `reason` says why |
+| `refused` | The server refused the stream and nothing refreshes the records |
+| `unavailable` | No stream, after three restarts in a row or for good, and nothing refreshes the records |
+| `idle` | Nothing is held |
+
+- Each type also has `reason` (`no-live-layer`, `no-stream`, `selection-refused`, `refused`, `over-cap`,
+  `socket-down`, `stream-ended`, `schema-reload`), the server's `code`, `held`, `pollMs`, `lastEventAt`,
+  `lastReadAt`, `retryAt` and the `fragments` held. A null time means it hasn't happened, not that it was
+  long ago. `pollMs` is null if any query holding the type has no poll. `worst` is the worst state of any type.
+- `live` is per type: an event on one record confirms the type until its streams next restart.
+- `socket` is `unknown` unless the transport reports it. `graphqlWsTransport(ws)` does, and with it a socket
+  that recovers by itself reads the queries holding live records again, which `graphqlWsSubscribe` leaves to
+  the application. A stream on a socket that's down is `connecting`.
+- `selection-refused` means the code was `INVALID_INPUT`, which the server also uses for other invalid input.
+- Listeners hear about a change once per tick, and a new `lastEventAt` alone at most once a second.
+- `live.onDiagnostic` is called once per fragment and reason when a `@live` fragment settles into `refused`,
+  `unavailable` or `polling`, naming the fragment. It defaults to `console.warn`, except where
+  `process.env.NODE_ENV` is `production`; `null` turns it off. Without `live`, it's the default.
+- Types with no stream are learned from what queries hold, so this needs no regeneration.
 
 ### Refused streams
 

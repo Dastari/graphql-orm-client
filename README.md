@@ -75,20 +75,18 @@ router serves subscriptions:
 
 ```ts
 import { createClient as createWsClient } from "graphql-ws"
-import { createClient, createHttpNetwork, graphqlWsSubscribe, type Client } from "graphql-orm-client"
+import { createClient, createHttpNetwork, graphqlWsTransport } from "graphql-orm-client"
 import { live } from "./graphql/generated"
 
-let client: Client
-const ws = createWsClient({
-  url: "wss://graph.example.com/graphql",
-  // Missed events aren't replayed yet, so read open queries again after a reconnect.
-  on: { connected: (_socket, _payload, wasRetry) => void (wasRetry && client.refetchActive()) },
-})
-client = createClient({
+const ws = createWsClient({ url: "wss://graph.example.com/graphql" })
+const client = createClient({
   network: createHttpNetwork({ url: "/api/graphql" }),
-  live: { artifacts: live, subscribe: graphqlWsSubscribe(ws) },
+  live: { artifacts: live, ...graphqlWsTransport(ws) },
 })
 ```
+
+`client.liveHealth()` and `useLiveHealth()` say what keeps the data fresh per type and for the socket, so
+a page can draw "live updates unavailable". A stream with no event yet is `unconfirmed`, not `live`.
 
 `createHttpNetwork` takes `headers` (an object or a function called per request), `fetch` and
 `credentials`. A response with GraphQL errors is returned whatever its HTTP status; one without

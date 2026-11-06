@@ -60,6 +60,7 @@ The client's own tests run on it, so it can't drift from what they exercise. **B
 
 ### R7. Live status
 
+**Built, unreleased;** [design.md](../design.md#live-health) describes what shipped.
 `client.live.status()` keeps its shape, so nothing breaks. Added alongside it:
 
 ```ts
@@ -87,7 +88,7 @@ useLiveHealth(typename?)     // graphql-orm-client/react
   fact 2 lets us say; drawing it as `live` would draw unknown as healthy. It becomes `live` on the first
   event, or at once if the server gains a started signal. `idle` means nothing is held.
 - **`socket` is `unknown`** unless the transport reports it. A new `graphqlWsTransport(ws)` returns
-  `{ subscribe, connection }`. `graphqlWsSubscribe` stays as it is.
+  `{ subscribe, connection }`. `graphqlWsSubscribe` stays.
 - **It works with no live layer.** `client.live` is null then, so these live on `Client`, and report
   `unavailable` with reason `no-live-layer`.
 - **Types with no stream are learned at run time.** `liveUnavailable` is a generated export the client

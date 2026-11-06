@@ -1,9 +1,10 @@
 import type { ConnectionSpec, FragmentArtifact, FragmentRefFor, LinkSelection, OperationArtifact, PagedSpec, Selection } from "./artifact.js"
 import { fieldStorageKey, stableStringify, type Variables } from "./store/arguments.js"
 import { contextOf, normalize } from "./store/normalize.js"
+import { IDLE_TYPE_HEALTH, diagnosticMessage, typeHealth, worstOf, type LiveDiagnostic, type LiveHealth, type LiveHolding, type LiveTypeHealth } from "./health.js"
 import { LiveManager, type LiveOptions, type SubscriptionSink } from "./live.js"
 import { FRAGMENT_REF, readSelections, type FragmentRefData } from "./store/read.js"
-import { ROOT_ID, Store, type OptimisticLayer, type Selector, type Snapshot, type StoreOptions } from "./store/store.js"
+import { ROOT_ID, Store, type OptimisticLayer, type Selector, type Snapshot, type StoreOptions, recycle } from "./store/store.js"
 
 export interface GraphQLErrorLike {
   readonly message: string
@@ -345,6 +346,7 @@ class QueryResource<T> implements WatchedQuery<T> {
     this.unsubscribeStore?.()
     this.unsubscribeStore = null
     this.client.live?.hold(this.key, new Map())
+    this.client.healthChanged()
     this.release?.()
     this.release = null
   }
@@ -420,6 +422,7 @@ class QueryResource<T> implements WatchedQuery<T> {
       .execute<T>(this.artifact, this.variables, { signal: controller.signal })
       .then(({ snapshot, errors }) => {
         if (controller.signal.aborted) return
+        this.lastReadAt = this.client.now()
         this.watch(snapshot)
         this.set({
           ...this.state,
@@ -470,16 +473,35 @@ class QueryResource<T> implements WatchedQuery<T> {
     })
   }
 
+  private lastReadAt: number | null = null
+  /** What this query holds through `@live` fragments, per type. */
+  private liveHoldings = new Map<string, { ids: Set<string>; fragments: Set<string> }>()
+
+  /** What this query holds, per type, for `client.liveHealth()`. Nothing when it isn't open. */
+  holdings(): ReadonlyMap<string, LiveHolding> {
+    const result = new Map<string, LiveHolding>()
+    if (this.users === 0) return result
+    for (const [typename, { ids, fragments }] of this.liveHoldings) {
+      result.set(typename, { held: [...ids], fragments: [...fragments], pollMs: this.pollMs, lastReadAt: this.lastReadAt })
+    }
+    return result
+  }
+
   /** Tell the live layer which records this query shows through `@live` fragments. */
   private holdLive(): void {
     if (this.users === 0) return
     const live = this.client.live
     const targets = new Map<string, Set<string>>()
     let uncovered = false
+    this.liveHoldings = new Map()
     readSelections(this.client.store, selectorOf(this.artifact, this.variables), {
       inlineSpreads: true,
       onSpread: (fragment, id, typename) => {
         if (!this.artifact.fragments[fragment]?.live) return
+        const holding = this.liveHoldings.get(typename) ?? { ids: new Set<string>(), fragments: new Set<string>() }
+        holding.ids.add(id)
+        holding.fragments.add(fragment)
+        this.liveHoldings.set(typename, holding)
         if (!live?.covers(typename)) {
           uncovered = true
           return
@@ -493,6 +515,7 @@ class QueryResource<T> implements WatchedQuery<T> {
     const overflowing = live ? [...targets.keys()].some((typename) => live.overflows(typename)) : false
     this.fallbackPoll = uncovered || overflowing
     this.schedulePoll()
+    this.client.healthChanged()
   }
 
   private set(state: QueryState<T>): void {
@@ -634,12 +657,110 @@ export class Client {
     this.subscribeTransport = options.live?.subscribe ?? null
     this.store = new Store(options.store)
     this.live = options.live
-      ? new LiveManager(this.store, options.live, (holders) => {
-          for (const resource of this.resources.values()) {
-            if (resource.users > 0 && holders.has(resource.key)) void resource.readAgain()
-          }
-        })
+      ? new LiveManager(
+          this.store,
+          options.live,
+          (holders) => {
+            for (const resource of this.resources.values()) {
+              if (resource.users > 0 && holders.has(resource.key)) void resource.readAgain()
+            }
+          },
+          (timing) => this.healthChanged(timing)
+        )
       : null
+    this.clock = options.live?.now ?? Date.now
+    const fallback = options.live?.onDiagnostic === undefined ? defaultDiagnostic : options.live.onDiagnostic
+    this.onDiagnostic = fallback
+  }
+
+  private readonly clock: () => number
+  private readonly onDiagnostic: ((diagnostic: LiveDiagnostic) => void) | null
+  private readonly healthListeners = new Set<() => void>()
+  private readonly diagnosed = new Set<string>()
+  private healthSnapshot: LiveHealth | null = null
+  private healthQueued = false
+  private healthForced = false
+  private healthKey: string | null = null
+
+  /** The current time on the client's clock. */
+  now(): number {
+    return this.clock()
+  }
+
+  /**
+   * What keeps `@live` data fresh right now, per type and for the socket. It works with no live layer.
+   * Unknown is never reported as healthy: a stream with no event yet is `unconfirmed`, and the socket is
+   * `unknown` unless the transport reports it (`graphqlWsTransport`). The result keeps its identity
+   * while nothing has changed, so it can be used as a snapshot.
+   */
+  liveHealth(): LiveHealth {
+    const holdings = new Map<string, LiveHolding[]>()
+    for (const resource of this.resources.values()) {
+      for (const [typename, holding] of resource.holdings()) {
+        const list = holdings.get(typename) ?? []
+        list.push(holding)
+        holdings.set(typename, list)
+      }
+    }
+    const statuses = this.live?.status() ?? {}
+    const socket = this.live?.socket ?? "unknown"
+    const types: Record<string, LiveTypeHealth> = {}
+    for (const typename of new Set([...Object.keys(statuses), ...holdings.keys()])) {
+      types[typename] = typeHealth(statuses[typename], holdings.get(typename) ?? [], { socket, hasLiveLayer: this.live !== null })
+    }
+    const next: LiveHealth = { socket, worst: worstOf(Object.values(types).map((entry) => entry.state)), types }
+    const snapshot = this.healthSnapshot ? recycle(this.healthSnapshot, next) : next
+    this.healthSnapshot = snapshot
+    return snapshot
+  }
+
+  /** The health of one type; a type nothing holds is `idle`. */
+  liveTypeHealth(typename: string): LiveTypeHealth {
+    return this.liveHealth().types[typename] ?? IDLE_TYPE_HEALTH
+  }
+
+  /** Call `listener` when `liveHealth()` may have changed. Events tell it at most once a second. */
+  subscribeLiveHealth = (listener: () => void): (() => void) => {
+    this.healthListeners.add(listener)
+    return () => {
+      this.healthListeners.delete(listener)
+    }
+  }
+
+  /**
+   * Something health depends on may have changed: if so, tell listeners and report diagnostics, once
+   * per tick. A new `lastEventAt` alone tells them only with `timing`, which the live layer limits.
+   */
+  healthChanged(timing = false): void {
+    if (timing) this.healthForced = true
+    if (this.healthQueued || this.store.isDisposed) return
+    this.healthQueued = true
+    queueMicrotask(() => {
+      this.healthQueued = false
+      if (this.store.isDisposed) return
+      const health = this.liveHealth()
+      const key = JSON.stringify(health, (name, value) => (name === "lastEventAt" ? undefined : value))
+      const forced = this.healthForced
+      this.healthForced = false
+      if (key === this.healthKey && !forced) return
+      this.healthKey = key
+      this.diagnose(health)
+      for (const listener of [...this.healthListeners]) listener()
+    })
+  }
+
+  private diagnose(health: LiveHealth): void {
+    if (!this.onDiagnostic) return
+    for (const [typename, entry] of Object.entries(health.types)) {
+      const lasting = entry.state === "refused" || entry.state === "unavailable" || entry.state === "polling"
+      if (!lasting) continue
+      for (const fragment of entry.fragments) {
+        const key = `${fragment}\u0000${entry.reason}`
+        if (this.diagnosed.has(key)) continue
+        this.diagnosed.add(key)
+        this.onDiagnostic({ fragment, typename, state: entry.state, reason: entry.reason, code: entry.code, message: diagnosticMessage(fragment, typename, entry) })
+      }
+    }
   }
 
   /** Refetch every open query; call after a subscription reconnect may have missed events. */
@@ -970,8 +1091,14 @@ export class Client {
     for (const controller of this.controllers) controller.abort()
     this.controllers.clear()
     this.resources.clear()
+    this.healthListeners.clear()
     this.store.dispose()
   }
+}
+
+function defaultDiagnostic(diagnostic: LiveDiagnostic): void {
+  if (typeof process !== "undefined" && process.env?.NODE_ENV === "production") return
+  console.warn(diagnostic.message)
 }
 
 export function createClient(options: ClientOptions): Client {
