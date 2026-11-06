@@ -32,12 +32,9 @@ else {
  */
 async function generateCommand(args) {
   const { config, base, schema, sources, files, out } = await loadProject(args)
-  const snapshot = readFileSync(resolve(base, config.schema), "utf8")
-  const hashPath = resolve(base, config.schema) + ".sha256"
-  const tracked = existsSync(hashPath)
-  const hash = digest(snapshot)
-  if (args.includes("--check") && tracked && readFileSync(hashPath, "utf8") !== hash + "\n")
-    fail(config.schema + " hash differs; run graphql-orm-client schema pull --url <router>, then graphql-orm-client generate")
+  const snapshotPath = resolve(base, config.schema)
+  const tracked = existsSync(snapshotPath + ".sha256")
+  const hash = tracked ? digest(readFileSync(snapshotPath, "utf8")) : null
   const { generate } = await import("../dist/compiler/index.js")
   let generated
   try {
