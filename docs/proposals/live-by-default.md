@@ -1,7 +1,7 @@
 # Live by default: design for requirement groups 1 and 2
 
 Status: **proposed; the owner approved the direction on 2026-11-06. Built so far: the restart of ended
-streams, in 0.1.0-alpha.7 (fact 4).** Requirement numbers refer to [requirements.md](../requirements.md).
+streams (fact 4), in 0.1.0-alpha.7; R20 and R7, in 0.1.0-alpha.8.** Requirement numbers refer to [requirements.md](../requirements.md).
 Unless noted, server facts were read from graphql-orm `main` at `9d1a482` and not run against a live
 router; R21 is what will prove them. The large application's backend is on graphql-orm 0.90.1.
 
@@ -56,11 +56,11 @@ A new subpath, not in the main bundle and with no test-runner dependency:
   `reconnect()` on the real frame shapes, including an error delivered as `next` then `complete`;
 - `createTestClock()`, which fills the existing timer seams.
 
-The client's own tests run on it, so it can't drift from what they exercise. **Built, unreleased.**
+The client's own tests run on it, so it can't drift from what they exercise. **Built in 0.1.0-alpha.8.**
 
 ### R7. Live status
 
-**Built, unreleased;** [design.md](../design.md#live-health) describes what shipped.
+**Built in 0.1.0-alpha.8;** [design.md](../design.md#live-health) describes what shipped.
 `client.live.status()` keeps its shape, so nothing breaks. Added alongside it:
 
 ```ts
