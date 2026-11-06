@@ -1,6 +1,6 @@
 ---
 name: graphql-orm-client-adopt
-description: Install graphql-orm-client in an application, configure the network, store and identity scope, run the codegen preset, wire route loaders and move an Apollo application across route by route.
+description: Install graphql-orm-client in an application, configure the network and one client per signed-in identity, run the generator, wire route loaders and move an Apollo application across route by route.
 ---
 
 # Adopt graphql-orm-client
@@ -18,8 +18,9 @@ The client only works against graphql-orm services and their router.
    Run `graphql-orm-client generate`, and run `generate --check` in CI. Write every document with
    the generated `graphql()`, one operation or fragment per call, so each carries its own types
    and an invalid field fails the build.
-3. **Client.** Create one client per signed-in identity with `createClient`. Pass the identity
-   key as `store.scope`. When the identity changes, dispose the client; never reuse it.
+3. **Client.** Create one client per signed-in identity with `createClient`. When the identity
+   changes, call `client.dispose()` and pass a new client to the provider; never reuse one. There
+   is no `store.scope` option yet.
 4. **Network.** Use `createHttpNetwork({ url })` for queries and mutations (a same-origin BFF
    where the project has one; pass `headers` or a wrapped `fetch` for auth). For subscriptions,
    create a graphql-ws client, authenticate it in `connectionParams`, and pass

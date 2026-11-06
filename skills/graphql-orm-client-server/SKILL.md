@@ -20,7 +20,13 @@ change that breaks one of these leaves the client with stale or duplicated data.
   tickets, state rows. A bare `#[graphql_orm(version)]` is compare-and-swap only.
 - Add `node_id` (`#[graphql_entity(node_id)]`, graphql-orm 0.86.0) to entities whose fragments
   should be refetchable on their own.
-- Set `propagate_change = "up"` on relations whose parent views show child state.
+- Set `propagate_change = "up"` on relations whose parent views show child state. Deleting a child
+  doesn't notify its parent yet (graphql-orm #290).
+- Grant `RowPolicy::can_read_deleted_preimage` where clients must see deletes: without it, `DELETED`
+  doesn't reach subscribers.
+- Keep fields that must update live as persisted scalars. A `Changed` payload refuses relations and
+  computed fields, and `node_id` and generated `RecordVersion` don't yet work on an entity with
+  relation fields (#270, #288).
 - Write live state through the ORM's write paths (generated mutations, repository writes,
   transaction writes). Only those emit `Changed`.
 - Treat lifetime fields (`expires_at`, `valid_until`) as data. Expiry emits no event.

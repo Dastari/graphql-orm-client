@@ -4,8 +4,9 @@ Read README.md, docs/design.md, docs/requirements.md and docs/graphql-orm-contra
 changing anything. The package is in alpha and used by real applications: keep the documents,
 skills and code consistent with each other, and label anything not yet built as proposed.
 
-Keep this repository free of any consuming project's names and domain. Requests from consumers go
-in docs/requirements.md in general terms.
+Keep this repository free of any consuming project's names and domain, in examples, tests, docs and
+changelogs. Check for them before each commit. Requests from consumers go in docs/requirements.md in
+general terms.
 
 ## Ownership
 
@@ -18,7 +19,7 @@ in docs/requirements.md in general terms.
   process. Record the dependency in docs/graphql-orm-contract.md. Never add a client-side
   workaround that guesses identity, ordering or pagination.
 - Keep the core store and network framework-agnostic. React bindings live under the `react`
-  subpath; the compiler lives under the `codegen` subpath. Application code (routes, domain
+  subpath; the compiler lives under the `compiler` subpath. Application code (routes, domain
   types, branding) never belongs here.
 
 ## Design rules
@@ -32,7 +33,7 @@ in docs/requirements.md in general terms.
 - A write with an older record version never replaces a newer one. Without a version, the
   last write to arrive wins; document that limit wherever it applies.
 - `Changed` fires on writes, not on clock expiry. Honour lifetime fields (`expires_at`,
-  `valid_until`) in the store.
+  `valid_until`) in the store. Proposed: the store has no lifetime support yet (R17).
 - Identity changes dispose the whole store synchronously. A result from one identity or
   scope must never be shown under another.
 - Live delivery is an optimisation, never the only path to correct data. Every live record
@@ -47,7 +48,7 @@ in docs/requirements.md in general terms.
 
 ## Verification
 
-Run `pnpm check` (types, lint, tests) and `pnpm build`. Store and live-layer
+Run `pnpm check` (types, tests and the skills listing; there is no lint step) and `pnpm build`. Store and live-layer
 changes need tests for ordering, version conflicts, identity disposal, garbage collection and
 reconnect replay. Do not commit node_modules, build output, test output, credentials or
 .handoff notes.

@@ -8,8 +8,9 @@ screen.
 
 > **Status: early alpha.** The compiler, the normalised store, the React bindings and the live
 > layer, cursor and offset pagination, page-number navigation, optimistic mutations, polling, plain
-> subscriptions and the generator with TypeScript types all work and are tested. It has not yet run in a production application, and APIs may still
-> change. See the [roadmap](docs/roadmap.md).
+> subscriptions and the generator with TypeScript types all work and are tested. Real applications
+> use it, and APIs may still change. Live updates are opt-in per fragment (`@live`) and have known
+> gaps: see [the requirements](docs/requirements.md).
 
 ## Why not Apollo or Relay
 
@@ -30,9 +31,9 @@ catalogue. This client is built on those guarantees.
 | --- | --- |
 | Component | Declares a fragment on the type it renders and reads it with `useFragment`. It only sees the fields it asked for (data masking). |
 | Route root | Owns one query that spreads its children's fragments. A route loader can prefetch it before rendering, so there is no request waterfall. |
-| Compiler | A graphql-codegen preset turns every root into a flattened query, a persisted-operation hash, a normalisation map, per-fragment readers and, for fragments marked `@live`, a subscription document. |
-| Store | Keeps records by `NodeId` (type name plus complete key), orders writes by record version, retains by reference count and applies per-type cache policy. |
-| Live layer | Subscribes to the generated `Changed` events for the records the store currently holds and writes each event's entity into the store. Polling is a fallback after a reconnect gap or for state that emits no events. |
+| Compiler | `graphql-orm-client generate` turns every root into a flattened query, a sha256 hash of its text, a normalisation map, per-fragment readers and, for fragments marked `@live`, a subscription document. |
+| Store | Keeps records by `NodeId` (type name plus complete key), orders writes by record version and retains by reference count. |
+| Live layer | Subscribes to the generated `Changed` events for the records held through `@live` fragments and writes each event's entity into the store. Polling is a fallback for records no subscription covers. |
 
 Read [the design](docs/design.md) for the full model and [the graphql-orm
 contract](docs/graphql-orm-contract.md) for what the server must provide.
@@ -75,7 +76,7 @@ router serves subscriptions:
 ```ts
 import { createClient as createWsClient } from "graphql-ws"
 import { createClient, createHttpNetwork, graphqlWsSubscribe, type Client } from "graphql-orm-client"
-import { live } from "./generated/graphql-orm"
+import { live } from "./graphql/generated"
 
 let client: Client
 const ws = createWsClient({

@@ -88,7 +88,7 @@ Status: early alpha. Check the installed `docs/design.md` for the current API.
   collection. Don't copy the secret into long-lived state, and don't select it in a query.
 - Spread the fragments of the views the mutation affects into its selection, so the response
   updates the store.
-- Use an optimistic update only when the result is predictable. Give list insertions and
-  removals an explicit updater, or let the affected lists refetch.
+- Use an optimistic update only when the result is predictable. Lists aren't edited for you and
+  there is no updater: pass `refetchQueries` for lists a mutation adds to or removes from.
 - Use the generated mutations (`Create…`, `Update…`, `Delete…`). Do not ask the backend for
   hand-written resolvers.

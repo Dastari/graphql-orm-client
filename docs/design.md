@@ -20,7 +20,11 @@ Status: partly built. Implemented and tested:
 - optimistic mutations, `no-store` mutations, interval polling, and the live polling fallback;
 - `@refetchable` fragments: `client.refetchFragment` and `useRefetchableFragment`.
 
-Proposed, not built: automatic list insertion after mutations, persistence, and per-type `staleMs`/`expiresField` policy.
+Proposed, not built: automatic list insertion after mutations, persistence, per-type
+`staleMs`/`expiresField` policy, the `scope` store option, sending operations by persisted hash,
+batching writes per tick, refetching a parent on a `PROPAGATED` event, response size and time limits,
+and marking records stale after a failed lookup. Sections below label these. What the client still
+needs is in [requirements.md](requirements.md).
 
 ## Goals
 
@@ -57,7 +61,7 @@ function DeviceRow({ device }: { device: FragmentRef<typeof DeviceRowFragment> }
 
 const FleetPageQuery = graphql(`
   query FleetPage($Where: DeviceWhereInput) {
-    Devices(Where: $Where, First: 50) {
+    Devices(Where: $Where, Page: { limit: 50 }) {
       Edges { Node { ...DeviceRow } }
       PageInfo { HasNextPage EndCursor }
     }
@@ -69,7 +73,7 @@ loader: ({ context, deps }) => context.client.preload(FleetPageQuery, { Where: d
 
 function FleetPage() {
   const { data } = useQuery(FleetPageQuery, useLoaderDeps())
-  return data.Devices.Edges.map((edge) => <DeviceRow key={edge.Node.__id} device={edge.Node} />)
+  return data?.Devices.Edges.map((edge) => <DeviceRow key={edge.Node.Id} device={edge.Node} />)
 }
 ```
 
@@ -101,8 +105,9 @@ render records one component at a time.
 `compile` and `generate` from `graphql-orm-client/compiler`, and emits one typed module with an
 artifact per root:
 
-- **Query text.** The flattened operation, sent as is or by persisted hash.
-- **Persisted hash.** Registered with the router's operation allow-list when it is enabled.
+- **Query text.** The flattened operation, sent as is.
+- **Hash.** sha256 of the text. Proposed: registering it with a router allow-list and sending the
+  hash instead of the text. `createHttpNetwork` sends the text today.
 - **Normalisation map.** Where each record sits in the response, its type and its key fields,
   so the store can split the response into records without guessing.
 - **Fragment readers.** One per fragment: the fields to read from the store and the child
@@ -136,25 +141,29 @@ aggregate row) is stored inside its parent.
   graphql-orm's `RecordVersion: Int!` wherever a type has it and uses it as the version, so
   managed versions need no configuration. `versions` names another field for a type, or
   `null` to turn it off.
-- A `Changed` event with action `DELETED` removes the record and every list entry that points
-  to it.
-- Writes are batched per tick. Subscribers are notified once per batch, and only those whose
-  fields changed.
+- A `Changed` event with action `DELETED` removes the record. A query that showed it finds the
+  record missing and reads again; lists aren't edited in place.
+- Each response or event is one batch: subscribers are notified once per batch, synchronously, and
+  only those whose fields changed. Proposed: batching writes per tick.
 
 ### Retention and garbage collection
 
 A mounted root retains the records it reaches. When it unmounts, its records stay for a
-configurable period (default: five minutes) and are collected once nothing retains them.
-A small buffer of recently released roots stays warm for back navigation.
+configurable period (`store.retainMs`, default five minutes) and are collected once nothing retains
+them, so going back within that period needs no request.
 
 ### Cache policy
+
+Only `retainMs` is built. Everything else in this section is proposed: passing `scope`, `types` or
+`persistence` today is a type error, and lifetime fields are not honoured (R17). Until then, one
+client per identity gives the same isolation: dispose it when the identity changes.
 
 ```ts
 const client = createClient({
   network: createHttpNetwork({ url: "/api/graphql" }),
   store: {
     retainMs: 5 * 60_000,
-    // Planned from here: scope, per-type policy and persistence.
+    // Proposed from here: scope, per-type policy and persistence.
     scope: identityKey,            // a change disposes the store synchronously
     types: {
       Device: { staleMs: 30_000 },
@@ -188,21 +197,24 @@ variables within the same hold scope (a new search term on the same organisation
 1. **Collect.** After a root's query resolves, the live layer collects the `NodeId`s of
    records read by `@live` fragments that are still retained.
 2. **Subscribe.** It subscribes to each type's generated `<Entity>Changed` subscription for
-   those keys, with the union selection from the compiler. One subscription covers a list of
-   keys once graphql-orm supports it; until then, one per key, with an upper limit and polling
-   above it.
-3. **Write.** It writes each event's entity into the store, ordered by version. An
-   upward-propagated event (`ChangeKind: PROPAGATED`) updates the parent record and refetches
-   any of the parent's fields that are computed from its children.
+   those keys, with the union selection from the compiler (see [Live modes](#live-modes)). That
+   selection is the fragments as written, plus `NodeId` and `RecordVersion`. The server refuses the
+   whole stream if any field in it isn't a persisted, subscribable scalar, so one relation or computed
+   field in one fragment stops updates for every fragment of the type. See R2.
+3. **Write.** It writes each event's entity into the store, ordered by version. A `PROPAGATED`
+   event is written like any other. Proposed: refetching the parent's fields computed from its
+   children.
 4. **Recover.** graphql-orm (0.88) ends a `Changed` stream that lost events with one error,
    `SUBSCRIPTION_CONTINUITY_LOST` (the subscriber fell behind the event channel) or
    `SUBSCRIPTION_SOURCE_CLOSED`. After a random delay below `live.resyncJitterMs` (default
    1 s), the live layer subscribes again, then refetches the roots that show that type. Any
-   other end of a stream (a transport error, a plain `complete`) releases it without a retry;
-   the next change to the held records starts it again. A stream the server refuses can be held
-   back for a window instead (see [Refused streams](#refused-streams)). After a socket reconnect the
-   application calls `client.refetchActive()`, until the server supports replay from a sequence
-   number.
+   other end of a stream (a transport error, a plain `complete`, the router's
+   `SUBSCRIPTION_SCHEMA_RELOAD`) releases it without a retry or a refetch; only the next change to the
+   held records starts it again. **This is a known gap:** if nothing changes those records, the type
+   stays without a stream, and `client.live.status()` shows it only as `held` above zero with no
+   `subscriptions` (R4, R7). A stream the server refuses can be held back for a window instead (see
+   [Refused streams](#refused-streams)). After a socket reconnect the application calls
+   `client.refetchActive()`, until the server supports replay from a sequence number.
 5. **Release.** When records are released, it narrows or ends the subscriptions.
 
 Polling remains for state that emits no events (in-memory server state) and when the number
@@ -505,11 +517,13 @@ fragments.
 
 - The store is disposed synchronously when the identity changes. No read runs under the
   outgoing identity.
-- Responses are size-bounded and time-bounded.
-- Persisted data is per identity scope and is never read across scopes.
+- Proposed: bounding responses by size and time. `createHttpNetwork` sets no limit; pass a wrapped
+  `fetch` for one.
+- Proposed: persisted data is per identity scope and is never read across scopes. Nothing is persisted
+  today.
 - The client does not authorise anything. A denied field or record arrives as the server
   decides (null or error), and the client stores exactly that.
 - A record lookup can fail with "not current" or "unavailable" (a stale row, or a source that
-  cannot be verified right now). The store keeps what it has, marks the record stale and
-  refetches later. It does not treat the failure as the record being absent. Only a null
-  result means the record is denied or missing.
+  cannot be verified right now). The store keeps what it has and does not treat the failure as the
+  record being absent: only a null result without errors means the record is denied or missing
+  (`refetchFragment`). Proposed: marking such a record stale and refetching it later.
