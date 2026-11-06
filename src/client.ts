@@ -1,6 +1,6 @@
 import type { ConnectionSpec, FragmentArtifact, FragmentRefFor, LinkSelection, OperationArtifact, PagedSpec, Selection } from "./artifact.js"
 import { fieldStorageKey, stableStringify, type Variables } from "./store/arguments.js"
-import { contextOf, normalize } from "./store/normalize.js"
+import { contextOf, identify, normalize } from "./store/normalize.js"
 import { IDLE_TYPE_HEALTH, diagnosticMessage, typeHealth, worstOf, type LiveDiagnostic, type LiveHealth, type LiveHolding, type LiveTypeHealth } from "./health.js"
 import { LiveManager, type LiveOptions, type SubscriptionSink } from "./live.js"
 import { FRAGMENT_REF, readSelections, type FragmentRefData } from "./store/read.js"
@@ -366,7 +366,7 @@ class QueryResource<T> implements WatchedQuery<T> {
   private loadedRange = 0
 
   loadMore = (): Promise<void> => {
-    if (this.inflight) return this.inflight.then(() => this.loadMore())
+    if (this.inflight) return this.inflight.then(() => (this.users > 0 ? this.loadMore() : undefined))
     if (this.loadingMore) return this.loadingMore
     const connection = this.connection()
     if (!connection?.hasMore || (connection.endCursor === null && !connection.spec.offset)) return Promise.resolve()
@@ -428,7 +428,7 @@ class QueryResource<T> implements WatchedQuery<T> {
 
   fetch(): Promise<void> {
     if (this.inflight) return this.inflight
-    if (this.loadingMore) return this.loadingMore.then(() => this.fetch())
+    if (this.loadingMore) return this.loadingMore.then(() => (this.users > 0 ? this.fetch() : undefined))
     if (this.state.data !== undefined) this.set({ ...this.state, status: "refreshing" })
     const controller = new AbortController()
     this.controller = controller
@@ -962,6 +962,72 @@ export class Client {
     return stop
   }
 
+  /**
+   * Read the rest of a loaded keyset range after its first page, up to the limits, and merge it into `data`.
+   * Returns where the store's kept tail starts: `Infinity` when the whole range was read again.
+   */
+  private async readLoadedRange(
+    artifact: OperationArtifact<any, any>,
+    variables: Variables,
+    data: Record<string, unknown>,
+    refresh: { loaded: number; pages: number; rows: number; onTruncated(value: boolean): void },
+    signal: AbortSignal
+  ): Promise<number | undefined> {
+    let connectionTailFrom: number | undefined
+    const locate = (selections: readonly Selection[], data: Record<string, unknown>): { selection: LinkSelection; data: Record<string, unknown> } | null => {
+      for (const selection of selections) {
+        if (selection.kind === "inline") { const found = locate(selection.selections, data); if (found) return found }
+        if (selection.kind !== "link") continue
+        const child = data[selection.responseKey]
+        if (!child || typeof child !== "object" || Array.isArray(child)) continue
+        if (selection.connection) return { selection, data: child as Record<string, unknown> }
+        const found = locate(selection.selections, child as Record<string, unknown>); if (found) return found
+      }
+      return null
+    }
+    let found = locate(artifact.normalization, data)
+    if (found) {
+      const spec = found.selection.connection!
+      const arg = found.selection.args.find(arg => arg.name === spec.paging[0])
+      if (arg?.kind === "variable" && spec.limit) {
+        const page = (variables[arg.variable] ?? {}) as Record<string, unknown>
+        const target = refresh.loaded
+        const edgesKey = found.selection.selections.find((s): s is LinkSelection => s.kind === "link" && s.fieldName === spec.edges)?.responseKey ?? spec.edges
+        const infoKey = found.selection.selections.find((s): s is LinkSelection => s.kind === "link" && s.fieldName === spec.pageInfo)?.responseKey ?? spec.pageInfo
+        if (!spec.offset) {
+          let count = 1
+          while (found && (found.data[edgesKey] as unknown[]).length < target && count < refresh.pages) {
+            const info = found.data[infoKey] as Record<string, unknown>
+            if (info[spec.hasNextPage] !== true || typeof info[spec.endCursor] !== "string") break
+            const next = { ...variables, [arg.variable]: { ...page, [spec.after]: info[spec.endCursor] } }
+            const extra = await this.network.execute({ kind: artifact.kind, name: artifact.name, text: artifact.text, hash: artifact.hash, variables: next }, { signal })
+            if (extra.errors?.length || !extra.data) throw new OperationError(artifact.name, extra.errors ?? [])
+            const part = locate(artifact.normalization, extra.data)
+            if (!part || !(part.data[edgesKey] as unknown[]).length) break
+            // A row that moved between reads comes back on the next page too. Count it once, so the range still fills.
+            const nodeId = (edge: unknown) => {
+              const node = (edge as Record<string, unknown> | null)?.[spec.node] as Record<string, unknown> | null | undefined
+              return node ? identify(node, artifact.keys) : null
+            }
+            const seen = new Set((found.data[edgesKey] as unknown[]).map(nodeId))
+            const fresh = (part.data[edgesKey] as unknown[]).filter((edge) => !seen.has(nodeId(edge)))
+            found.data[edgesKey] = [...(found.data[edgesKey] as unknown[]), ...fresh]
+            found.data[infoKey] = part.data[infoKey]
+            count++
+          }
+        }
+        if (found) {
+          const length = (found.data[edgesKey] as unknown[]).length
+          const more = (found.data[infoKey] as Record<string, unknown>)[spec.hasNextPage] === true
+          const truncated = length < target && more
+          connectionTailFrom = truncated ? length : Infinity
+          refresh.onTruncated(truncated)
+        }
+      }
+    }
+    return connectionTailFrom
+  }
+
   /** Send an operation and write its response into the store. */
   async execute<T = unknown, V extends Variables = Variables>(
     artifact: OperationArtifact<T, V>,
@@ -1005,60 +1071,15 @@ export class Client {
       if (options.refreshConnection && refreshSpec?.offset && refreshSpec.limit && refreshArg?.kind === "variable" && options.refreshConnection.loaded > 0) {
         networkVariables = { ...variables, [refreshArg.variable]: { ...(variables[refreshArg.variable] as object), [refreshSpec.offset]: (variables[refreshArg.variable] as Record<string, unknown> | undefined)?.[refreshSpec.offset] ?? 0, [refreshSpec.limit]: Math.min(options.refreshConnection.loaded, options.refreshConnection.rows) } }
       }
-      let response = await this.network.execute(
+      const response = await this.network.execute(
         { kind: artifact.kind, name: artifact.name, text: artifact.text, hash: artifact.hash, variables: networkVariables },
         { signal: controller.signal }
       )
       if (this.store.isDisposed || controller.signal.aborted)
         throw new DOMException("The request was cancelled", "AbortError")
-      let connectionTailFrom: number | undefined
-      if (options.refreshConnection && response.data) {
-        const refresh = options.refreshConnection
-        const locate = (selections: readonly Selection[], data: Record<string, unknown>): { selection: LinkSelection; data: Record<string, unknown> } | null => {
-          for (const selection of selections) {
-            if (selection.kind === "inline") { const found = locate(selection.selections, data); if (found) return found }
-            if (selection.kind !== "link") continue
-            const child = data[selection.responseKey]
-            if (!child || typeof child !== "object" || Array.isArray(child)) continue
-            if (selection.connection) return { selection, data: child as Record<string, unknown> }
-            const found = locate(selection.selections, child as Record<string, unknown>); if (found) return found
-          }
-          return null
-        }
-        let found = locate(artifact.normalization, response.data)
-        if (found) {
-          const spec = found.selection.connection!
-          const arg = found.selection.args.find(arg => arg.name === spec.paging[0])
-          if (arg?.kind === "variable" && spec.limit) {
-            const page = (variables[arg.variable] ?? {}) as Record<string, unknown>
-            const target = refresh.loaded
-            const edgesKey = found.selection.selections.find((s): s is LinkSelection => s.kind === "link" && s.fieldName === spec.edges)?.responseKey ?? spec.edges
-            const infoKey = found.selection.selections.find((s): s is LinkSelection => s.kind === "link" && s.fieldName === spec.pageInfo)?.responseKey ?? spec.pageInfo
-            if (!spec.offset) {
-              let count = 1
-              while (found && (found.data[edgesKey] as unknown[]).length < target && count < refresh.pages) {
-                const info = found.data[infoKey] as Record<string, unknown>
-                if (info[spec.hasNextPage] !== true || typeof info[spec.endCursor] !== "string") break
-                const next = { ...variables, [arg.variable]: { ...page, [spec.after]: info[spec.endCursor] } }
-                const extra = await this.network.execute({ kind: artifact.kind, name: artifact.name, text: artifact.text, hash: artifact.hash, variables: next }, { signal: controller.signal })
-                if (extra.errors?.length || !extra.data) throw new OperationError(artifact.name, extra.errors ?? [])
-                const part = locate(artifact.normalization, extra.data)
-                if (!part || !(part.data[edgesKey] as unknown[]).length) break
-                found.data[edgesKey] = [...found.data[edgesKey] as unknown[], ...part.data[edgesKey] as unknown[]]
-                found.data[infoKey] = part.data[infoKey]
-                count++
-              }
-            }
-            if (found) {
-              const length = (found.data[edgesKey] as unknown[]).length
-              const more = (found.data[infoKey] as Record<string, unknown>)[spec.hasNextPage] === true
-              const truncated = length < target && more
-              connectionTailFrom = truncated ? length : Infinity
-              refresh.onTruncated(truncated)
-            }
-          }
-        }
-      }
+      const connectionTailFrom = options.refreshConnection && response.data
+        ? await this.readLoadedRange(artifact, variables as Variables, response.data, options.refreshConnection, controller.signal)
+        : undefined
       if (this.store.isDisposed || controller.signal.aborted) throw new DOMException("The request was cancelled", "AbortError")
       const errors = response.errors ?? []
       options.beforeWrite?.()

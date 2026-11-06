@@ -211,6 +211,7 @@ a newly opened stream, narrowing the gap without closing it. Required-key schema
 operation-naming health diagnostic.
 
 - `OperationArtifact` gains `lists: string[]`, the types the operation shows in a list.
+- **Only types the project made live.** While `live` is `explicit`, a list opens a stream only for a type with a `@live` fragment somewhere in the project, so regenerating gives no new type a stream. R1 widens this.
 - **At most one stream per type.** A type with a list open uses one stream not narrowed by key, and
   drops events for rows nobody holds. Otherwise it uses `Keys`. Two per type would run into the
   router's 32 operations per connection. An un-narrowed stream costs the server a row-policy check per

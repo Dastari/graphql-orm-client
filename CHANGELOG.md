@@ -10,7 +10,9 @@
   Bounded refresh retains the tail and reports `listRefreshTruncated` and degraded health.
 
 R3 migration: regenerate to turn list behavior on; previously generated modules without `lists`
-keep today's keyed behavior. Set `live.listStreams: false` to opt out and poll lists. An un-narrowed
+keep today's keyed behavior. A list opens a stream only for a type with a `@live` fragment somewhere in
+the project, so regenerating gives no new type a stream. `refetch()` and polls on a regenerated
+`@connection` query read the loaded range, not just the first page. Set `live.listStreams: false` to opt out and poll lists. An un-narrowed
 stream costs the server one row-policy check per event per subscriber. Review
 `live.maxRereadPages` (default 10) and `live.maxRereadRows` (default 100, set to the server maximum),
 and render `QueryState.listRefreshTruncated` when a loaded tail cannot be refreshed. Required-key

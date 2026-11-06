@@ -333,9 +333,14 @@ export class LiveManager {
   /** Register list interest before the first read, independently of held records. */
   holdLists(holder: string, types: readonly string[]): void {
     if (this.disposed) return
-    if (types.length) this.lists.set(holder, types)
-    else this.lists.delete(holder)
-    this.flush()
+    if (types.length) {
+      this.lists.set(holder, types)
+      this.flush()
+    } else {
+      // Not at once: a query reopening in the same tick, as React's StrictMode does, keeps its stream.
+      this.lists.delete(holder)
+      this.schedule()
+    }
   }
 
   /** Whether a list can receive events for rows it does not hold. */

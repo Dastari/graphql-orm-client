@@ -30,6 +30,7 @@ const sources = [
   `query Rows { Rows { ...Row } }`,
 ]
 const compiled = compile(schema, sources)
+const frags = compiled.fragments
 const row = (id: string, version = 1) => ({ __typename: "Widget", NodeId: encodeNodeId("Widget", [id]), Id: id, Name: id, RecordVersion: version })
 function setup(name = "List", options: { listStreams?: boolean; legacy?: boolean; required?: boolean; settleMs?: number | false; maxRereadPages?: number; maxRereadRows?: number } = {}) {
   const clock = createTestClock(), streams = createMockStreams()
@@ -57,9 +58,54 @@ describe("R3 list streams", () => {
   it("derives root, nested and count-only list types from the schema", () => {
     for (const name of ["List", "Count", "Nested", "Rows"]) expect(compiled.operations[name]!.lists).toEqual(["Widget"])
     expect(compiled.operations.Single!.lists).toEqual([])
-    const countOnly = compile(schema, [sources[2]!])
+    // A count selects no fragment, and stays current because the project made the type live.
+    const countOnly = compile(schema, [sources[0]!, sources[2]!])
     expect(countOnly.operations.Count!.lists).toEqual(["Widget"])
     expect(countOnly.live.Widget).toBeDefined()
+  })
+
+  it("a list of a type the project hasn't made live opens no stream", () => {
+    const result = compile(schema, [sources[2]!, `fragment Plain on Widget { Name }`, `query Plain { Rows { ...Plain } }`])
+    expect(result.operations.Count!.lists).toEqual([])
+    expect(result.operations.Plain!.lists).toEqual([])
+    expect(result.live).toEqual({})
+  })
+
+  it("a list reopening in the same tick keeps its stream", async () => {
+    const c = setup(); await c.open(); await c.clock.tick(250)
+    const stream = c.streams.one("LiveWidget")
+    c.query.close(); c.query.open(); await c.clock.tick(100)
+    expect(stream.closed).toBe(false)
+    expect(c.streams.find("LiveWidget")).toHaveLength(1)
+    c.client.dispose()
+  })
+
+  it("a query closed while load-more is running doesn't read afterwards", async () => {
+    const c = setup("Keyset"); c.rows(["a", "b", "c", "d"]); await c.open(); await c.clock.tick(250)
+    const loading = c.query.loadMore()
+    const reads = c.network.requests.length
+    const refetch = c.query.refetch()
+    c.query.close()
+    await loading; await refetch; await c.clock.tick(100)
+    expect(c.network.requests.length).toBe(reads)
+    c.client.dispose()
+  })
+
+  it("a row seen twice while reading a loaded range is shown once", async () => {
+    const page = (ids: string[], more: boolean) => ({ data: { Scroll: { __typename: "Result", Edges: ids.map((id) => ({ __typename: "Edge", Cursor: id, Node: row(id) })), PageInfo: { __typename: "PageInfo", TotalCount: 4, HasNextPage: more, HasPreviousPage: false, EndCursor: ids.at(-1) } } } })
+    // Two pages load; then a row created at the head during the re-read pushes b onto the second page as well.
+    const answers = [page(["a", "b"], true), page(["c", "d"], false), page(["a", "b"], true), page(["b", "c"], true), page(["d"], false)]
+    const clock = createTestClock(), streams = createMockStreams()
+    const network = createMockNetwork({ respond: () => answers.shift()! })
+    const client = createClient({ network, store: clock.store, polling: clock.polling, live: { ...clock.live, artifacts: compiled.live, subscribe: streams.subscribe, debounceMs: 0, settleMs: false, onDiagnostic: null } })
+    const query = client.watchQuery<any>(compiled.operations.Keyset!, { Page: { limit: 2 } })
+    query.open()
+    await clock.tick()
+    await query.loadMore()
+    await query.refetch()
+    const names = query.getState().data.Scroll.Edges.map((edge: any) => readFragment<{ Name: string }>(frags.Row!, edge.Node).Name)
+    expect(names).toEqual(["a", "b", "c", "d"])
+    client.dispose()
   })
   it("opens before the read, sees the first row, filter entry/exit, sorting and totals without polling", async () => {
     const c = setup(); c.rows([]); c.query.open()
@@ -133,7 +179,7 @@ describe("R3 list streams", () => {
     const list = c.client.watchQuery(compiled.operations.List!, { Page: { Limit: 2 } })
     list.open(); expect(c.streams.open.size).toBe(2)
     await c.clock.tick(100); expect(c.streams.one("LiveWidget").request.variables).toEqual({})
-    list.close(); expect(c.streams.open.size).toBe(2)
+    list.close(); c.client.live!.flush(); expect(c.streams.open.size).toBe(2)
     await c.clock.tick(100); expect(c.streams.one("LiveWidget").request.variables).toHaveProperty("Keys")
     c.client.dispose()
   })

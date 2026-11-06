@@ -199,7 +199,8 @@ function writeConnection(
     const previousHead = typeof record.fields.get(HEAD_LENGTH) === "number" ? (record.fields.get(HEAD_LENGTH) as number) : existing.length
     const fresh = new Set(incoming)
     const tail = existing.slice(context.connectionTailFrom ?? previousHead).filter((edge) => edge !== null && !fresh.has(edge))
-    merged = [...incoming, ...tail]
+    // Pages read one at a time can show a row twice when it moves between reads.
+    merged = [...fresh, ...tail]
     keepPageInfo = tail.length > 0
     store.setField(record, HEAD_LENGTH, incoming.length)
   }

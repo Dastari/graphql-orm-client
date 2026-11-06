@@ -277,7 +277,7 @@ function compileDocuments(
     const paged = pagedSpecOf(schema, node, rootType, options)
     operations[name] = {
       kind: node.operation,
-      lists: listTypes(schema, convert(schema, augmented.selectionSet, rootType, augmentedFragments, true, options), rootType),
+      lists: listTypes(schema, convert(schema, augmented.selectionSet, rootType, augmentedFragments, true, options), rootType, options),
       keys: pick(metadata.keys, reachable),
       versions: pick(metadata.versions, reachable),
       name,
@@ -291,7 +291,12 @@ function compileDocuments(
     }
   }
   if (nested) return { operations, fragments, live: {}, liveUnavailable: [] }
-  const { live, liveUnavailable } = compileLive(schema, fragments, fragmentNodes, options, [...new Set(Object.values(operations).filter(op => op.kind === "query").flatMap(op => op.lists ?? []))])
+  // Lists stay current for types the project made live. Live by default (R1) widens this; a list alone doesn't open a stream.
+  const liveTypes = new Set(Object.values(fragments).filter((fragment) => fragment.live).map((fragment) => fragment.typeCondition))
+  for (const [name, operation] of Object.entries(operations)) {
+    operations[name] = { ...operation, lists: (operation.lists ?? []).filter((typename) => liveTypes.has(typename)) }
+  }
+  const { live, liveUnavailable } = compileLive(schema, fragments, fragmentNodes, options)
   if (options.liveSelection !== "as-written") {
     const scalars = (selections: readonly Selection[]): string[] => selections.flatMap((selection) =>
       selection.kind === "scalar" ? [selection.fieldName] : selection.kind === "inline" ? scalars(selection.selections) : [])
@@ -391,8 +396,7 @@ function compileLive(
   schema: GraphQLSchema,
   fragments: Readonly<Record<string, FragmentArtifact>>,
   fragmentNodes: ReadonlyMap<string, FragmentDefinitionNode>,
-  options: CompileOptions,
-  lists: readonly string[] = []
+  options: CompileOptions
 ): { live: Record<string, LiveArtifact>; liveUnavailable: string[] } {
   if (options.liveSelection === "as-written" && options.onWarning) {
     compileLive(schema, fragments, fragmentNodes, { ...options, liveSelection: "full" })
@@ -404,7 +408,6 @@ function compileLive(
     if (!type || !isObjectType(type)) continue
     byType.set(type.name, [...(byType.get(type.name) ?? []), fragment.name])
   }
-  for (const typename of lists) if (!byType.has(typename)) byType.set(typename, [])
   const live: Record<string, LiveArtifact> = {}
   const liveUnavailable: string[] = []
   const subscriptionRoot = schema.getSubscriptionType()
@@ -431,7 +434,7 @@ function compileLive(
     const operationName = `Live${typename}`
     const variables = arg ? `($${arg.name}: ${String(arg.type)})` : ""
     const argumentUse = arg ? `(${arg.name}: $${arg.name})` : ""
-    const spreads = names.length ? [...names].sort().map((name) => `...${name}`).join(" ") : keyFields.join(" ")
+    const spreads = [...names].sort().map((name) => `...${name}`).join(" ")
     const text = `subscription ${operationName}${variables} { ${fieldName}${argumentUse} { ${action.name} ${entity.name} { ${spreads} } } }`
     const document: DocumentNode = {
       kind: Kind.DOCUMENT,
@@ -876,14 +879,15 @@ function convert(
 }
 
 /** Read connection identity from schema structure, even when the document selects only totals. */
-function listTypes(schema: GraphQLSchema, selections: readonly Selection[], parent: GraphQLCompositeType): string[] {
+function listTypes(schema: GraphQLSchema, selections: readonly Selection[], parent: GraphQLCompositeType, options: CompileOptions): string[] {
+  const names = { ...DEFAULT_CONNECTION, ...options.connection }
   const result = new Set<string>()
   const add = (type: import("graphql").GraphQLNamedType) => {
     if (isObjectType(type)) result.add(type.name)
     else if (isAbstractType(type)) for (const possible of schema.getPossibleTypes(type)) result.add(possible.name)
   }
   for (const selection of selections) {
-    if (selection.kind === "inline") for (const name of listTypes(schema, selection.selections, selection.typeCondition ? schema.getType(selection.typeCondition) as GraphQLCompositeType : parent)) result.add(name)
+    if (selection.kind === "inline") for (const name of listTypes(schema, selection.selections, selection.typeCondition ? schema.getType(selection.typeCondition) as GraphQLCompositeType : parent, options)) result.add(name)
     if (selection.kind !== "link" || !("getFields" in parent)) continue
     const field = parent.getFields()[selection.fieldName]
     if (!field) continue
@@ -891,13 +895,12 @@ function listTypes(schema: GraphQLSchema, selections: readonly Selection[], pare
     const unwrapped = isNonNullType(field.type) ? field.type.ofType : field.type
     if (isListType(unwrapped)) add(type)
     if (isObjectType(type)) {
-      const edges = type.getFields().Edges
+      const edges = type.getFields()[names.edges]
       const edge = edges && getNamedType(edges.type)
-      const node = edge && isObjectType(edge) ? edge.getFields().Node : undefined
+      const node = edge && isObjectType(edge) ? edge.getFields()[names.node] : undefined
       if (node) add(getNamedType(node.type))
     }
-    if (isCompositeType(type)) for (const name of listTypes(schema, selection.selections, type)) result.add(name)
+    if (isCompositeType(type)) for (const name of listTypes(schema, selection.selections, type, options)) result.add(name)
   }
-  // Connection wrappers/edges have no entity key; list interest belongs to entities only.
-  return [...result].filter(name => { const type = schema.getType(name); return isObjectType(type) && (!!type.getFields().NodeId || !!type.getFields().Id || !!schema.getType(`${name}KeyInput`)) }).sort()
+  return [...result].sort()
 }
