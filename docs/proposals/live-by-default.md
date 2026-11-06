@@ -1,7 +1,7 @@
 # Live by default: design for requirement groups 1 and 2
 
 Status: **proposed; the owner approved the direction on 2026-11-06. Built so far: the restart of ended
-streams (fact 4), in 0.1.0-alpha.7; R20 and R7, in 0.1.0-alpha.8; R8 and R6, in 0.1.0-alpha.9. Group 1 is built.** Requirement numbers refer to [requirements.md](../requirements.md).
+streams (fact 4), in 0.1.0-alpha.7; R20 and R7, in 0.1.0-alpha.8; R8 and R6, in 0.1.0-alpha.9. R4's client-side overlap and confirming reads are built; true gap closure still needs a server started signal. Group 1 is built.** Requirement numbers refer to [requirements.md](../requirements.md).
 Unless noted, server facts were read from graphql-orm `main` at `9d1a482` and not run against a live
 router; R21 is what will prove them. The large application's backend is on graphql-orm 0.90.1.
 
@@ -133,23 +133,36 @@ Order: R4, R2, R3, R1.
 
 ### R4. No lost events
 
-- **Replacing a stream.** Start the new one, then stop the old, as graphql-orm documents. Duplicates
-  are dropped by version; without a version the same snapshot is written twice, which is harmless.
-- **Chunks stop shifting.** Keys are sliced after sorting today, so one new key restarts every later
-  chunk. Keys get a stable chunk until it is released.
-- **Newly covered keys are re-read,** since events before the subscribe aren't replayed.
-- **First read.** A type shown in a list has its stream (R3) opened before the read. Other roots can't
-  know their keys first, so the order is read, subscribe, then one confirming re-read after
-  `live.settleMs` (250 ms). Because of fact 2 this narrows the gap and doesn't close it against a real
-  server. Tests can prove the ordering; only a started signal can prove no gap.
-- **Any end we didn't ask for restarts,** with jittered exponential delay (1 s to 60 s), then re-reads.
-  A reload also asks the transport for a fresh connection, because a retired connection answers
-  `SERVICE_UNAVAILABLE` to new subscribes.
-- **Reconnect** re-reads through the transport's `connection`, so applications stop wiring
-  `client.refetchActive()`. One that still does causes no extra request, since `fetch` joins a read in
-  flight.
-- **A read in flight can't absorb a stale mark.** Today `fetch` returns the one in flight, which may
-  predate the event. The mark must trigger another read afterwards.
+Built on the client:
+
+- **Replacement:** start the successor and retain the baseline for `live.settleMs` (default 250 ms;
+  250 ms with confirming reads disabled). One candidate generation per type bounds bursts. A failed
+  candidate leaves the baseline open. Refusals retain their back-off path. Capacity errors
+  (`SUBSCRIPTION_LIMIT_EXCEEDED`) use ordinary restart back-off, never the refusal window. At the
+  router's 32-operation connection limit both generations count: old coverage stays, newly uncovered
+  records poll, and replacements retry until there is capacity. No admission is inferred from silence.
+- **Stable chunks:** a key keeps its chunk until released; adding a key changes one chunk.
+- **Newly covered keys and first load:** read, subscribe, then one confirming re-read after
+  `live.settleMs` (250 ms), only for queries holding records that gained a stream. The same timer
+  serves both cases, with reads coalesced across types. Already streamed records need no extra read.
+  This adds one request per query on first load. `live.settleMs: false` disables confirming reads
+  and restores the previous request cost.
+- **Limits:** because of fact 2, bounded overlap and confirming reads narrow the gap and do not
+  close it against a real server. Only a started signal can prove admission. R3 list streams
+  before the read remain proposed. Versions reject older events and read responses. Identical
+  unversioned snapshots are harmless; different unversioned snapshots remain last-arrival-wins.
+- **Unexpected ends and reconnect:** restart with back-off and re-read through `live.connection`.
+  `readAgain` follows a read in flight with one more, coalescing repeated stale marks.
+- **Disposal and release:** disposal cancels timers and streams, including the overlap, and rejects
+  late events. Releasing the last holder removes coverage as before.
+
+Validation (2026-11-06): the key-set change with an event written during overlap passed
+8/8 runs with Node `ws` defaults and 8/8 with `allowSynchronousEvents: false`, against
+router 0.8.1 built from `graphql-orm-v0.90.1`. Every run received the event on both streams,
+updated the store before retirement, and retired the baseline. The subgraph was the owner's
+Node test subgraph, not a generated graphql-orm service. First-read confirmation, operation-limit
+failure, refusal, disposal and reconnect behavior were tested with mocks, not this real-router
+scenario. These runs do not prove subscription admission or general gap-free delivery.
 
 ### R2. What goes in a stream
 

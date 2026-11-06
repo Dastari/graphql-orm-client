@@ -194,6 +194,31 @@ variables within the same hold scope (a new search term on the same vendor), as
 
 ## Live layer
 
+Streams in `keys` mode keep each key in its chunk until released. Replacing a stream starts
+its successor first and retains the baseline for a bounded overlap (`live.settleMs`, default
+250 ms; 250 ms when confirming reads are disabled). Only one candidate generation per type
+is open at a time. A failed candidate leaves the baseline open; genuine refusals still back off.
+`SUBSCRIPTION_LIMIT_EXCEEDED` uses ordinary restart back-off, never the five-minute refusal window.
+The router counts both old and new operations against its connection limit (default 32 in router
+0.8.1 at graphql-orm-v0.90.1). At a full connection the old coverage stays, newly uncovered records
+use the polling fallback, and replacement retries until capacity becomes available. Disable that
+fallback only if the application accepts stale uncovered records.
+
+The first load is **read, subscribe, confirming read**, because keys are unknown before the read
+and R3's list streams are not built. Queries whose records gained a stream read once more after
+`live.settleMs` (default 250 ms). These reads also cover newly subscribed keys during replacement,
+coalesce across types, and use `readAgain`: a read in flight is followed by one more. Queries whose
+records already have streams do not receive a confirming read. This adds a request per query on
+first load. Set `live: { settleMs: false }` to disable these reads and restore the previous request
+cost; overlap and reconnect recovery remain enabled.
+
+**This narrows the gap; it does not close it against a real server.** There is no per-subscribe
+acknowledgement, and waiting a bounded time proves nothing about admission. A server started signal
+is still needed (see the contract). Versioned writes reject older snapshots delivered by overlapping
+streams or reads. An identical unversioned snapshot is harmless, but without versions the last write
+to arrive wins, so a stale confirming read can overwrite an event. Disposal cancels overlap and
+confirming timers, closes both generations, and prevents late event writes.
+
 1. **Collect.** After a root's query resolves, the live layer collects the `NodeId`s of
    records read by `@live` fragments that are still retained.
 2. **Subscribe.** It subscribes to each type's generated `<Entity>Changed` subscription for

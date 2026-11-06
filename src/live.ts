@@ -49,7 +49,7 @@ export interface StreamRestart {
  * - `reload`: the router retired the graph the connection selected (`SUBSCRIPTION_SCHEMA_RELOAD`).
  * - `lost`: events were lost (`SUBSCRIPTION_CONTINUITY_LOST`, `SUBSCRIPTION_SOURCE_CLOSED`).
  * - `unavailable`: the router can't serve it now (`SERVICE_UNAVAILABLE`, as a retired connection answers, or
- *   `SUBGRAPH_UNAVAILABLE`).
+ *   `SUBGRAPH_UNAVAILABLE`, `SUBSCRIPTION_LIMIT_EXCEEDED`).
  * - `refused`: GraphQL errors answered the subscribe and no event ever arrived.
  * - `errored`: GraphQL errors ended a stream that had delivered events.
  * - `transport`: the socket failed, or its reconnect attempts ran out.
@@ -95,6 +95,12 @@ export interface LiveOptions {
   /** Delay before changes to the held records reach the server. Default 50 ms. */
   readonly debounceMs?: number
   /**
+   * Confirm newly subscribed records with one read after this delay (default 250 ms).
+   * No subscribe acknowledgement exists: this narrows, but cannot close, the first-read gap.
+   * `false` disables confirming reads, restoring the previous request cost.
+   */
+  readonly settleMs?: number | false
+  /**
    * Longest random delay before resubscribing and refetching after a subscription lost events.
    * Spreads the load when one burst ends every client's subscription at once. Default 1000 ms.
    */
@@ -116,7 +122,7 @@ export interface LiveOptions {
    * `true` is five minutes for every type; a window varies by 20% either way. See `RefusalBackoff` for a window
    * per type and opting a type out; `false` leaves refused streams on the ordinary back-off (`restart`). A close that reports
    * lost events (`SUBSCRIPTION_CONTINUITY_LOST`, `SUBSCRIPTION_SOURCE_CLOSED`), a schema reload
-   * (`SUBSCRIPTION_SCHEMA_RELOAD`), `SERVICE_UNAVAILABLE` and a transport failure are never remembered. The memory belongs to the client and goes with it when the
+   * (`SUBSCRIPTION_SCHEMA_RELOAD`), `SERVICE_UNAVAILABLE`, `SUBSCRIPTION_LIMIT_EXCEEDED` and a transport failure are never remembered. The memory belongs to the client and goes with it when the
    * identity changes. Uses `setTimeout` and `clearTimeout` below, so tests can drive the window.
    */
   readonly refusalBackoff?: boolean | RefusalBackoff
@@ -166,6 +172,9 @@ interface ActiveType {
   /** Subscription key → disposer. Keys are record ids (`key` mode) or chunk signatures. */
   readonly subscriptions: Map<string, () => void>
   overflow: number
+  readonly chunks: Set<string>[]
+  readonly coverage: Map<string, ReadonlySet<string>>
+  transition: { handle: unknown } | null
 }
 
 /**
@@ -201,7 +210,7 @@ const firstCode = (errors: GraphQLErrors | null): string | null => {
 /** The router retired the graph this connection selected, and ends its streams with this code. */
 const RELOAD_CODES = new Set(["SUBSCRIPTION_SCHEMA_RELOAD"])
 /** The router can't serve the stream right now. A connection on a retired graph answers this. */
-const UNAVAILABLE_CODES = new Set(["SERVICE_UNAVAILABLE", "SUBGRAPH_UNAVAILABLE"])
+const UNAVAILABLE_CODES = new Set(["SERVICE_UNAVAILABLE", "SUBGRAPH_UNAVAILABLE", "SUBSCRIPTION_LIMIT_EXCEEDED"])
 
 const DEFAULT_RESTART_MIN_MS = 1000
 const DEFAULT_RESTART_MAX_MS = 60_000
@@ -278,9 +287,15 @@ export class LiveManager {
     return [...this.refused.values()].some((entry) => entry.typename === typename)
   }
 
-  /** Whether some held records of a type have no subscription (beyond the per-record cap). */
+  /** Whether held records exceed the keyed cap or lack coverage after a router capacity error. */
   overflows(typename: string): boolean {
     const artifact = this.artifacts[typename]
+    if (this.restarts.get(typename)?.lastEnd?.code === "SUBSCRIPTION_LIMIT_EXCEEDED") {
+      const active = this.active.get(typename)
+      const covered = new Set<string>()
+      for (const key of active?.subscriptions.keys() ?? []) for (const id of active!.coverage.get(key) ?? []) covered.add(id)
+      if ([...(this.held().get(typename) ?? [])].some((id) => !covered.has(id))) return true
+    }
     if (artifact?.mode !== "key" || artifact.keyOptional) return false
     return (this.held().get(typename)?.size ?? 0) > (this.options.maxKeyedSubscriptions ?? 50)
   }
@@ -331,6 +346,8 @@ export class LiveManager {
   dispose(): void {
     this.disposed = true
     this.disconnect?.()
+    if (this.confirmationTimer !== null) this.cancelTimer(this.confirmationTimer)
+    this.confirmations.clear()
     if (this.timer !== null) (this.options.clearTimeout ?? clearTimeout)(this.timer as ReturnType<typeof setTimeout>)
     for (const restart of this.restarts.values()) {
       if (restart.handle !== null) (this.options.clearTimeout ?? clearTimeout)(restart.handle as ReturnType<typeof setTimeout>)
@@ -338,7 +355,10 @@ export class LiveManager {
     this.restarts.clear()
     for (const entry of this.refused.values()) (this.options.clearTimeout ?? clearTimeout)(entry.handle as ReturnType<typeof setTimeout>)
     this.refused.clear()
-    for (const active of this.active.values()) for (const stop of active.subscriptions.values()) stop()
+    for (const active of this.active.values()) {
+      if (active.transition) this.cancelTimer(active.transition.handle)
+      for (const stop of active.subscriptions.values()) stop()
+    }
     this.active.clear()
     this.holders.clear()
   }
@@ -364,12 +384,13 @@ export class LiveManager {
     return union
   }
 
-  private reconcile(): void {
+  private reconcile(suppressConfirmationFor?: string): void {
     if (this.disposed) return
     const held = this.held()
     for (const artifact of Object.values(this.artifacts)) {
+      const confirm = artifact.typename !== suppressConfirmationFor
       const ids = [...(held.get(artifact.typename) ?? [])].sort()
-      const active = this.active.get(artifact.typename) ?? { subscriptions: new Map(), overflow: 0 }
+      const active: ActiveType = this.active.get(artifact.typename) ?? { subscriptions: new Map(), overflow: 0, chunks: [], coverage: new Map(), transition: null }
       this.active.set(artifact.typename, active)
       const wanted = new Map<string, Record<string, unknown>>()
       active.overflow = 0
@@ -385,27 +406,105 @@ export class LiveManager {
             active.overflow = Math.max(0, ids.length - max)
           }
         } else {
-          const max = this.options.maxKeys ?? 500
-          for (let start = 0; start < ids.length; start += max) {
-            const chunk = ids.slice(start, start + max)
-            wanted.set(`keys:${chunk.join(",")}`, { [artifact.keyArgument!]: chunk.map((id) => keyValue(artifact, id)) })
+          const max = Math.max(1, this.options.maxKeys ?? 500)
+          const remaining = new Set(ids)
+          for (const chunk of active.chunks) {
+            for (const id of chunk) {
+              if (!remaining.delete(id)) chunk.delete(id)
+            }
+          }
+          for (const id of remaining) {
+            let chunk = active.chunks.find((entry) => entry.size < max)
+            if (!chunk) active.chunks.push((chunk = new Set()))
+            chunk.add(id)
+          }
+          for (const chunk of active.chunks) {
+            if (!chunk.size) continue
+            const keys = [...chunk].sort()
+            wanted.set(`keys:${keys.join(",")}`, { [artifact.keyArgument!]: keys.map((id) => keyValue(artifact, id)) })
           }
         }
       }
+      if (active.subscriptions.has("all")) active.coverage.set("all", new Set(ids))
+      const heldIds = new Set(ids)
       for (const [key, stop] of [...active.subscriptions]) {
-        if (!wanted.has(key)) {
+        if (![...(active.coverage.get(key) ?? [])].some((id) => heldIds.has(id))) {
           stop()
           active.subscriptions.delete(key)
+          active.coverage.delete(key)
         }
       }
+      if ((!ids.length || !active.subscriptions.size) && active.transition) {
+        this.cancelTimer(active.transition.handle)
+        active.transition = null
+      }
+      // One candidate generation at a time. A burst is reconciled at the end of the overlap.
+      if (active.transition) continue
       // A restart is waiting out its delay: no change to the held records may shorten it.
       if ((this.restarts.get(artifact.typename)?.handle ?? null) !== null) continue
+      const baseline = new Set(active.subscriptions.keys())
+      const alreadyCovered = new Set<string>()
+      for (const key of baseline) for (const id of active.coverage.get(key) ?? []) alreadyCovered.add(id)
+      const gained = new Set<string>()
+      let started = false
       for (const [key, variables] of wanted) {
         if (active.subscriptions.has(key)) continue
+        const covered = artifact.mode === "keys"
+          ? new Set(active.chunks.find((chunk) => key === `keys:${[...chunk].sort().join(",")}`))
+          : new Set(key === "all" ? ids : [key])
+        active.coverage.set(key, covered)
         this.start(artifact, active, key, variables)
+        if (!active.subscriptions.has(key)) {
+          active.coverage.delete(key)
+          continue
+        }
+        started = true
+        for (const id of covered) if (!alreadyCovered.has(id)) gained.add(id)
+      }
+      if (started && (baseline.size > 0 || this.options.settleMs !== false)) {
+        const holders = new Set<string>()
+        for (const [holder, targets] of this.holders) {
+          if ([...(targets.get(artifact.typename) ?? [])].some((id) => gained.has(id))) holders.add(holder)
+        }
+        const handle = this.after(() => {
+          active.transition = null
+          // A failed candidate never costs the baseline its coverage.
+          const ready = [...wanted.keys()].every((key) => active.subscriptions.has(key))
+          for (const [key, stop] of [...active.subscriptions]) {
+            if (ready ? !wanted.has(key) : !baseline.has(key)) {
+              stop()
+              active.subscriptions.delete(key)
+              active.coverage.delete(key)
+            }
+          }
+          if (confirm && this.options.settleMs !== false && !this.disposed) {
+            this.queueConfirmation(holders)
+          }
+          this.reconcile()
+          this.onRefusalChange()
+        }, this.options.settleMs === false ? 250 : (this.options.settleMs ?? 250))
+        active.transition = { handle }
       }
     }
     this.onChange()
+  }
+
+  private cancelTimer(handle: unknown): void {
+    (this.options.clearTimeout ?? clearTimeout)(handle as ReturnType<typeof setTimeout>)
+  }
+
+  private readonly confirmations = new Set<string>()
+  private confirmationTimer: unknown = null
+
+  private queueConfirmation(holders: ReadonlySet<string>): void {
+    for (const holder of holders) if (this.holders.has(holder)) this.confirmations.add(holder)
+    if (this.confirmationTimer !== null || !this.confirmations.size) return
+    this.confirmationTimer = this.after(() => {
+      this.confirmationTimer = null
+      const current = new Set([...this.confirmations].filter((holder) => this.holders.has(holder)))
+      this.confirmations.clear()
+      if (!this.disposed && current.size) this.resync(current)
+    }, 0)
   }
 
   private start(artifact: LiveArtifact, active: ActiveType, key: string, variables: Record<string, unknown>): void {
@@ -425,13 +524,15 @@ export class LiveManager {
       dispose?.()
     }
     const end = (reason: LiveEndReason, code: string | null) => {
-      if (ended) return
+      if (ended || stopped || this.disposed) return
       ended = true
-      const requested = stopped
-      if (active.subscriptions.get(key) === stop) active.subscriptions.delete(key)
+      if (active.subscriptions.get(key) === stop) {
+        active.subscriptions.delete(key)
+        active.coverage.delete(key)
+      }
       stop()
-      if (requested) return
       this.ended(artifact, identity, reason, code)
+      this.onRefusalChange()
       this.onChange()
     }
     active.subscriptions.set(key, stop)
@@ -439,6 +540,7 @@ export class LiveManager {
       { kind: "subscription", name: operation.name, text: operation.text, hash: operation.hash, variables },
       {
         next: (response) => {
+          if (stopped || this.disposed) return
           const errors = response.errors ?? []
           if (hasCode(errors, CONTINUITY_CODES) || hasCode(errors, RELOAD_CODES)) return end(reasonFor(errors, delivered), firstCode(errors))
           if (response.data) delivered = true
@@ -526,9 +628,9 @@ export class LiveManager {
   }
 
   /**
-   * A type's stream ended. Subscribe again first, then read what shows the type, so no change falls
-   * between the two. The first restart is below `resyncJitterMs`, which spreads clients that lost
-   * their streams together; each further end in a row waits longer, up to `restart.maxMs`.
+   * A type's stream ended. Subscribe again first, then read what shows the type. Without a
+   * subscribe acknowledgement this narrows, but cannot eliminate, the gap. The first restart is
+   * below `resyncJitterMs`, which spreads clients that lost their streams together; each further end in a row waits longer, up to `restart.maxMs`.
    */
   private scheduleRestart(typename: string): void {
     const state = this.restartState(typename)
@@ -555,7 +657,7 @@ export class LiveManager {
 
   /** Start the type's missing streams, then read what shows the type. */
   private restartNow(typename: string): void {
-    this.reconcile()
+    this.reconcile(typename)
     const holders = new Set<string>()
     for (const [holder, targets] of this.holders) if (targets.get(typename)?.size) holders.add(holder)
     if (holders.size) this.resync(holders)
