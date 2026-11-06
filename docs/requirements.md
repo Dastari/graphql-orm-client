@@ -158,6 +158,8 @@ current under R3.
 
 **R16. Deleted records.** The live layer removes a deleted record from lists and the store. A
 component holding one gets a defined deleted state and doesn't crash. Confirm today's behaviour.
+*Built in 0.1.0-alpha.10:* `DELETED` with change kind `PROPAGATED` (a child deleted under a record that still exists,
+graphql-orm 0.93.0) keeps the record and re-reads its holders.
 
 **R17. Lifetime and persistence.** `AGENTS.md` requires honouring lifetime fields, but the source has
 none of this yet. Build it with the roadmap's persistence phase. Persistence is scoped to identity,

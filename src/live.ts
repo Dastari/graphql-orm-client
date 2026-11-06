@@ -280,7 +280,8 @@ export class LiveManager {
     private readonly resync: (holders: ReadonlySet<string>) => void = () => {},
     private readonly onChange: (timing?: boolean) => void = () => {},
     private readonly onRefusalChange: () => void = () => {},
-    private readonly onEvent: (holders: ReadonlySet<string>, typename: string, thin: boolean, fragments: readonly string[]) => void = () => {}
+    /** `stale` means the event carried nothing the holders can use, so they always read again. */
+    private readonly onEvent: (holders: ReadonlySet<string>, typename: string, stale: boolean, fragments: readonly string[]) => void = () => {}
   ) {
     this.artifacts = options.artifacts ?? {}
     this.disconnect =
@@ -801,7 +802,13 @@ export class LiveManager {
       this.onEvent(listHolders, artifact.typename, thin, artifact.rereadFragments ?? [])
       return
     }
-    if (payload[artifact.actionField] === "DELETED") {
+    const deleted = payload[artifact.actionField] === "DELETED"
+    // A child was deleted under this record, which still exists (graphql-orm 0.93.0, #290). The event says only that
+    // something below it changed, so the queries holding it read again.
+    const childDeleted = deleted && artifact.changeKindField !== undefined && payload[artifact.changeKindField] === "PROPAGATED"
+    if (childDeleted) {
+      // Nothing to write.
+    } else if (deleted) {
       this.store.delete(id)
     } else {
       const root = `client:subscription:${++this.subscriptionCount}`
@@ -818,7 +825,7 @@ export class LiveManager {
       for (const [holder, targets] of this.holders) {
         if (targets.get(artifact.typename)?.has(id)) holders.add(holder)
       }
-      this.onEvent(holders, artifact.typename, thin, artifact.rereadFragments ?? [])
+      this.onEvent(holders, artifact.typename, thin || childDeleted, artifact.rereadFragments ?? [])
     }
   }
 }

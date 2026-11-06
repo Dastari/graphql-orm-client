@@ -19,41 +19,71 @@ and render `QueryState.listRefreshTruncated` when a loaded tail cannot be refres
 schemas poll with `list-key-required`; disabling streams reports `list-streams-disabled`.
 Without a delete preimage grant no event is sent: correction waits for the next event or poll.
 
+## 0.1.0-alpha.10 (2026-11-06)
 
-- Generate flattened full/thin live projections. Unsupported full selections fall back to keys only;
-  events re-read holders for omitted fields and changed relation links. Health retains
-  `selection-refused`, and doctor distinguishes admitted/quiet fallback. Quiet fallback fails strict
-  mode; working fallback otherwise passes.
-- Automatic stale, restart and R4 confirming reads share `live.minRereadMs` (default 2000). Repeated
-  confirmations from changing query membership are bounded, and inactive queries catch up on return.
-- Infer composite keys from `<Type>KeyInput` and build key arguments from stored fields.
+Install from the GitHub release archive:
+`pnpm add https://github.com/Dastari/graphql-orm-client/releases/download/v0.1.0-alpha.10/graphql-orm-client-0.1.0-alpha.10.tgz`.
 
-Migration: before regeneration, set `liveSelection: "as-written"` to retain previous stream text,
-then review generator warnings naming excluded fragment fields. Existing generated modules keep
-legacy behavior without a version bump. To adopt projections, remove the setting and regenerate.
-Composite keys need no `keys` setting and no particular snapshot order: the client finds the order from a
-record's server `NodeId`. If no order matches, health shows `identity-mismatch`: that type opens no stream and
-polls, rather than dropping every event. Review `live.minRereadMs` if automatic re-read timing matters, and run
-doctor against the deployed identity. Managed RecordVersion remains in full; thin streams carry no
-version and use last-arrival-wins when neither write carries one.
+**Regenerate before adopting graphql-orm 0.93.0.** The fix below needs the stream to select the change kind, and a module
+generated earlier doesn't. `generate --check` fails on such a module, because the generated streams changed.
 
-- Add `pnpm budgets` and a separate CI job for R22: store, live-event notifications, large-schema
-  compilation, built entry sizes and real Chromium pop-out windows. No runtime API change.
-- R4: stable key chunks, bounded stream overlap, and confirming reads for newly subscribed records.
-  A failed replacement retains the old streams. Router operation-limit errors retry with ordinary
-  back-off, retaining old coverage and polling uncovered records until capacity becomes available.
-- **Request cost change:** a live query now makes one additional read after its records first gain
-  a stream, after `live.settleMs` (default 250 ms). This also confirms newly covered keys during
-  replacement, coalesced per query. To restore the previous request count, set
-  `live: { settleMs: false }`. No generated artifact change or regeneration is needed.
-  Overlap and confirming reads narrow gaps; without a server started signal they cannot guarantee
-  gap-free delivery against a real server. Without versions, last-arrival-wins still applies.
-- Add `schema pull --url <router>` and read-only `schema pull --check`, using doctor's
-  introspection path and environment credentials. Sorted SDL has a SHA-256 sidecar.
-- Opt in to snapshot integrity and generated provenance checks by running `schema pull`, then
-  `generate`, and committing the SDL, its `.sha256` sidecar and generated output.
-  Projects without a sidecar keep their previous behavior. See the design for exit codes.
+### Fixed: a child delete removed its parent
 
+Since graphql-orm 0.93.0 (#290), deleting a child under a relation with `propagate_change = "up"` sends subscribers of the
+parent an event with action `DELETED` and change kind `PROPAGATED`. The parent still exists, but the client removed it from the
+store, so it disappeared from every open view until a read restored it.
+
+- Generated streams now select the change kind where the type serves it, in the service's casing. This includes
+  `liveSelection: "as-written"`, whose stream text otherwise stays as it was.
+- `DELETED` with `PROPAGATED` keeps the record and reads the queries holding it again. Deleting N children sends N events, and
+  they coalesce through `live.minRereadMs`.
+- `DELETED` with `DIRECT` still removes the record.
+- A service that doesn't serve the change kind, and a module generated before this release, keep the old behaviour: every
+  `DELETED` removes the record.
+- This was the only place an event's action removes a record. `client.subscribe` leaves a `DELETED` action to the application,
+  so a hand-written subscription handler must check the change kind itself.
+
+### Changed: streams compile from what they can carry (R2)
+
+After regenerating, a stream selects key fields, the version and scalars with no arguments. It never selects `NodeId`, a
+relation or a scalar with arguments. Queries re-read what the stream can't carry, which also catches a changed relation link. If
+the server refuses that selection with `INVALID_INPUT`, the client uses keys only for its lifetime, and health keeps reason
+`selection-refused`. `doctor` adds the verdicts `fallback-admitted` and `fallback-not-refused`.
+
+- Composite keys need no `keys` setting. Their names come from `<Type>KeyInput` and their order from a held record's `NodeId`, by
+  exact match, because introspection through the router doesn't give the order (graphql-orm#356). If no order matches, health shows
+  `identity-mismatch`: that type opens no stream and polls.
+- `key` mode reads key fields from the stored record, and no longer decodes `NodeId`.
+
+### Changed: no lost events (R4)
+
+- Replacing a stream starts the new one first and keeps the old one for `live.settleMs` (default 250 ms). An old stream closes only
+  once a wanted stream covers every held record it covers.
+- In `keys` mode a key keeps its chunk until released, so adding a key replaces one stream.
+- **More requests:** a live query reads once more when its records first gain a stream. This narrows the first-read gap and
+  doesn't close it, because nothing acknowledges a subscribe (graphql-orm#341).
+- `SUBSCRIPTION_LIMIT_EXCEEDED` is now an outage on the ordinary back-off, not a five-minute refusal. Open streams stay, and
+  uncovered records poll.
+- Automatic re-reads share `live.minRereadMs` (default 2000 ms) per query, and pause while `polling.isActive()` is false. This also
+  applies to the re-read after a restart or reconnect, which can now wait up to that long.
+
+### Added
+
+- `graphql-orm-client schema pull --url <router>`, and `--check` to detect drift without writing (R23). It writes sorted SDL and
+  `<schema>.sha256`. Once that file exists, `generate --check` also fails on a hand-edited snapshot. Projects without it behave as
+  before.
+- `pnpm budgets` and its CI workflow (R22), in this repository only.
+
+### Migration from alpha.9
+
+1. Regenerate, then read the generator's warnings. Each names a fragment and field the stream now excludes, which that fragment's
+   queries will re-read on an event.
+2. To regenerate without the new stream selection, set `liveSelection: "as-written"` in the generator config. The change-kind
+   fix still applies.
+3. To keep the old read count, set `live: { settleMs: false }`. Overlap stays on either way, at 250 ms.
+4. If a re-read's timing matters, set `live.minRereadMs`.
+5. Run `doctor` against the deployed identity to see which types fall back to keys only.
+6. Check any hand-written subscription handler that removes a record on `DELETED`: it needs the change kind too.
 
 ## 0.1.0-alpha.9 (2026-11-06)
 

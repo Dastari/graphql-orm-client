@@ -279,7 +279,7 @@ In order. All opt-in, through its normal process.
 3. **A stream-started signal.** An opt-in first frame after authorization, as `CacheSync::changes` sends.
    It is the only thing that closes the first-read gap and makes `live` provable for a quiet stream.
 4. **A dedicated code for an unsupported selection,** so `INVALID_INPUT` needn't stand for it.
-5. **A key-only delete signal** that needs no preimage (see #217), and #290 for child deletes.
+5. **A key-only delete signal** that needs no preimage (see #217). Child deletes notify the parent from 0.93.0 (#290).
 6. Already listed in the contract: effective page size, and one time format.
 
 ## Decisions from the owner (2026-11-06)

@@ -17,6 +17,9 @@ Status: early alpha. Check the installed `docs/design.md` and `docs/graphql-orm-
   Full refused with INVALID_INPUT switches to keys-only thin for this client. Health retains
   `selection-refused`; thin refusal uses normal back-off. Every thin event, and full events for
   holders selecting omitted fields, schedule re-reads, which catch changed relation links too.
+- `DELETED` removes a record, except with change kind `PROPAGATED`: a child was deleted under a record that still
+  exists (graphql-orm 0.93.0), so the record stays and the queries holding it read again. Regenerate before adopting
+  0.93.0: a module generated before 0.1.0-alpha.10 doesn't select the change kind and removes the parent.
 - Health reason `identity-mismatch` means a server `NodeId` doesn't match the key fields in any order, so no stream
   opens and holders poll. Check `keys` and the key fields' types. Composite key order needs no configuration.
 - Automatic stale, reconnect and confirming reads share `live.minRereadMs` (default 2000): leading
