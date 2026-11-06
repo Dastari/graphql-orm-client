@@ -24,6 +24,21 @@ can't be noticed, the design isn't done.
 - Nothing checks where a query is written, and `pollMs` is one option away.
 - Back-off for a refused stream exists (`live.refusalBackoff`, 0.1.0-alpha.6) but is off by default.
 - `client.live.status()` reports per type, but nothing lets a component draw it, and nothing warns.
+- A stream that ends for any reason but lost events stays ended until the held records change, with
+  no refetch: a socket that ran out of retries, a plain `complete`, or the router's
+  `SUBSCRIPTION_SCHEMA_RELOAD`. A test held one open query for an hour after each: no new subscribe,
+  no read. With `refusalBackoff` on, the reload of a quiet stream also counts as a refusal (R4, R6).
+- The compiler adds `NodeId` to every stream selection on a type that has it, and `RecordVersion`
+  where it exists. graphql-orm 0.91.1 refuses `NodeId` on a `Changed` payload, and a hand-written
+  `RecordVersion` (R2).
+- A stream narrowed by `Keys` or `Key` can't see a new row, or a row moving into a filtered list, so
+  R3 needs a stream that isn't narrowed.
+- `DELETED` reaches subscribers only when the host grants `can_read_deleted_preimage`, so a row deleted
+  elsewhere usually sends nothing (R3, R16).
+- `key` mode decodes the `NodeId` to build the `Key` argument (`keyValue` in `src/live.ts`), though
+  `AGENTS.md` says clients never parse it.
+- Composite keys on a type with `NodeId` still need `keys` configuration to go live, though the
+  schema's `<Type>KeyInput` names them.
 
 ## 1. Staying live without thinking about it
 
@@ -191,6 +206,9 @@ Add these to [graphql-orm-contract.md](graphql-orm-contract.md) as they're confi
 
 - Mark computed and federated fields in the schema, so the compiler can keep them out of a stream (R2).
 - Report who a stream admits, or at least make refusal codes stable (R6, R8).
+- Signal that a stream has started, so a client can read after it and can tell a quiet stream from an
+  unanswered one (R4, R7).
+- Tell subscribers a row was deleted without a preimage grant (R3, R16).
 - Report the effective page size in `PageInfo`, sequence numbers and replay, one connection shape, and
   lifetime metadata, as the contract already lists.
 - A consistent time format. A generated `String` time can hold `unixepoch()` text, RFC 3339, or

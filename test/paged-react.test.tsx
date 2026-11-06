@@ -73,9 +73,9 @@ describe("usePagedQuery", () => {
         <TicketTable where={where} pageIndex={0} {...(scope ? { scope } : {})} />
       </ClientProvider>
     )
-    const view = render(ui({}, "org-1"))
+    const view = render(ui({}, "vendor-1"))
     await screen.findByText(/^ready page/)
-    view.rerender(ui({ State: { Eq: "open" } }, "org-1"))
+    view.rerender(ui({ State: { Eq: "open" } }, "vendor-1"))
     expect(screen.getByText(/^refreshing placeholder/)).toBeTruthy()
     await act(async () => release())
     await screen.findByText(/^ready page 1\/1 of 10/)

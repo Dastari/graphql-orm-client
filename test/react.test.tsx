@@ -4,36 +4,36 @@ import { StrictMode } from "react"
 import { describe, expect, it } from "vitest"
 import { createClient } from "../src/client.js"
 import { ClientProvider, useFragment, useFragmentList, useQuery } from "../src/react/index.js"
-import { device, fleet, frags, mockNetwork, ops } from "./fixtures.js"
+import { widget, catalog, frags, mockNetwork, ops } from "./fixtures.js"
 
-type FleetData = { Devices: { Edges: { Cursor: string; Node: object }[] } }
-type Row = { Name: string; ConnectionState: string }
+type CatalogData = { Widgets: { Edges: { Cursor: string; Node: object }[] } }
+type Row = { Name: string; StockState: string }
 
 const renders = new Map<string, number>()
 const count = (key: string) => renders.set(key, (renders.get(key) ?? 0) + 1)
 
-function DeviceRow({ device: ref }: { device: object }) {
-  const row = useFragment<Row & { Id?: string }>(frags.DeviceRow, ref)
+function WidgetRow({ widget: ref }: { widget: object }) {
+  const row = useFragment<Row & { Id?: string }>(frags.WidgetRow, ref)
   count(`row:${row.Name}`)
-  return <li>{`${row.Name} ${row.ConnectionState}`}</li>
+  return <li>{`${row.Name} ${row.StockState}`}</li>
 }
 
-function FleetPage({ where }: { where: Record<string, unknown> | null }) {
-  const { status, data } = useQuery<FleetData>(ops.FleetPage, where)
+function CatalogPage({ where }: { where: Record<string, unknown> | null }) {
+  const { status, data } = useQuery<CatalogData>(ops.CatalogPage, where)
   count("page")
   if (status === "loading" || !data) return <p>{status}</p>
   return (
     <ul>
-      {data.Devices.Edges.map((edge) => (
-        <DeviceRow key={edge.Cursor} device={edge.Node} />
+      {data.Widgets.Edges.map((edge) => (
+        <WidgetRow key={edge.Cursor} widget={edge.Node} />
       ))}
     </ul>
   )
 }
 
-function FleetTable() {
-  const { data } = useQuery<FleetData>(ops.FleetPage, {})
-  const rows = useFragmentList<Row>(frags.DeviceRow, data?.Devices.Edges.map((edge) => edge.Node))
+function CatalogTable() {
+  const { data } = useQuery<CatalogData>(ops.CatalogPage, {})
+  const rows = useFragmentList<Row>(frags.WidgetRow, data?.Widgets.Edges.map((edge) => edge.Node))
   return <p>{rows.map((row) => row.Name).join(",") || "empty"}</p>
 }
 
@@ -42,47 +42,47 @@ describe("React bindings", () => {
     renders.clear()
     let first = true
     const { network } = mockNetwork(({ name }) => {
-      if (name === "FleetPage") return { data: fleet([device("d1"), device("d2")]) }
-      const renamed = { ...device("d1", { Name: first ? "renamed" : "x" }), Hostname: null, RowVersion: 2, Hardware: null }
+      if (name === "CatalogPage") return { data: catalog([widget("d1"), widget("d2")]) }
+      const renamed = { ...widget("d1", { Name: first ? "renamed" : "x" }), Sku: null, RowVersion: 2, Spec: null }
       first = false
-      return { data: { Device: renamed } }
+      return { data: { Widget: renamed } }
     })
     const client = createClient({ network })
     render(
       <ClientProvider client={client}>
-        <FleetPage where={{}} />
+        <CatalogPage where={{}} />
       </ClientProvider>
     )
     expect(screen.getByText("loading")).toBeTruthy()
-    await screen.findByText("device-d1 online")
+    await screen.findByText("widget-d1 online")
     const pageRenders = renders.get("page")!
-    const d2Renders = renders.get("row:device-d2")!
+    const d2Renders = renders.get("row:widget-d2")!
 
-    await act(() => client.execute(ops.DevicePage, { Id: "d1" }))
+    await act(() => client.execute(ops.WidgetPage, { Id: "d1" }))
     expect(screen.getByText("renamed online")).toBeTruthy()
     expect(renders.get("page")).toBe(pageRenders)
-    expect(renders.get("row:device-d2")).toBe(d2Renders)
+    expect(renders.get("row:widget-d2")).toBe(d2Renders)
   })
 
   it("loads under StrictMode, which closes and reopens the query in one commit", async () => {
-    const { network, requests } = mockNetwork(() => ({ data: fleet([device("d1")]) }))
+    const { network, requests } = mockNetwork(() => ({ data: catalog([widget("d1")]) }))
     const client = createClient({ network })
     render(
       <StrictMode>
         <ClientProvider client={client}>
-          <FleetPage where={{}} />
+          <CatalogPage where={{}} />
         </ClientProvider>
       </StrictMode>
     )
-    await screen.findByText("device-d1 online")
+    await screen.findByText("widget-d1 online")
     expect(requests).toHaveLength(2)
   })
 
   it("skips the query when variables are null", () => {
-    const { network, requests } = mockNetwork(() => ({ data: fleet([]) }))
+    const { network, requests } = mockNetwork(() => ({ data: catalog([]) }))
     render(
       <ClientProvider client={createClient({ network })}>
-        <FleetPage where={null} />
+        <CatalogPage where={null} />
       </ClientProvider>
     )
     expect(screen.getByText("idle")).toBeTruthy()
@@ -91,18 +91,18 @@ describe("React bindings", () => {
 
   it("useFragmentList returns view models and follows row changes", async () => {
     const { network } = mockNetwork(({ name }) =>
-      name === "FleetPage"
-        ? { data: fleet([device("d1"), device("d2")]) }
-        : { data: { Device: { ...device("d2", { Name: "two" }), Hostname: null, RowVersion: 3, Hardware: null } } }
+      name === "CatalogPage"
+        ? { data: catalog([widget("d1"), widget("d2")]) }
+        : { data: { Widget: { ...widget("d2", { Name: "two" }), Sku: null, RowVersion: 3, Spec: null } } }
     )
     const client = createClient({ network })
     render(
       <ClientProvider client={client}>
-        <FleetTable />
+        <CatalogTable />
       </ClientProvider>
     )
-    await screen.findByText("device-d1,device-d2")
-    await act(() => client.execute(ops.DevicePage, { Id: "d2" }))
-    expect(screen.getByText("device-d1,two")).toBeTruthy()
+    await screen.findByText("widget-d1,widget-d2")
+    await act(() => client.execute(ops.WidgetPage, { Id: "d2" }))
+    expect(screen.getByText("widget-d1,two")).toBeTruthy()
   })
 })

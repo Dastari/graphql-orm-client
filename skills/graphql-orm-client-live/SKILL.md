@@ -1,6 +1,6 @@
 ---
 name: graphql-orm-client-live
-description: Keep graphql-orm-client data live with generated Changed subscriptions, back off from refused streams, per-type cache policy, record versions, expiry and polling fallbacks.
+description: Keep graphql-orm-client data live with @live fragments and generated Changed subscriptions, back off from refused streams, order writes by record version, use polling fallbacks and diagnose stale data.
 ---
 
 # Live data and cache policy
@@ -12,6 +12,11 @@ Status: early alpha. Check the installed `docs/design.md` and `docs/graphql-orm-
 - Mark a fragment `@live` when its fields should update while on screen. The live layer
   subscribes to the type's generated `<Entity>Changed` events for the records that are
   retained. Do not write subscription operations by hand for this.
+- A `@live` fragment may select only persisted scalars of its type. A relation or computed field
+  in any `@live` fragment makes the server refuse the type's whole stream, and the build doesn't
+  catch it. Move those fields to a fragment without `@live`, and refresh them with a poll or a refetch.
+- `@live` updates records already held. A new row, a removed row or a changed total needs a refetch
+  (`refetchQueries`) or a poll.
 - Live delivery needs the server to write that state through the ORM. If a type's state is
   written around the ORM (in-memory registries, raw SQL), no events arrive. Types with no usable
   `Changed` subscription are in the generated `liveUnavailable`. Queries showing them poll every
@@ -41,11 +46,11 @@ Status: early alpha. Check the installed `docs/design.md` and `docs/graphql-orm-
 
 ## Cache policy
 
-- Configure per type in `store.types`: `staleMs` for background refresh, `expiresField` for
-  records with a lifetime. `Changed` fires on writes, not on clock expiry, so expiring records
-  need `expiresField` or they stay on screen after they lapse.
-- Keep `store.scope` set to the signed-in identity. Never persist across scopes.
-- Use persistence (IndexedDB) only when offline start is a requirement.
+- `store.retainMs` is the only store option: how long released records stay.
+- Per-type policy, `store.scope` and persistence are proposed, not built. Don't pass them.
+- `Changed` fires on writes, not on clock expiry, and the store doesn't read lifetime fields yet.
+  A record with a lifetime stays on screen after it lapses unless the component compares the field
+  with the clock itself.
 
 ## Diagnosing stale data
 
@@ -53,6 +58,12 @@ Status: early alpha. Check the installed `docs/design.md` and `docs/graphql-orm-
 2. Does the server emit `Changed` for that write? (Check that the write path goes through the
    ORM and that the relation propagates `up` if the change is on a child.)
 3. Is an older poll result overwriting a newer event? That requires a record version.
-4. After a reconnect, did the client replay or refetch? After `SUBSCRIPTION_CONTINUITY_LOST`, the
-   client resubscribes and refetches by itself; if that happens often, a bulk writer is
-   outrunning the server's `event_channel_capacity`.
+4. Is the stream open? `client.live.status()` shows `held` and `subscriptions` per type. Records
+   held with no subscription mean the stream was refused or ended. A stream that ended, other than by
+   lost events, stays ended until the held records change, and nothing refetches.
+5. Was the stream refused? Common causes: a relation or computed field in a `@live` fragment, or
+   `NodeId` on a graphql-orm older than the release that admits it. `versions: { Type: null }` stops
+   the compiler selecting a version field the stream refuses.
+6. After a reconnect, did the application call `client.refetchActive()`? Missed events aren't
+   replayed. After `SUBSCRIPTION_CONTINUITY_LOST`, the client resubscribes and refetches by itself; if
+   that happens often, a bulk writer is outrunning the server's `event_channel_capacity`.

@@ -6,9 +6,9 @@ import { createClient, type OperationRequest } from "../src/client.js"
 import { encodeNodeId } from "../src/node-id.js"
 import { ClientProvider, useFragment, useMutation } from "../src/react/index.js"
 import { HttpError, createHttpNetwork, graphqlWsSubscribe, type GraphQLWsClientLike } from "../src/transport.js"
-import { device, frags, mockNetwork, ops } from "./fixtures.js"
+import { widget, frags, mockNetwork, ops } from "./fixtures.js"
 
-const request: OperationRequest = { kind: "query", name: "DevicePage", text: "query DevicePage { x }", hash: "h", variables: { Id: "d1" } }
+const request: OperationRequest = { kind: "query", name: "WidgetPage", text: "query WidgetPage { x }", hash: "h", variables: { Id: "d1" } }
 
 function fakeFetch(status: number, body: string) {
   const calls: { url: string; init: RequestInit }[] = []
@@ -33,8 +33,8 @@ describe("createHttpNetwork", () => {
     expect(headers.get("authorization")).toBe("Bearer t")
     expect(headers.get("content-type")).toBe("application/json")
     expect(JSON.parse(String(call!.init.body))).toEqual({
-      operationName: "DevicePage",
-      query: "query DevicePage { x }",
+      operationName: "WidgetPage",
+      query: "query WidgetPage { x }",
       variables: { Id: "d1" },
     })
   })
@@ -60,7 +60,7 @@ describe("graphqlWsSubscribe", () => {
     const ws: GraphQLWsClientLike = {
       subscribe(payload, sink) {
         sent = payload
-        sink.next({ data: { DeviceChanged: null } })
+        sink.next({ data: { WidgetChanged: null } })
         sink.complete()
         return () => {
           disposed = true
@@ -72,8 +72,8 @@ describe("graphqlWsSubscribe", () => {
       error: () => received.push("error"),
       complete: () => received.push("complete"),
     })
-    expect(sent).toEqual({ operationName: "DevicePage", query: "query DevicePage { x }", variables: { Id: "d1" } })
-    expect(received).toEqual([{ data: { DeviceChanged: null } }, "complete"])
+    expect(sent).toEqual({ operationName: "WidgetPage", query: "query WidgetPage { x }", variables: { Id: "d1" } })
+    expect(received).toEqual([{ data: { WidgetChanged: null } }, "complete"])
     dispose()
     expect(disposed).toBe(true)
   })
@@ -83,16 +83,16 @@ describe("useMutation", () => {
   it("commits, updates the store and reports failures", async () => {
     let fail = false
     const { network } = mockNetwork(({ name, variables }) => {
-      if (name === "DevicePage") return { data: { Device: device("d1") } }
+      if (name === "WidgetPage") return { data: { Widget: widget("d1") } }
       if (fail) throw new Error("offline")
-      return { data: { UpdateDevice: { __typename: "DeviceResult", Success: true, Entity: device("d1", { Name: variables.Name }) } } }
+      return { data: { UpdateWidget: { __typename: "WidgetResult", Success: true, Entity: widget("d1", { Name: variables.Name }) } } }
     })
     const client = createClient({ network })
-    const { snapshot } = await client.execute<{ Device: object }>(ops.DevicePage, { Id: "d1" })
-    const ref = snapshot.data.Device
+    const { snapshot } = await client.execute<{ Widget: object }>(ops.WidgetPage, { Id: "d1" })
+    const ref = snapshot.data.Widget
     function Rename() {
-      const { Name } = useFragment<{ Name: string }>(frags.DeviceRow, ref)
-      const { commit, inFlight, error } = useMutation(ops.RenameDevice)
+      const { Name } = useFragment<{ Name: string }>(frags.WidgetRow, ref)
+      const { commit, inFlight, error } = useMutation(ops.RenameWidget)
       return (
         <button onClick={() => void commit({ Id: "d1", Name: "renamed" }).catch(() => {})}>
           {`${Name} ${inFlight ? "saving" : "idle"} ${error?.message ?? "ok"}`}
@@ -104,12 +104,12 @@ describe("useMutation", () => {
         <Rename />
       </ClientProvider>
     )
-    expect(screen.getByRole("button").textContent).toBe("device-d1 idle ok")
+    expect(screen.getByRole("button").textContent).toBe("widget-d1 idle ok")
     await act(async () => {
       fireEvent.click(screen.getByRole("button"))
     })
     expect(await screen.findByText("renamed idle ok")).toBeTruthy()
-    expect(client.store.get(encodeNodeId("Device", ["d1"]))?.fields.get("Name")).toBe("renamed")
+    expect(client.store.get(encodeNodeId("Widget", ["d1"]))?.fields.get("Name")).toBe("renamed")
     fail = true
     await act(async () => {
       fireEvent.click(screen.getByRole("button"))

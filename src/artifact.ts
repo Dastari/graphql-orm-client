@@ -156,7 +156,7 @@ export type LiveMode = "keys" | "key" | "unkeyed"
 export interface LiveArtifact {
   readonly typename: string
   readonly mode: LiveMode
-  /** The subscription field, e.g. `DeviceChanged`. */
+  /** The subscription field, e.g. `WidgetChanged`. */
   readonly field: string
   /** The payload field holding the changed entity. */
   readonly entityField: string

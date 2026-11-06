@@ -21,6 +21,9 @@ No artifact or generated-module change.
   `SUBSCRIPTION_SOURCE_CLOSED` still restart at once, transport failures are never remembered, and
   disposing the client clears the memory. `client.live.status()` gains `backedOff`. New exports:
   `DEFAULT_REFUSAL_BACKOFF_MS`, `RefusalBackoff`. Default behaviour is unchanged.
+- Documentation only: the README, design, contract, roadmap and skills no longer describe options
+  that don't exist. `store.scope`, `store.types` and persistence were listed as usable and aren't
+  built; passing them is a type error. Examples use a neutral domain.
 
 ## 0.1.0-alpha.5 (2026-11-04)
 
@@ -143,5 +146,4 @@ First alpha. Install from the GitHub release archive:
   - `LiveManager` keeps subscriptions open for exactly the held records and writes events into the store.
   - DELETED removes the record and refetches the queries that showed it.
   - Status reports overflow. `client.refetchActive()` is available for use after a reconnect.
-- Design, graphql-orm contract, roadmap, agent guidance and four bundled skills. No runtime
-  code yet.
+- Design, graphql-orm contract, roadmap, agent guidance and four bundled skills.

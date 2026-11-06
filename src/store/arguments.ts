@@ -28,7 +28,7 @@ export function stableStringify(value: unknown): string {
 
 /**
  * The key a field is stored under: its name, plus its resolved arguments when it has any. Two
- * selections of `Devices(Where: …)` with different filters are different stored lists.
+ * selections of `Widgets(Where: …)` with different filters are different stored lists.
  */
 export function storageKey(
   fieldName: string,

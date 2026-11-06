@@ -161,7 +161,7 @@ export interface PagedQuery<T, V> {
   setPageSize(pageSize: number): void
   /**
    * Show other variables (a filter or order), from `pageIndex` (default 0). The current page is
-   * dropped at once unless `hold` is true; hold only within one scope, such as one organisation.
+   * dropped at once unless `hold` is true; hold only within one scope, such as one vendor.
    */
   setVariables(variables: V, options?: { hold?: boolean; pageIndex?: number }): void
 }

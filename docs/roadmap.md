@@ -1,11 +1,10 @@
 # Roadmap
 
-Each phase is usable on its own. The first consumer is an existing application that currently
-uses Apollo.
+Each phase is usable on its own. Phases 1 to 4 are built except where noted. Phase 5 is proposed.
 
-1. **Server contract.** In graphql-orm: `NodeId`, a uniform version field name, `Changed` for
-   a list of keys, sequence numbers and replay, persisted operations at the router. Useful to
-   any client, Apollo included.
+1. **Server contract.** In graphql-orm: `NodeId`, a uniform version field name and `Changed` for
+   a list of keys are released. Sequence numbers, replay and persisted operations at the router are
+   not; see [the contract](graphql-orm-contract.md).
 2. **Colocation on the existing client.** Consumers give each component, or each adapter that
    builds view models, its own fragment, and make sure every query selects stable keys. Fragment
    masking is optional at this stage. It adds most where several components share one query, and
@@ -16,9 +15,10 @@ uses Apollo.
    and the HTTP and graphql-ws transport.) The codegen preset, the normalised store, `useQuery`,
    `useFragment`, pagination and `useMutation`, behind an API that consumers can adopt one route at
    a time, with the Apollo options a straight port needs.
-4. **Live layer.** Store-driven `Changed` subscriptions, version ordering, reconnect replay,
-   and removal of polling where events cover the state.
-5. **Persistence and tooling.** IndexedDB persistence, a store inspector and persisted-
+4. **Live layer.** Built: store-driven `Changed` subscriptions, version ordering and recovery from
+   a continuity error. Not built: reconnect replay, which needs the server. An application calls
+   `client.refetchActive()` after a reconnect.
+5. **Persistence and tooling (proposed).** IndexedDB persistence, a store inspector and persisted-
    operation enforcement.
 
 What is still needed for a complete client, with acceptance tests and a suggested order, is in

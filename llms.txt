@@ -8,6 +8,7 @@ early alpha; APIs may still change. Read the installed docs, which match the ins
 - [Design](docs/design.md)
 - [graphql-orm contract](docs/graphql-orm-contract.md)
 - [Roadmap](docs/roadmap.md)
+- [Requirements](docs/requirements.md): what is still missing, with acceptance lines
 - [Contributor guidance](AGENTS.md)
 - [Changelog](CHANGELOG.md)
 - Skills: skills/graphql-orm-client-adopt, skills/graphql-orm-client-data,
