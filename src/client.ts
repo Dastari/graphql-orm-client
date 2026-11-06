@@ -45,8 +45,9 @@ export class OperationError extends Error {
 
 /**
  * How a query uses stored data. Apollo's names: `cache-first` is `store-or-network`,
- * `cache-and-network` is `store-and-network`, and `network-only` is the same. Every result is
- * normalised, so there is no `no-cache`; use `network-only`.
+ * `cache-and-network` is `store-and-network`, and `network-only` is the same. Every query result
+ * is normalised, so there is no `no-cache` for queries; use `network-only`. A mutation can skip
+ * the store with `MutationPolicy` `no-store`.
  */
 export type FetchPolicy =
   /** Serve complete stored data; fetch only what is missing. */
@@ -55,6 +56,13 @@ export type FetchPolicy =
   | "store-and-network"
   /** Always fetch; serve nothing from the store first. */
   | "network-only"
+
+/**
+ * What a mutation does with its response. `store` (the default) normalises it into the store, so
+ * every view of the records it carries updates. `no-store` returns it to the caller and writes
+ * none of it: see `Client.mutate`.
+ */
+export type MutationPolicy = "store" | "no-store"
 
 /** `idle`: the query is skipped (React `skip`, or `variables: null`) and sends nothing. */
 export type QueryStatus = "idle" | "loading" | "ready" | "refreshing" | "error"
@@ -729,9 +737,21 @@ export class Client {
   async execute<T = unknown, V extends Variables = Variables>(
     artifact: OperationArtifact<T, V>,
     variables: V,
-    options: { signal?: AbortSignal; beforeWrite?: () => void } = {}
+    options: {
+      signal?: AbortSignal
+      beforeWrite?: () => void
+      /**
+       * Read the response into a store of its own instead of the client's. Nothing reaches the
+       * client's store, its subscribers or its retention. The returned snapshot, and the fragment
+       * references in its data, read from that private store, which only the caller's result keeps
+       * alive. Mutations only (see `mutate`'s `policy: "no-store"`).
+       */
+      isolated?: boolean
+    } = {}
   ): Promise<{ snapshot: Snapshot<T>; errors: readonly GraphQLErrorLike[] }> {
     if (this.store.isDisposed) throw new Error("This client was disposed with its identity")
+    if (options.isolated && artifact.kind !== "mutation")
+      throw new Error(`${artifact.name} is not a mutation; only mutations can skip the store`)
     const controller = new AbortController()
     const abort = () => controller.abort(options.signal?.reason)
     if (options.signal?.aborted) abort()
@@ -750,10 +770,11 @@ export class Client {
       options.beforeWrite?.()
       if (!response.data) throw new OperationError(artifact.name, errors)
       const rootId = artifact.kind === "query" ? ROOT_ID : `client:${artifact.kind}:${++this.mutationCount}`
-      normalize(this.store, artifact.normalization, response.data, contextOf(artifact, variables), rootId, artifact.rootType)
-      this.store.publish()
-      const snapshot = this.store.lookup<T>(selectorOf(artifact, variables, rootId))
-      if (rootId !== ROOT_ID) this.store.delete(rootId)
+      const target = options.isolated ? new Store() : this.store
+      normalize(target, artifact.normalization, response.data, contextOf(artifact, variables), rootId, artifact.rootType)
+      target.publish()
+      const snapshot = target.lookup<T>(selectorOf(artifact, variables, rootId))
+      if (rootId !== ROOT_ID) target.delete(rootId)
       return { snapshot, errors }
     } finally {
       options.signal?.removeEventListener("abort", abort)
@@ -830,7 +851,21 @@ export class Client {
     }
   }
 
-  /** Run a mutation; its response updates every stored record it contains. */
+  /**
+   * Run a mutation; its response updates every stored record it contains.
+   *
+   * `policy: "no-store"` returns the response to the caller and writes none of it into the store.
+   * Use it for one-time secrets (a credential, a ticket, a download link). The result is complete
+   * and typed, and its fragment references still open with `readFragment` and `useFragment`; they
+   * read from a private store that the result alone keeps alive, so it is collected with the
+   * result. Nothing is normalised into the client's store, retained, or shown by anything that
+   * prints it. The rule for keyed records is the same: records in the response are not merged
+   * either, so other views of them do not update, and a record the store never held is not
+   * created. Refetch the affected queries (`refetchQueries`) when views must change. An
+   * `optimisticResponse` cannot be combined with it, and the call rejects before sending. The
+   * option governs this call's response only: the variables are sent as usual, and a query that
+   * later reads the same data from the server stores it as any query does.
+   */
   async mutate<T = unknown, V extends Variables = Variables>(
     artifact: OperationArtifact<T, V>,
     variables: V,
@@ -848,9 +883,17 @@ export class Client {
        * for `client.refetchQueries`. The mutation resolves after they have been read.
        */
       refetchQueries?: readonly (OperationArtifact<any, any> | string)[]
+      /** `store` (default) or `no-store`: return the response without writing any of it into the store. */
+      policy?: MutationPolicy
     } = {}
   ): Promise<{ data: T; errors: readonly GraphQLErrorLike[] }> {
     if (artifact.kind !== "mutation") throw new Error(`${artifact.name} is not a mutation`)
+    // A misspelt policy must not quietly store a secret.
+    if (options.policy !== undefined && options.policy !== "store" && options.policy !== "no-store")
+      throw new Error(`${artifact.name}: unknown mutation policy ${JSON.stringify(options.policy)}`)
+    const isolated = options.policy === "no-store"
+    if (isolated && options.optimisticResponse)
+      throw new Error(`${artifact.name}: optimisticResponse can't be combined with policy "no-store"`)
     let layer: OptimisticLayer | null = null
     if (options.optimisticResponse) {
       const response = options.optimisticResponse
@@ -867,6 +910,7 @@ export class Client {
     try {
       const { snapshot, errors } = await this.execute<T>(artifact, variables, {
         beforeWrite: rollback,
+        ...(isolated ? { isolated } : {}),
         ...(options.signal ? { signal: options.signal } : {}),
       })
       result = { data: snapshot.data, errors }

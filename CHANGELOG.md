@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.0-alpha.6 (2026-11-06)
+
+Install from the GitHub release archive:
+`pnpm add https://github.com/Dastari/graphql-orm-client/releases/download/v0.1.0-alpha.6/graphql-orm-client-0.1.0-alpha.6.tgz`.
+No artifact or generated-module change.
+
+- One-time secrets can stay out of the store (#11). `client.mutate(Mutation, variables, { policy:
+  "no-store" })`, and `commit(variables, { policy: "no-store" })` in `useMutation`, return the full
+  typed result and write none of the response into the store: not its unkeyed objects, and not keyed
+  records in the same payload either, so no other view updates from it. Fragment references in the
+  result still open. It is refused together with `optimisticResponse`, and an unknown `policy` throws.
+  Default behaviour (`policy: "store"`) is unchanged. New type `MutationPolicy`.
+
 ## 0.1.0-alpha.5 (2026-11-04)
 
 Install from the GitHub release archive:

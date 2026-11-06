@@ -311,7 +311,8 @@ export interface MutationState {
 /**
  * Commit a mutation from a component. `commit` resolves with the result, as `client.mutate`
  * does, and rejects when the mutation fails, so await or catch it. The response is written into
- * the store, so every view of the changed records updates.
+ * the store, so every view of the changed records updates, unless `options.policy` is `no-store`
+ * (for one-time secrets: nothing from the response is stored).
  */
 export function useMutation<T = unknown, V extends Variables = Variables>(
   mutation: OperationArtifact<T, V>

@@ -20,6 +20,7 @@ export const schema = buildSchema(`
     UpdateDevice(Id: String!, Input: UpdateDeviceInput!): DeviceResult!
     ReopenTicket(Id: String!): ReopenResult!
     Ping: Boolean!
+    IssueToken(Id: String!): TokenResult!
   }
   type Subscription {
     DeviceChanged(Filter: SubscriptionFilterInput, Key: String): DeviceChangedEvent!
@@ -37,6 +38,7 @@ export const schema = buildSchema(`
   type ReportRow { Label: String!, Count: Int! }
   type ReopenResult { Accepted: Boolean!, Message: String, Ticket: Ticket, Audit: [AuditEntry!]! }
   type AuditEntry { At: String!, By: String! }
+  type TokenResult { Secret: String!, Ticket: Ticket, Audit: [AuditEntry!]! }
   input SubscriptionFilterInput { Actions: [ChangeAction!] }
   input SlotKeyInput { Site: String!, Name: String! }
   enum ChangeAction { CREATED UPDATED DELETED }
@@ -126,6 +128,9 @@ export const documents = [
     ReopenTicket(Id: $Id) { Accepted Message Ticket { ...TicketRow } Audit { At By } }
   }`,
   `mutation Ping { Ping }`,
+  `mutation IssueToken($Id: String!) {
+    IssueToken(Id: $Id) { Secret Ticket { ...TicketRow } Audit { At By } }
+  }`,
   `subscription TicketFeed($Keys: [String!]) {
     TicketChanged(Keys: $Keys) { Action Ticket { ...TicketRow } }
   }`,
@@ -156,6 +161,7 @@ export const ops = compiled.operations as Record<
   | "Report"
   | "Reopen"
   | "Ping"
+  | "IssueToken"
   | "TicketFeed",
   (typeof compiled.operations)[string]
 >

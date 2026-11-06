@@ -1,6 +1,6 @@
 ---
 name: graphql-orm-client-data
-description: Write components with graphql-orm-client fragments and route roots, page through tables by number (@paged, usePagedQuery), load more (@connection), refetch, run mutations and plain subscriptions, and port Apollo queries without request waterfalls or over-fetching.
+description: Write components with graphql-orm-client fragments and route roots, page through tables by number (@paged, usePagedQuery), load more (@connection), refetch, run mutations (including one-time secrets with `no-store`) and plain subscriptions, and port Apollo queries without request waterfalls or over-fetching.
 ---
 
 # Fragments, roots, pagination and mutations
@@ -60,7 +60,8 @@ Status: early alpha. Check the installed `docs/design.md` for the current API.
 
 - `skip: true` → `{ skip: true }` (or `variables: null`); the status is `idle`.
 - `fetchPolicy` → `policy`: `cache-first` is `store-or-network`, `cache-and-network` is
-  `store-and-network` (the default), `network-only` is the same. There is no `no-cache`.
+  `store-and-network` (the default), `network-only` is the same. There is no `no-cache` for queries;
+  for a mutation use `policy: "no-store"` (see Mutations).
 - `pollInterval` → `pollMs`. `refetch(vars)` merges and switches, as in Apollo.
 - `errorPolicy: "none"` → treat `query.errors.length` as an error; codes are on
   `errors[i].extensions.code`. `useMutation`'s `error` is an `OperationError` with the same codes.
@@ -75,9 +76,16 @@ Status: early alpha. Check the installed `docs/design.md` for the current API.
 ## Mutations
 
 - In components, use `useMutation(Mutation)`: `commit(variables, { optimisticResponse, signal,
-  refetchQueries })`, `inFlight` and `error`. `commit` rejects on failure, so await it or catch it.
+  refetchQueries, policy })`, `inFlight` and `error`. `commit` rejects on failure, so await it or catch it.
 - A result without a key (a hand-written result object, rows, a scalar) is fine: it is stored
   inside the mutation's root, and the keyed records in it are normalised.
+- A mutation that returns a one-time secret (credential, ticket, download link) must be committed
+  with `policy: "no-store"`: `commit(variables, { policy: "no-store" })` or
+  `client.mutate(Mutation, variables, { policy: "no-store" })`. The caller gets the full typed result,
+  and nothing from the response is written to the store, not even keyed records in the same payload,
+  so no view updates from it; add `refetchQueries` if views must change. It can't be combined with
+  `optimisticResponse`. Without it, the response is stored and unkeyed objects stay until garbage
+  collection. Don't copy the secret into long-lived state, and don't select it in a query.
 - Spread the fragments of the views the mutation affects into its selection, so the response
   updates the store.
 - Use an optimistic update only when the result is predictable. Give list insertions and

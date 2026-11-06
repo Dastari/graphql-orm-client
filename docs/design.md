@@ -17,7 +17,7 @@ Status: partly built. Implemented and tested:
 
 - pagination: `@connection` (keyset or offset), `loadMore`, `hasMore` and `loadingMore`;
 - page-number navigation: `@paged`, `watchPagedQuery` and `usePagedQuery`;
-- optimistic mutations, interval polling, and the live polling fallback;
+- optimistic mutations, `no-store` mutations, interval polling, and the live polling fallback;
 - `@refetchable` fragments: `client.refetchFragment` and `useRefetchableFragment`.
 
 Proposed, not built: automatic list insertion after mutations, persistence, and per-type `staleMs`/`expiresField` policy.
@@ -251,6 +251,27 @@ await client.mutate(RenameDeviceMutation, { Id: id, Name: name }, {
   rows, a scalar) is stored inside the mutation's own root, so it never collides with another
   mutation's result; keyed records inside it are normalised as usual. Fragment references in the
   returned `data` keep working until garbage collection.
+- **Secrets: `policy: "no-store"`.** A one-time credential, ticket or download link in a mutation's
+  response is normalised like any other result, and its unkeyed objects stay in the store until
+  garbage collection. `mutate(Mutation, variables, { policy: "no-store" })` (and `commit(variables,
+  { policy: "no-store" })` in `useMutation`) returns the same `{ data, errors }` and writes none of the
+  response into the store. The rules:
+  - *Nothing is written.* The response is read into a private store that only the returned `data` keeps
+    alive, so fragment references in it still open with `readFragment` and `useFragment`, and it is
+    collected with the result. The client's store, its subscribers, retention, optimistic layers and
+    live holders never see it. The client has no logging, devtools hook or request cache of its own,
+    and mutations are never de-duplicated, so each call sends its own request.
+  - *Keyed records in the same payload are not merged either.* The rule has no exceptions, so a secret
+    cannot reach the store through a keyed record that carries it. Other views of that record don't
+    update from this response, and a record the store never held isn't created. When views must change,
+    pass `refetchQueries`, which works as usual and reads from the server, or keep the updating
+    mutation on the default policy and return the secret from a mutation of its own.
+  - *`optimisticResponse` is refused*, before anything is sent, because an optimistic layer writes to
+    the store. An unknown `policy` value throws instead of storing the result.
+  - *Scope.* It governs the mutation's response only. Variables go to the server as usual, and the
+    caller owns the returned `data` (don't put it in component state that outlives its use, a logger
+    or a persisted store). A query that later reads the same secret from the server stores it like any
+    query; plain subscription events are still written to the store.
 - **Errors.** When the server returns GraphQL errors, with or without data, `useMutation`'s `error`
   is an `OperationError`, so `error.errors[i].extensions.code` is available. A transport failure
   is the error the network threw.
@@ -415,7 +436,7 @@ fragments.
 | `useQuery(Q, { variables, skip })` | `useQuery(Q, variables, { skip })`; `variables: null` also skips. Status `idle` |
 | `refetch(newVariables)` | `refetch(newVariables)`: merged into the current variables, and the hook switches to them until the `variables` argument changes |
 | `fetchPolicy: "cache-first"` / `"cache-and-network"` / `"network-only"` | `policy: "store-or-network"` / `"store-and-network"` (the default) / `"network-only"` |
-| `fetchPolicy: "no-cache"` | Not provided: every result is normalised. Use `network-only` |
+| `fetchPolicy: "no-cache"` | Queries: not provided, every result is normalised; use `network-only`. Mutations: `mutate(..., { policy: "no-store" })` returns the result without writing it (see [Mutations](#mutations)) |
 | `pollInterval`, `startPolling` | `pollMs`, per hook or handle, alongside the client's live polling fallback |
 | `context: { fetchOptions: { signal } }` | `signal` on `client.query`, `client.execute`, `client.mutate` and `client.refetchFragment`. Watched queries cancel their own request when closed |
 | `errorPolicy: "all"` | The behaviour: data with `errors`, each with `extensions.code`. For `"none"`, treat `errors.length` as a failure |

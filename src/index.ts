@@ -29,6 +29,7 @@ export type {
   FetchPolicy,
   GraphQLErrorLike,
   GraphQLResponse,
+  MutationPolicy,
   Network,
   OperationRequest,
   PagedQuery,
