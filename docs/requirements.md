@@ -57,12 +57,16 @@ expensive on the server. Count-only reads and aggregates follow the same rule (R
 *Acceptance:* a row created elsewhere appears, in the right place, in a filtered and sorted list,
 with no polling and no consumer code. A burst of 100 events causes a small, bounded number of reads.
 
-**R4. No lost events.** Replacing a stream, as when the key set changes, starts the new stream before
-closing the old one and removes duplicates by record version. A first read subscribes first and then
-reads, so no change falls between them. After a gap, what the stream fed is refetched.
-*Acceptance:* a test that writes during a key-set change and during a first read loses nothing.
-*Built in 0.1.0-alpha.7:* any end the client didn't ask for restarts and re-reads, with back-off. Still
-to do: replacing a stream without a gap, and the first-read gap.
+**R4. No lost events.** Replacing a stream starts its successor before closing the old one,
+with bounded overlap and version ordering. Keys stay in stable chunks. Newly streamed records'
+holding queries receive one confirming re-read, including on first load, after `live.settleMs`
+(default 250 ms; `false` restores the previous request cost). Reconnects and unexpected ends
+restart and refetch; a read in flight is followed by one more.
+*Built:* overlap, stable chunks, confirming reads and gap recovery. Mock tests cover writes during
+key-set replacement and between the first snapshot and subscribe. **The first-read gap is narrowed,
+not eliminated against a real server:** no subscribe acknowledgement exists. R3's list streams
+remain proposed. At a full router connection, old coverage stays open while replacements retry;
+newly uncovered records poll meanwhile. True gap closure depends on a server started signal.
 
 **R5. Build failures in place of conventions**, each with a small, named escape:
 

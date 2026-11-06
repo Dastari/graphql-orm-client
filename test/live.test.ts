@@ -15,6 +15,7 @@ function setup(
     network,
     live: {
       artifacts: compiled.live,
+      settleMs: false,
       subscribe: subscriptions.subscribe,
       debounceMs: 0,
       setTimeout: () => 0,
@@ -168,6 +169,7 @@ describe("live layer", () => {
       network,
       live: {
         artifacts: compiled.live,
+        settleMs: false,
         subscribe: (request, sink) => {
           order.push(request.name)
           return subscriptions.subscribe(request, sink)
@@ -210,6 +212,7 @@ describe("live layer", () => {
       network,
       live: {
         artifacts: compiled.live,
+        settleMs: false,
         subscribe: subscriptions.subscribe,
         debounceMs: 0,
         setTimeout: (callback) => timers.push(callback),

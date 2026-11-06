@@ -4,6 +4,15 @@
 
 - Add `pnpm budgets` and a separate CI job for R22: store, live-event notifications, large-schema
   compilation, built entry sizes and real Chromium pop-out windows. No runtime API change.
+- R4: stable key chunks, bounded stream overlap, and confirming reads for newly subscribed records.
+  A failed replacement retains the old streams. Router operation-limit errors retry with ordinary
+  back-off, retaining old coverage and polling uncovered records until capacity becomes available.
+- **Request cost change:** a live query now makes one additional read after its records first gain
+  a stream, after `live.settleMs` (default 250 ms). This also confirms newly covered keys during
+  replacement, coalesced per query. To restore the previous request count, set
+  `live: { settleMs: false }`. No generated artifact change or regeneration is needed.
+  Overlap and confirming reads narrow gaps; without a server started signal they cannot guarantee
+  gap-free delivery against a real server. Without versions, last-arrival-wins still applies.
 - Add `schema pull --url <router>` and read-only `schema pull --check`, using doctor's
   introspection path and environment credentials. Sorted SDL has a SHA-256 sidecar.
 - Opt in to snapshot integrity and generated provenance checks by running `schema pull`, then
