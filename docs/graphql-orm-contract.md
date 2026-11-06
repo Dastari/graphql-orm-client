@@ -10,6 +10,28 @@ entity macro are the same at `graphql-orm-v0.90.1`, so what this table says abou
 too. Findings come from reading source unless a row says it was run. "Proposed" means not yet filed or
 agreed with graphql-orm.
 
+R21 now runs the assertions in `conformance/` against **graphql-orm-v0.90.1
+(revision adfa608d), router 0.8.1, SQLite**, rather than a hand-written entity-event
+subgraph. Verified: empty `Keys` matches no rows; key/keys/unkeyed delivery; managed
+`RecordVersion` delivery and advancement; NodeId agreement and router node lookup;
+filter/sort/count/offset/keyset reads; preimage-gated deletes; reload and connection
+limit frames. NodeId, relation, computed Summary and a hand-written RecordVersion
+produce **`next` with `INVALID_INPUT`, then `complete`**. **Federation changes the fact list:** `Vendor.RemoteName`, owned by the second
+subgraph through a persisted Id key, is admitted and fetched per event. The same
+extension pattern on Widget using the NodeId key produces `INVALID_INPUT`.
+Federated fields cannot all be classified as refused; admission depends on the
+selection the router sends to the source subgraph. Continuity codes run through the real ORM adapter on deterministic test-owned
+lagged/closed channels, not by overflowing a generated event bus over a slow socket.
+
+**Server integration gap found by R21:** 0.90.1's operation catalogue omits
+`ExpectedVersion` on managed mutations, which prevents the router accepting its
+generated descriptor unchanged. The fixture supplies argument metadata from its
+served SDL and recomputes protocol fingerprints. Composite placeholder mutations
+also lack catalogue metadata; Slot uses repository writes and is excluded from
+GraphQL mutations. See [conformance](../conformance/README.md) for reproductions
+and recovery coverage. No server fix is
+included and no later server version is claimed as run.
+
 | Need | Why the client needs it | Status |
 | --- | --- | --- |
 | Complete key on every entity | The store's `NodeId` is built from it | Exists. Every generated entity has a primary key, possibly composite |
@@ -19,7 +41,7 @@ agreed with graphql-orm.
 | `<Entity>Changed` subscriptions carrying the entity | Write changes into the store without a refetch | Exists for write-capable entities. Filters: `Actions`, one exact `Key`, or a bounded `Keys`. A stream narrowed by key sees nothing about other rows, so it can't report a new row. Payloads carry persisted, subscribable scalars only: selecting a relation or computed field refuses the whole stream with `INVALID_INPUT` |
 | `Changed` for a list of keys | One subscription per type, not one per record | Released in graphql-orm 0.85.0 (#261): a bounded `Keys` argument, default maximum 500. The client uses it automatically |
 | Continuity signal | Know when a subscriber missed events, so it can refetch | Released in graphql-orm 0.88.0 (#225): a stream that falls behind ends with `SUBSCRIPTION_CONTINUITY_LOST`, a closed channel with `SUBSCRIPTION_SOURCE_CLOSED` (a `next` frame with the error, then `complete`). The client subscribes again, then refetches the roots showing that type |
-| Upward change propagation | Parent views update when a child changes | Exists, opt-in per relation: `propagate_change = "up"`. Cross-crate propagation is open (#249). Deleting a child doesn't notify its parent (#290) |
+| Upward change propagation | Parent views update when a child changes | Exists, opt-in per relation: `propagate_change = "up"`. Cross-crate propagation is open (#249). A child delete notifies the parent from 0.93.0 (#290): `DELETED` with change kind `PROPAGATED`, null source fields, and the current parent row. Read from `graphql-orm-v0.93.0`. The client keeps the parent and re-reads the queries holding it. Regenerate before adopting 0.93.0: a module generated earlier removes the parent |
 | Which fields a stream can carry | The compiler keeps other fields out of the stream (R2) | Missing. Neither the SDL nor the semantic catalogue says which fields a `Changed` payload admits; only the macro's `subscription_field_policy` knows. Proposed: a typed snapshot on the event; see [the live design](proposals/live-by-default.md#what-this-needs-from-graphql-orm). Requested: [#340](https://github.com/Dastari/graphql-orm/issues/340). The client works without it: full refusal switches to keys-only thin, with holder re-reads. A stream event identifies its record by key fields, and the served schema doesn't give their order: introspection through router 0.8.1 at `graphql-orm-v0.90.1` lists `SlotKeyInput` as `Name, Site` while `NodeId` encodes `Site, Name`. The client finds the order by exact match against a record's `NodeId` |
 | Connection operation budget during overlap | Replacement needs temporary capacity for both generations | Router 0.8.1 at `graphql-orm-v0.90.1` counts operation ids in its connection's `operations` set before forwarding a subscribe; the default is 32. `SUBSCRIPTION_LIMIT_EXCEEDED` rejects only the new operation. The client retains baseline coverage, uses ordinary restart back-off and polls newly uncovered records until room is available. This is a capacity failure, not a five-minute selection refusal |
 | Stream-started signal | A client can't tell a quiet admitted stream from one that hasn't been answered, or know when it is safe to read after subscribing (R4, R7) | Missing. graphql-transport-ws has no per-subscribe acknowledgement and `Changed` sends nothing until an event. `CacheSync::changes` has the pattern: an initial signal after authorization. Proposed. Requested: [#341](https://github.com/Dastari/graphql-orm/issues/341) |
@@ -45,6 +67,25 @@ These go in each service, not in graphql-orm or the client:
 - Keep `Id` values stable. The `NodeId` is built on them.
 - Add `#[graphql_orm(version = "managed")]` to rows that are rewritten in place while users watch
   them. A bare `version` is compare-and-swap only, and ordinary writes don't advance it.
+- Give a managed version column an SQL default (the SQLite fixture uses `default = "0"`),
+  since generated create inputs omit it.
 - Set `propagate_change = "up"` on relations whose parent views show child state.
 - Do not add hand-written `NodeId` fields, `node` resolvers or replacement subscriptions.
   Report the gap to graphql-orm instead.
+
+## R3 list validation and remaining pagination limits
+
+Run against generated graphql-orm 0.90.1 / router 0.8.1: 16/16 list acceptance runs (8 per
+Node ws delivery setting), real filtered/sorted creation, update, totals and both pagination forms.
+A list of 40 held rows used one stream with no operation-limit refusal; legacy `maxKeys: 1` used
+32 streams and received 8 capacity refusals. Every un-narrowed subscriber incurs a row-policy
+check for every event. One no-preimage deletion emitted nothing and repaired on the next event;
+preimage-enabled deletes corrected lists in 16/16 runs. No claim of delete visibility without that grant.
+
+The schema still gives no effective offset maximum or applied page size. The client exposes
+`live.maxRereadRows` (default 100) to match the service configuration, never infers an offset from
+short pages. Requests beyond that bound retain the loaded tail with explicit truncated state.
+Keyset refresh follows returned cursors, up to `maxRereadPages` (10), with the same retained-tail
+state. A repeatable snapshot across pages is not guaranteed by 0.90.1: writes during traversal
+can change ordering. Proposed server support: a snapshot/revision token for consistent multi-page
+reads. Subscribe acknowledgement and key-only delete notification remain server gaps above.

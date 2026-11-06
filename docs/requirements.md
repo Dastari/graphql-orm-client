@@ -44,7 +44,16 @@ artifacts preserve legacy selection/refusal behavior. A server marker remains pr
 thin stream and refreshes all fields. Verified 8/8 runs per `ws` setting (16 total), against generated
 graphql-orm 0.90.1 and router 0.8.1, including actual admission refusal and a changed relation link.
 
-**R3. Lists stay correct.** When a `Changed` event of the type arrives, or a stream resumes, a list
+**R3. Lists stay correct.** *Built:* regenerated list metadata and un-narrowed streams, including
+empty and count-only lists; shared bounded re-reads and loaded-range pagination refresh.
+`listStreams: false` opts out; required-key schemas poll with a named health reason.
+Keyset refresh is bounded by `maxRereadPages` (10); offset by `maxRereadRows` (100). A retained tail
+is reported by `QueryState.listRefreshTruncated` and degraded health. Deletes without a preimage
+grant still need another event or poll. Verified against generated graphql-orm 0.90.1/router 0.8.1:
+8/8 runs per ws setting (16 total), including real filters, ordering, totals and pagination.
+Mock bursts produce two reads for 100 events. Aggregate shapes beyond connections remain R15.
+
+When a `Changed` event of the type arrives, or a stream resumes, a list
 query re-reads what it has on screen, in the same order. This covers new rows, removed rows,
 re-sorting and `TotalCount`. Scroll position, selection and loaded pages are kept. Re-reads are
 coalesced and rate limited per query, with a limit the application can set, because a re-read can be
@@ -59,8 +68,7 @@ holding queries receive one confirming re-read, including on first load, after `
 restart and refetch; a read in flight is followed by one more.
 *Built:* overlap, stable chunks, confirming reads and gap recovery. Mock tests cover writes during
 key-set replacement and between the first snapshot and subscribe. **The first-read gap is narrowed,
-not eliminated against a real server:** no subscribe acknowledgement exists. R3's list streams
-remain proposed. At a full router connection, old coverage stays open while replacements retry;
+not eliminated against a real server:** no subscribe acknowledgement exists. R3's list streams open before the read, with a confirming read after settling. At a full router connection, old coverage stays open while replacements retry;
 newly uncovered records poll meanwhile. True gap closure depends on a server started signal.
 
 **R5. Build failures in place of conventions**, each with a small, named escape:
@@ -153,6 +161,8 @@ current under R3.
 
 **R16. Deleted records.** The live layer removes a deleted record from lists and the store. A
 component holding one gets a defined deleted state and doesn't crash. Confirm today's behaviour.
+*Built in 0.1.0-alpha.10:* `DELETED` with change kind `PROPAGATED` (a child deleted under a record that still exists,
+graphql-orm 0.93.0) keeps the record and re-reads its holders.
 
 **R17. Lifetime and persistence.** `AGENTS.md` requires honouring lifetime fields, but the source has
 none of this yet. Build it with the roadmap's persistence phase. Persistence is scoped to identity,
@@ -179,6 +189,11 @@ on it.
 **R21. Conformance against the real server.** CI runs an example graphql-orm service behind the router
 and proves stream admission, keyed streams, continuity codes, node lookup, version ordering and list
 behaviour. Mocks can't prove a document is accepted.
+*Built:* `pnpm conformance`, separate from `pnpm check`, runs the SQLite example and router
+from `graphql-orm-v0.90.1` (router 0.8.1), with a version matrix in CI. It asserts admission,
+key modes, continuity frames, node lookup, managed version ordering and pagination, and repeats
+Node and Chromium recovery. See [the coverage and fixture limits](../conformance/README.md).
+A conformance failure remains a failure; this does not claim the proposed R2/R3 behaviour is built.
 
 **R22. Budgets.** Checked in CI: 10,000 rows in the store, a burst of 100 events a second, the
 compile time of 250 documents against a 45,000-line schema, the bundle size of the main and react

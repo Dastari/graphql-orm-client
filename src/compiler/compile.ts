@@ -277,6 +277,7 @@ function compileDocuments(
     const paged = pagedSpecOf(schema, node, rootType, options)
     operations[name] = {
       kind: node.operation,
+      lists: listTypes(schema, convert(schema, augmented.selectionSet, rootType, augmentedFragments, true, options), rootType, options),
       keys: pick(metadata.keys, reachable),
       versions: pick(metadata.versions, reachable),
       name,
@@ -290,6 +291,11 @@ function compileDocuments(
     }
   }
   if (nested) return { operations, fragments, live: {}, liveUnavailable: [] }
+  // Lists stay current for types the project made live. Live by default (R1) widens this; a list alone doesn't open a stream.
+  const liveTypes = new Set(Object.values(fragments).filter((fragment) => fragment.live).map((fragment) => fragment.typeCondition))
+  for (const [name, operation] of Object.entries(operations)) {
+    operations[name] = { ...operation, lists: (operation.lists ?? []).filter((typename) => liveTypes.has(typename)) }
+  }
   const { live, liveUnavailable } = compileLive(schema, fragments, fragmentNodes, options)
   if (options.liveSelection !== "as-written") {
     const scalars = (selections: readonly Selection[]): string[] => selections.flatMap((selection) =>
@@ -416,6 +422,7 @@ function compileLive(
     const payloadFields = Object.values(payload.getFields())
     const entity = payloadFields.find((candidate) => getNamedType(candidate.type).name === typename)
     const action = payloadFields.find((candidate) => candidate.name.toLowerCase() === "action")
+    const changeKind = payloadFields.find((candidate) => candidate.name.toLowerCase() === "changekind")
     const keyFields = keyFieldsOf(schema, typename, options)
     if (!entity || !action || !keyFields) {
       liveUnavailable.push(typename)
@@ -429,7 +436,8 @@ function compileLive(
     const variables = arg ? `($${arg.name}: ${String(arg.type)})` : ""
     const argumentUse = arg ? `(${arg.name}: $${arg.name})` : ""
     const spreads = [...names].sort().map((name) => `...${name}`).join(" ")
-    const text = `subscription ${operationName}${variables} { ${fieldName}${argumentUse} { ${action.name} ${entity.name} { ${spreads} } } }`
+    const eventFields = changeKind ? `${action.name} ${changeKind.name}` : action.name
+    const text = `subscription ${operationName}${variables} { ${fieldName}${argumentUse} { ${eventFields} ${entity.name} { ${spreads} } } }`
     const document: DocumentNode = {
       kind: Kind.DOCUMENT,
       definitions: [...parse(text).definitions, ...fragmentNodes.values()],
@@ -478,7 +486,7 @@ function compileLive(
         if (fragment.typeCondition === typename) compare(fragmentNodes.get(fragment.name)!.selectionSet, fragment.name)
       }
       const build = (fields: readonly string[]) => {
-        const source = `subscription ${operationName}${variables} { ${fieldName}${argumentUse} { ${action.name} ${entity.name} { ${fields.join(" ")} } } }`
+        const source = `subscription ${operationName}${variables} { ${fieldName}${argumentUse} { ${eventFields} ${entity.name} { ${fields.join(" ")} } } }`
         return compileDocuments(schema, [source], { ...options, streamProjection: true } as ProjectionOptions, true).operations[operationName]!
       }
       operation = build([...carried])
@@ -490,6 +498,7 @@ function compileLive(
       field: fieldName,
       entityField: entity.name,
       actionField: action.name,
+      ...(changeKind ? { changeKindField: changeKind.name } : {}),
       keyArgument: arg?.name ?? null,
       keyFields,
       keyOptional: arg !== undefined && !isNonNullType(arg.type),
@@ -560,9 +569,9 @@ function connectionSpec(
   const offset = options.connection?.offset ?? DEFAULT_PAGED.offset
   if (pagingInput && isInputObjectType(pagingInput)) {
     const fields = pagingInput.getFields()
-    if (offset in fields && !(spec.after in fields)) return { ...spec, offset }
+    if (offset in fields && !(spec.after in fields)) return { ...spec, offset, limit: Object.keys(fields).find((name) => name.toLowerCase() === "limit") }
   }
-  return spec
+  return { ...spec, ...(pagingInput && isInputObjectType(pagingInput) ? { limit: Object.keys(pagingInput.getFields()).find((name) => name.toLowerCase() === "limit") } : {}) }
 }
 
 /** A `@paged` list needs its page info: the total, and whether there are pages either side. */
@@ -870,4 +879,31 @@ function convert(
     }
   }
   return result
+}
+
+/** Read connection identity from schema structure, even when the document selects only totals. */
+function listTypes(schema: GraphQLSchema, selections: readonly Selection[], parent: GraphQLCompositeType, options: CompileOptions): string[] {
+  const names = { ...DEFAULT_CONNECTION, ...options.connection }
+  const result = new Set<string>()
+  const add = (type: import("graphql").GraphQLNamedType) => {
+    if (isObjectType(type)) result.add(type.name)
+    else if (isAbstractType(type)) for (const possible of schema.getPossibleTypes(type)) result.add(possible.name)
+  }
+  for (const selection of selections) {
+    if (selection.kind === "inline") for (const name of listTypes(schema, selection.selections, selection.typeCondition ? schema.getType(selection.typeCondition) as GraphQLCompositeType : parent, options)) result.add(name)
+    if (selection.kind !== "link" || !("getFields" in parent)) continue
+    const field = parent.getFields()[selection.fieldName]
+    if (!field) continue
+    const type = getNamedType(field.type)
+    const unwrapped = isNonNullType(field.type) ? field.type.ofType : field.type
+    if (isListType(unwrapped)) add(type)
+    if (isObjectType(type)) {
+      const edges = type.getFields()[names.edges]
+      const edge = edges && getNamedType(edges.type)
+      const node = edge && isObjectType(edge) ? edge.getFields()[names.node] : undefined
+      if (node) add(getNamedType(node.type))
+    }
+    if (isCompositeType(type)) for (const name of listTypes(schema, selection.selections, type, options)) result.add(name)
+  }
+  return [...result].sort()
 }

@@ -18,6 +18,9 @@ const sources = [
   `query Page { Slots { ...Row } }`,
 ]
 const compiled = compile(schema, sources)
+// Keep this suite focused on keyed record streams; R3 has regenerated-list tests.
+for (const operation of Object.values(compiled.operations)) delete (operation as { lists?: readonly string[] }).lists
+
 function setup(settleMs: number | false = false) {
   const clock = createTestClock()
   const streams = createMockStreams()
@@ -159,6 +162,7 @@ it.each(["key", "keys", "unkeyed"] as const)("keeps fallback coverage bounded th
     type Event { Action: String! Widget: Widget }
     type Subscription { WidgetChanged${mode === "key" ? "(Key: ID)" : mode === "keys" ? "(Keys: [ID!])" : ""}: Event! }`)
   const c = compile(s, [`fragment F on Widget @live { Name }`, `query Q { Widgets { ...F } }`])
+  delete (c.operations.Q as { lists?: readonly string[] }).lists
   let rows = ["a"]
   const client = createClient({ network: { execute: async () => ({ data: { Widgets: rows.map(Id => ({ __typename: "Widget", Id, Name: Id })) } }) }, live: { ...clock.live, subscribe: streams.subscribe, artifacts: c.live, debounceMs: 0, settleMs: 50, onDiagnostic: null } })
   const query = client.watchQuery(c.operations.Q!, {}); query.open(); await clock.tick(50)

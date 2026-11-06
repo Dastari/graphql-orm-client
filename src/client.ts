@@ -1,7 +1,7 @@
 import { ephemeral, type EphemeralOptions, type EphemeralStream } from "./ephemeral.js"
 import type { ConnectionSpec, FragmentArtifact, FragmentRefFor, LinkSelection, OperationArtifact, PagedSpec, Selection } from "./artifact.js"
 import { fieldStorageKey, stableStringify, type Variables } from "./store/arguments.js"
-import { contextOf, normalize } from "./store/normalize.js"
+import { contextOf, identify, normalize } from "./store/normalize.js"
 import { IDLE_TYPE_HEALTH, diagnosticMessage, typeHealth, worstOf, type LiveDiagnostic, type LiveHealth, type LiveHolding, type LiveTypeHealth } from "./health.js"
 import { LiveManager, type LiveOptions, type SubscriptionSink } from "./live.js"
 import { FRAGMENT_REF, readSelections, type FragmentRefData } from "./store/read.js"
@@ -80,6 +80,8 @@ export interface QueryState<T> {
   readonly hasMore: boolean
   /** A next page is being fetched; the loaded rows stay in `data`. */
   readonly loadingMore: boolean
+  /** Loaded tail was retained because automatic refresh reached its configured bound. */
+  readonly listRefreshTruncated?: boolean
 }
 
 export interface ClientOptions {
@@ -286,6 +288,7 @@ class QueryResource<T> implements WatchedQuery<T> {
     this.users += 1
     if (this.users > 1) return
     this.release = this.client.store.retain(this.key, selectorOf(this.artifact, this.variables))
+    if (this.artifact.lists) this.client.live?.holdLists(this.key, this.artifact.lists)
     if (this.state.status !== "ready" || this.policy !== "store-or-network") void this.fetch()
     this.holdLive()
     this.schedulePoll()
@@ -351,6 +354,7 @@ class QueryResource<T> implements WatchedQuery<T> {
     this.inflight = null
     this.unsubscribeStore?.()
     this.unsubscribeStore = null
+    if (this.artifact.lists) this.client.live?.holdLists(this.key, [])
     this.client.live?.hold(this.key, new Map())
     this.client.healthChanged()
     this.release?.()
@@ -360,8 +364,10 @@ class QueryResource<T> implements WatchedQuery<T> {
   refetch = (): Promise<void> => this.fetch()
 
   private loadingMore: Promise<void> | null = null
+  private loadedRange = 0
 
   loadMore = (): Promise<void> => {
+    if (this.inflight) return this.inflight.then(() => (this.users > 0 ? this.loadMore() : undefined))
     if (this.loadingMore) return this.loadingMore
     const connection = this.connection()
     if (!connection?.hasMore || (connection.endCursor === null && !connection.spec.offset)) return Promise.resolve()
@@ -375,6 +381,8 @@ class QueryResource<T> implements WatchedQuery<T> {
         ? { ...pageValue, [spec.offset]: connection.loaded }
         : { ...pageValue, [spec.after]: connection.endCursor },
     }
+    const size = spec.limit ? pageValue[spec.limit] : undefined
+    if (typeof size === "number") this.loadedRange = Math.max(this.loadedRange, connection.loaded + size)
     this.set({ ...this.state, loadingMore: true })
     this.loadingMore = this.client
       .execute<T>(this.artifact, next)
@@ -421,11 +429,13 @@ class QueryResource<T> implements WatchedQuery<T> {
 
   fetch(): Promise<void> {
     if (this.inflight) return this.inflight
+    if (this.loadingMore) return this.loadingMore.then(() => (this.users > 0 ? this.fetch() : undefined))
     if (this.state.data !== undefined) this.set({ ...this.state, status: "refreshing" })
     const controller = new AbortController()
     this.controller = controller
+    const connection = this.artifact.lists ? this.connection() : null
     this.inflight = this.client
-      .execute<T>(this.artifact, this.variables, { signal: controller.signal })
+      .execute<T>(this.artifact, this.variables, { signal: controller.signal, ...(connection && connection.variable && connection.spec.limit ? { refreshConnection: { loaded: Math.max(connection.loaded, this.loadedRange), ...this.client.connectionRereadLimits, onTruncated: (value: boolean) => this.set({ ...this.state, listRefreshTruncated: value }) } } : {}) })
       .then(({ snapshot, errors }) => {
         if (controller.signal.aborted) return
         this.lastReadAt = this.client.now()
@@ -480,13 +490,13 @@ class QueryResource<T> implements WatchedQuery<T> {
       }, Math.max(delay, active ? 0 : INACTIVE_REREAD_CHECK_MS))
       return
     }
-    if (this.inflight) {
+    if (this.inflight || this.loadingMore) {
       this.rereadWaiting = true
       const finish = () => {
         this.rereadWaiting = false
         this.drainReread()
       }
-      void this.inflight.then(finish, finish)
+      void (this.inflight ?? this.loadingMore)!.then(finish, finish)
       return
     }
     this.rereadPending = false
@@ -495,9 +505,9 @@ class QueryResource<T> implements WatchedQuery<T> {
   }
 
   /** Whether a projection omits something selected by this query's held fragments. */
-  needsEventReread(typename: string, thin: boolean, fragments: readonly string[]): boolean {
+  needsEventReread(typename: string, stale: boolean, fragments: readonly string[]): boolean {
     const holding = this.liveHoldings.get(typename)
-    return !!holding && (thin || this.artifact.liveReread?.includes(typename) === true || fragments.some((name) => this.artifact.fragments[name] !== undefined))
+    return this.artifact.lists?.includes(typename) === true || !!holding && (stale || this.artifact.liveReread?.includes(typename) === true || fragments.some((name) => this.artifact.fragments[name] !== undefined))
   }
 
   private watch(snapshot: Snapshot<T>): void {
@@ -507,7 +517,10 @@ class QueryResource<T> implements WatchedQuery<T> {
       this.set({ ...this.state, data: next.data as T, hasMore: this.connection()?.hasMore ?? false })
       this.holdLive()
       // A record this query shows was deleted or collected: read it again from the server.
-      if (next.missing && this.users > 0) void this.fetch()
+      if (next.missing && this.users > 0) {
+        if (this.artifact.lists) this.readAgain()
+        else void this.fetch()
+      }
     })
   }
 
@@ -521,6 +534,10 @@ class QueryResource<T> implements WatchedQuery<T> {
     if (this.users === 0) return result
     for (const [typename, { ids, fragments }] of this.liveHoldings) {
       result.set(typename, { held: [...ids], fragments: [...fragments], pollMs: this.pollMs, lastReadAt: this.lastReadAt })
+    }
+    for (const typename of this.artifact.lists ?? []) {
+      const existing = result.get(typename)
+      result.set(typename, { held: existing?.held ?? [], fragments: [...(existing?.fragments ?? []), this.artifact.name], pollMs: this.pollMs, lastReadAt: this.lastReadAt, list: true, listReason: this.state.listRefreshTruncated ? "list-refresh-truncated" : this.client.live?.listReason(typename) ?? null })
     }
     return result
   }
@@ -562,7 +579,7 @@ class QueryResource<T> implements WatchedQuery<T> {
     const live = this.client.live
     const types = [...this.liveHoldings.keys()]
     const exposed = live ? types.some((typename) => live.covers(typename) && (live.overflows(typename) || live.refusedNow(typename))) : false
-    this.fallbackPoll = this.uncovered || exposed
+    this.fallbackPoll = this.uncovered || exposed || (this.artifact.lists ?? []).some(type => !live?.covers(type) || live.listReason(type) !== null || live.refusedNow(type))
     this.schedulePoll()
   }
 
@@ -717,9 +734,9 @@ export class Client {
           () => {
             for (const resource of this.resources.values()) resource.refreshFallbackPoll()
           },
-          (holders, typename, thin, fragments) => {
+          (holders, typename, stale, fragments) => {
             for (const resource of this.resources.values()) {
-              if (holders.has(resource.key) && resource.needsEventReread(typename, thin, fragments)) resource.readAgain()
+              if (holders.has(resource.key) && resource.needsEventReread(typename, stale, fragments)) resource.readAgain()
             }
           }
         )
@@ -733,6 +750,8 @@ export class Client {
 
   /** Interval for automatic stale and confirming reads. */
   readonly minRereadMs: number
+  /** Bound automatic loaded-connection refresh work. */
+  get connectionRereadLimits(): { pages: number; rows: number } { return { pages: Math.max(1, this.rereadOptions?.maxRereadPages ?? 10), rows: Math.max(1, this.rereadOptions?.maxRereadRows ?? 100) } }
   private readonly rereadOptions: LiveOptions | undefined
   /** Schedule a stale-read check on the live clock. */
   afterReread(callback: () => void, ms: number): unknown {
@@ -955,6 +974,72 @@ export class Client {
     return stream
   }
 
+  /**
+   * Read the rest of a loaded keyset range after its first page, up to the limits, and merge it into `data`.
+   * Returns where the store's kept tail starts: `Infinity` when the whole range was read again.
+   */
+  private async readLoadedRange(
+    artifact: OperationArtifact<any, any>,
+    variables: Variables,
+    data: Record<string, unknown>,
+    refresh: { loaded: number; pages: number; rows: number; onTruncated(value: boolean): void },
+    signal: AbortSignal
+  ): Promise<number | undefined> {
+    let connectionTailFrom: number | undefined
+    const locate = (selections: readonly Selection[], data: Record<string, unknown>): { selection: LinkSelection; data: Record<string, unknown> } | null => {
+      for (const selection of selections) {
+        if (selection.kind === "inline") { const found = locate(selection.selections, data); if (found) return found }
+        if (selection.kind !== "link") continue
+        const child = data[selection.responseKey]
+        if (!child || typeof child !== "object" || Array.isArray(child)) continue
+        if (selection.connection) return { selection, data: child as Record<string, unknown> }
+        const found = locate(selection.selections, child as Record<string, unknown>); if (found) return found
+      }
+      return null
+    }
+    let found = locate(artifact.normalization, data)
+    if (found) {
+      const spec = found.selection.connection!
+      const arg = found.selection.args.find(arg => arg.name === spec.paging[0])
+      if (arg?.kind === "variable" && spec.limit) {
+        const page = (variables[arg.variable] ?? {}) as Record<string, unknown>
+        const target = refresh.loaded
+        const edgesKey = found.selection.selections.find((s): s is LinkSelection => s.kind === "link" && s.fieldName === spec.edges)?.responseKey ?? spec.edges
+        const infoKey = found.selection.selections.find((s): s is LinkSelection => s.kind === "link" && s.fieldName === spec.pageInfo)?.responseKey ?? spec.pageInfo
+        if (!spec.offset) {
+          let count = 1
+          while (found && (found.data[edgesKey] as unknown[]).length < target && count < refresh.pages) {
+            const info = found.data[infoKey] as Record<string, unknown>
+            if (info[spec.hasNextPage] !== true || typeof info[spec.endCursor] !== "string") break
+            const next = { ...variables, [arg.variable]: { ...page, [spec.after]: info[spec.endCursor] } }
+            const extra = await this.network.execute({ kind: artifact.kind, name: artifact.name, text: artifact.text, hash: artifact.hash, variables: next }, { signal })
+            if (extra.errors?.length || !extra.data) throw new OperationError(artifact.name, extra.errors ?? [])
+            const part = locate(artifact.normalization, extra.data)
+            if (!part || !(part.data[edgesKey] as unknown[]).length) break
+            // A row that moved between reads comes back on the next page too. Count it once, so the range still fills.
+            const nodeId = (edge: unknown) => {
+              const node = (edge as Record<string, unknown> | null)?.[spec.node] as Record<string, unknown> | null | undefined
+              return node ? identify(node, artifact.keys) : null
+            }
+            const seen = new Set((found.data[edgesKey] as unknown[]).map(nodeId))
+            const fresh = (part.data[edgesKey] as unknown[]).filter((edge) => !seen.has(nodeId(edge)))
+            found.data[edgesKey] = [...(found.data[edgesKey] as unknown[]), ...fresh]
+            found.data[infoKey] = part.data[infoKey]
+            count++
+          }
+        }
+        if (found) {
+          const length = (found.data[edgesKey] as unknown[]).length
+          const more = (found.data[infoKey] as Record<string, unknown>)[spec.hasNextPage] === true
+          const truncated = length < target && more
+          connectionTailFrom = truncated ? length : Infinity
+          refresh.onTruncated(truncated)
+        }
+      }
+    }
+    return connectionTailFrom
+  }
+
   /** Send an operation and write its response into the store. */
   async execute<T = unknown, V extends Variables = Variables>(
     artifact: OperationArtifact<T, V>,
@@ -962,6 +1047,8 @@ export class Client {
     options: {
       signal?: AbortSignal
       beforeWrite?: () => void
+      /** Internal loaded-range refresh; driven by the compiled connection and returned PageInfo. */
+      refreshConnection?: { loaded: number; pages: number; rows: number; onTruncated(value: boolean): void }
       /**
        * Read the response into a store of its own instead of the client's. Nothing reaches the
        * client's store, its subscribers or its retention. The returned snapshot, and the fragment
@@ -982,18 +1069,36 @@ export class Client {
     try {
       // A request cancelled before it starts is never sent.
       if (controller.signal.aborted) throw new DOMException("The request was cancelled", "AbortError")
+      let networkVariables = variables as Variables
+      const firstConnection = (selections: readonly Selection[]): LinkSelection | undefined => {
+        for (const selection of selections) {
+          if (selection.kind === "link" && selection.connection) return selection
+          if (selection.kind === "link" || selection.kind === "inline") { const found = firstConnection(selection.selections); if (found) return found }
+        }
+        return undefined
+      }
+      const refreshSelection = options.refreshConnection && firstConnection(artifact.normalization)
+      const refreshSpec = refreshSelection && refreshSelection.connection
+      const refreshArg = refreshSelection && refreshSelection.args.find(arg => arg.name === refreshSpec?.paging[0])
+      if (options.refreshConnection && refreshSpec?.offset && refreshSpec.limit && refreshArg?.kind === "variable" && options.refreshConnection.loaded > 0) {
+        networkVariables = { ...variables, [refreshArg.variable]: { ...(variables[refreshArg.variable] as object), [refreshSpec.offset]: (variables[refreshArg.variable] as Record<string, unknown> | undefined)?.[refreshSpec.offset] ?? 0, [refreshSpec.limit]: Math.min(options.refreshConnection.loaded, options.refreshConnection.rows) } }
+      }
       const response = await this.network.execute(
-        { kind: artifact.kind, name: artifact.name, text: artifact.text, hash: artifact.hash, variables },
+        { kind: artifact.kind, name: artifact.name, text: artifact.text, hash: artifact.hash, variables: networkVariables },
         { signal: controller.signal }
       )
       if (this.store.isDisposed || controller.signal.aborted)
         throw new DOMException("The request was cancelled", "AbortError")
+      const connectionTailFrom = options.refreshConnection && response.data
+        ? await this.readLoadedRange(artifact, variables as Variables, response.data, options.refreshConnection, controller.signal)
+        : undefined
+      if (this.store.isDisposed || controller.signal.aborted) throw new DOMException("The request was cancelled", "AbortError")
       const errors = response.errors ?? []
       options.beforeWrite?.()
       if (!response.data) throw new OperationError(artifact.name, errors)
       const rootId = artifact.kind === "query" ? ROOT_ID : `client:${artifact.kind}:${++this.mutationCount}`
       const target = options.isolated ? new Store() : this.store
-      normalize(target, artifact.normalization, response.data, contextOf(artifact, variables), rootId, artifact.rootType)
+      normalize(target, artifact.normalization, response.data, { ...contextOf(artifact, variables), connectionTailFrom }, rootId, artifact.rootType)
       target.publish()
       const snapshot = target.lookup<T>(selectorOf(artifact, variables, rootId))
       if (rootId !== ROOT_ID) target.delete(rootId)
