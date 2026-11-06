@@ -15,6 +15,9 @@ export type LiveState = "live" | "unconfirmed" | "connecting" | "polling" | "ref
 
 /**
  * Why coverage is degraded (thin fallback can still deliver live events).
+ * - `list-streams-disabled`: lists poll because the client opted out of whole-type streams.
+ * - `list-key-required`: the schema requires a key, so lists cannot see unheld rows.
+ * - `list-refresh-truncated`: a loaded tail exceeded the automatic refresh bound and may be stale.
  * - `no-live-layer`: the client was created without `live`.
  * - `no-stream`: a `@live` fragment's type has no usable `Changed` subscription.
  * - `selection-refused`: the server refused the stream with `INVALID_INPUT`, the code it gives for a
@@ -27,7 +30,7 @@ export type LiveState = "live" | "unconfirmed" | "connecting" | "polling" | "ref
  * - `stream-ended`: the stream ended for another reason.
  * - `schema-reload`: the router retired its graph.
  */
-export type LiveReason = "no-live-layer" | "no-stream" | "selection-refused" | "refused" | "identity-mismatch" | "over-cap" | "socket-down" | "stream-ended" | "schema-reload"
+export type LiveReason = "list-refresh-truncated" | "list-streams-disabled" | "list-key-required" | "no-live-layer" | "no-stream" | "selection-refused" | "refused" | "identity-mismatch" | "over-cap" | "socket-down" | "stream-ended" | "schema-reload"
 
 export type LiveSocketState = "connected" | "connecting" | "closed" | "unknown"
 
@@ -47,7 +50,7 @@ export interface LiveTypeHealth {
   readonly lastReadAt: number | null
   /** When a waiting restart or refusal window ends. Null when nothing is waiting. */
   readonly retryAt: number | null
-  /** The `@live` fragments held on this type, for naming what can't stay live. */
+  /** The `@live` fragments and list operations on this type, for naming what cannot stay live. */
   readonly fragments: readonly string[]
 }
 
@@ -71,6 +74,8 @@ export interface LiveDiagnostic {
 
 /** What one open query says about a type it holds. */
 export interface LiveHolding {
+  readonly list?: boolean
+  readonly listReason?: LiveReason | null
   readonly held: readonly string[]
   readonly fragments: readonly string[]
   readonly pollMs: number | null
@@ -128,7 +133,9 @@ export function typeHealth(status: LiveTypeStatus | undefined, holdings: readonl
     reason,
     code: reasonCode,
   })
-  if (held === 0) return { ...base, state: "idle", reason: null }
+  const listReason = holdings.find(h => h.listReason)?.listReason
+  if (listReason) return withPoll("unavailable", listReason, null)
+  if (held === 0 && !holdings.some(h => h.list)) return { ...base, state: "idle", reason: null }
   if (!status) return withPoll("unavailable", options.hasLiveLayer ? "no-stream" : "no-live-layer")
   if (status.identityMismatch) return withPoll("unavailable", "identity-mismatch", null)
   const reason = reasonOfEnd(status.lastEnd)

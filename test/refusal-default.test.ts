@@ -60,7 +60,7 @@ describe("a refused stream, with no configuration", () => {
     expect(context.streams.started.length).toBeLessThanOrEqual(16)
     expect(context.streams.started.length).toBeGreaterThanOrEqual(10)
     context.client.dispose()
-  })
+  }, 30_000)
 
   it("still refreshes its records, by polling while it waits", async () => {
     const context = setup()

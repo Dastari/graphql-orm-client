@@ -15,13 +15,14 @@ change that breaks one of these leaves the client with stale or duplicated data.
 - Keep `Id` (the complete primary key) stable in format and meaning. The client's `NodeId` is
   the type name plus this key. Ids need only be unique within their type.
 - Declare `federation_key` on every entity the router serves.
-- Add a managed version (`#[graphql_orm(version = "managed")]`, i64, from graphql-orm 0.84.0)
+- Add a managed version (`#[graphql_orm(version = "managed", default = "0")]`, i64, from graphql-orm 0.84.0)
   to rows that are rewritten in place while users watch them: sessions, outcomes, snapshots,
   tickets, state rows. A bare `#[graphql_orm(version)]` is compare-and-swap only.
 - Add `node_id` (`#[graphql_entity(node_id)]`, graphql-orm 0.86.0) to entities whose fragments
   should be refetchable on their own.
-- Set `propagate_change = "up"` on relations whose parent views show child state. Deleting a child
-  doesn't notify its parent yet (graphql-orm #290).
+- Set `propagate_change = "up"` on relations whose parent views show child state. From graphql-orm 0.93.0 deleting a
+  child notifies its parent too (#290). Regenerate the client before adopting 0.93.0: a module generated before
+  0.1.0-alpha.10 treats that event as the parent being deleted.
 - Grant `RowPolicy::can_read_deleted_preimage` where clients must see deletes: without it, `DELETED`
   doesn't reach subscribers.
 - Keep fields that must update live as persisted scalars. A `Changed` payload refuses relations and
@@ -42,3 +43,14 @@ change that breaks one of these leaves the client with stale or duplicated data.
   with the client's consumers.
 
 Read the installed `docs/graphql-orm-contract.md` for the status of each guarantee.
+
+## Real-server conformance
+
+In this package's repository, `pnpm conformance` runs the generated SQLite example
+behind the real router, separately from `pnpm check`. The default server tag is
+`graphql-orm-v0.90.1` (router 0.8.1). See `conformance/README.md` for setup, assertions
+and fixture accommodations. Its NodeId/computed/relation stream refusals are real
+`next` error frames (`INVALID_INPUT`), followed by `complete`; a managed version
+is admitted. A federated field using a NodeId key is also refused in that fixture; a persisted
+Id-key federated field is admitted and fetched per event.
+Do not infer that a compiler-valid stream is admitted by the deployed server.

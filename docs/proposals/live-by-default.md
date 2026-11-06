@@ -1,16 +1,20 @@
 # Live by default: design for requirement groups 1 and 2
 
 Status: **proposed; the owner approved the direction on 2026-11-06. Built so far: the restart of ended
-streams (fact 4), in 0.1.0-alpha.7; R20 and R7, in 0.1.0-alpha.8; R8 and R6, in 0.1.0-alpha.9. R4's client-side overlap and confirming reads are built; true gap closure still needs a server started signal. Group 1 and R2 are built.** Requirement numbers refer to [requirements.md](../requirements.md).
-Unless noted, server facts were read from graphql-orm `main` at `9d1a482` and not run against a live
-router; R21 is what will prove them. The large application's backend is on graphql-orm 0.90.1.
+streams (fact 4), in 0.1.0-alpha.7; R20 and R7, in 0.1.0-alpha.8; R8 and R6, in 0.1.0-alpha.9. R4's client-side overlap and confirming reads are built; true gap closure still needs a server started signal. Group 1, R2 and R3 are built.** Requirement numbers refer to [requirements.md](../requirements.md).
+R21's `conformance/` fixture now runs the admission, key delivery, delete, node, version,
+list and router-frame facts against `graphql-orm-v0.90.1` (adfa608d), router 0.8.1 and SQLite.
+Other facts remain source-read from `main` at `9d1a482` unless noted. Recovery assertions
+and fixture accommodations are documented in [conformance](../../conformance/README.md).
 
 ## Four facts that shape the design
 
 1. **A stream is admitted or refused whole.** `validate_subscription_selection` refuses a `Changed`
    subscription if any selected entity field isn't a persisted, subscribable column, with the generic
    `INVALID_INPUT`. Legacy generation spreads `@live` fragments unchanged, so one relation or computed
-   field in one fragment stops every fragment of that type. `NodeId` is refused too on 0.91.1.
+   field in one fragment stops every fragment of that type. `NodeId` is refused too: run on
+   0.90.1, source-read on 0.91.1. The real wire shape is `next` with `INVALID_INPUT`, then
+   `complete`; managed RecordVersion is accepted, while a computed hand-written one is refused.
 2. **Nothing confirms a subscribe.** graphql-transport-ws has no per-operation acknowledgement, and
    `Changed` sends nothing until an event. A quiet admitted stream looks the same as an unanswered
    one, and a client can't know when it is safe to read after subscribing.
@@ -149,7 +153,7 @@ Built on the client:
   and restores the previous request cost.
 - **Limits:** because of fact 2, bounded overlap and confirming reads narrow the gap and do not
   close it against a real server. Only a started signal can prove admission. R3 list streams
-  before the read remain proposed. Versions reject older events and read responses. Identical
+  open before the read, with a confirming read after settling. Versions reject older events and read responses. Identical
   unversioned snapshots are harmless; different unversioned snapshots remain last-arrival-wins.
 - **Unexpected ends and reconnect:** restart with back-off and re-read through `live.connection`.
   `readAgain` follows a read in flight with one more, coalescing repeated stale marks.
@@ -191,7 +195,7 @@ hand-written version is refused, and relations lack the generated version on the
 
 Holder stale marks and R4 confirming reads share `live.minRereadMs` (default 2000). They follow a
 read in flight, pause while inactive, and catch up once on return. 100 events in a second schedule
-two automatic reads. List membership invalidation remains R3, proposed.
+two automatic reads. List membership invalidation uses the same limiter (R3, built).
 
 Validation: 16/16 acceptance runs against generated graphql-orm 0.90.1 and real router 0.8.1,
 8 per `ws` synchronous-event setting. Actual `INVALID_INPUT` full refusal, thin event, computed-field
@@ -203,7 +207,15 @@ server `NodeId`, by exact match, so a composite type needs no `keys` configurati
 
 ### R3. Lists stay correct
 
+**Built.** See [the implementation and validation](../design.md#list-streams-r3).
+The keyset bound is `live.maxRereadPages` (10); offset is `live.maxRereadRows` (100, configure to
+the server maximum). A retained tail sets `QueryState.listRefreshTruncated` and degraded health.
+List streams open before the first read, including empty and count-only queries; settling confirms
+a newly opened stream, narrowing the gap without closing it. Required-key schemas poll, with an
+operation-naming health diagnostic.
+
 - `OperationArtifact` gains `lists: string[]`, the types the operation shows in a list.
+- **Only types the project made live.** While `live` is `explicit`, a list opens a stream only for a type with a `@live` fragment somewhere in the project, so regenerating gives no new type a stream. R1 widens this.
 - **At most one stream per type.** A type with a list open uses one stream not narrowed by key, and
   drops events for rows nobody holds. Otherwise it uses `Keys`. Two per type would run into the
   router's 32 operations per connection. An un-narrowed stream costs the server a row-policy check per
@@ -236,7 +248,7 @@ alpha.5 archive until it chooses to move.
 | Back-off by default (built) | `live.refusalBackoff` | `false` | Client upgrade |
 | Refused types poll (built) | `polling.liveFallbackMs` | `null` | Client upgrade |
 | Compiled stream selection | `liveSelection` in the generator | `"as-written"` | Regeneration |
-| List re-reads | `live.listStreams` | `false` until `live` is `default` | Regeneration: older artifacts have no `lists` |
+| List re-reads | `live.listStreams` | `false` (lists poll) | Regeneration: older artifacts have no `lists` |
 | Live by default | `live` in the generator | `"explicit"` | Regeneration |
 
 Each gets changelog steps. The generator warns about a stream selection the new rules would have
@@ -264,14 +276,17 @@ In order. All opt-in, through its normal process.
      them, and each needs `@composeDirective` to survive composition.
    - **Fallback: a `subscribable` flag on `GraphqlSemanticFieldMetadata`.** Cheap, but separate from the
      SDL, per subgraph and not served by the router, so every team has another file to keep in step.
-   - **Unknown:** whether the router admits a federated field on a stream by planning an entity fetch per
-     event. R21 should settle it. The snapshot makes it moot.
+   - **Run in R21 on 0.90.1 / router 0.8.1; fact list corrected:** a second-subgraph
+     Vendor.RemoteName through a persisted Id key **is admitted and fetched per event**.
+     Widget.RemoteName through the NodeId key is refused with `INVALID_INPUT`, because
+     the source stream cannot carry that key. Do not classify every federated field
+     as refused. A snapshot can omit these fields to avoid fetches per event.
 2. **Merge PR #312** (`NodeId` and `RecordVersion` on relation-bearing entities). In flight. Without it
    those entities have neither, whatever the client does.
 3. **A stream-started signal.** An opt-in first frame after authorization, as `CacheSync::changes` sends.
    It is the only thing that closes the first-read gap and makes `live` provable for a quiet stream.
 4. **A dedicated code for an unsupported selection,** so `INVALID_INPUT` needn't stand for it.
-5. **A key-only delete signal** that needs no preimage (see #217), and #290 for child deletes.
+5. **A key-only delete signal** that needs no preimage (see #217). Child deletes notify the parent from 0.93.0 (#290).
 6. Already listed in the contract: effective page size, and one time format.
 
 ## Decisions from the owner (2026-11-06)
