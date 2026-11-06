@@ -111,7 +111,9 @@ their own.
 
 ## 3. What real applications need beyond records
 
-**R9. Sensitive results.** Mutations have `policy: "no-store"` (0.1.0-alpha.6). What remains: a way to
+**R9. Sensitive results.** *Built:* operation-level `@sensitive`, plain results without fragment references; queries use `client.query`, live combinations fail compilation. R17 must exclude these results.
+
+ Mutations have `policy: "no-store"` (0.1.0-alpha.6). What remains: a way to
 declare this in the document so it can't be forgotten at a call site, the same for query results, and
 keeping such values out of persistence (R17) and any inspector.
 *Acceptance:* an operation declared sensitive leaves its values nowhere in the store, with no call-site

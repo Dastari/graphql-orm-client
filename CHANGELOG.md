@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- R9: query and mutation `@sensitive` returns plain expanded data without storing it. Live combinations and watched sensitive queries reject. Existing `no-store` behaviour is unchanged.
+
+## Unreleased
+
 - Generate flattened full/thin live projections. Unsupported full selections fall back to keys only;
   events re-read holders for omitted fields and changed relation links. Health retains
   `selection-refused`, and doctor distinguishes admitted/quiet fallback. Quiet fallback fails strict

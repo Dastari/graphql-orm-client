@@ -47,3 +47,16 @@ These go in each service, not in graphql-orm or the client:
 - Set `propagate_change = "up"` on relations whose parent views show child state.
 - Do not add hand-written `NodeId` fields, `node` resolvers or replacement subscriptions.
   Report the gap to graphql-orm instead.
+
+### Sensitive operations (R9)
+
+Declare `@sensitive` on a query or mutation. Generation records `sensitive: true` and strips
+the directive from the wire document. Results are plain values with fragment selections expanded;
+they carry no fragment references and cannot be opened by `readFragment`. No store (including
+a private store), retention or inspector receives the result. Existing matching entities remain
+unchanged, just as with mutation `policy: "no-store"`. That older option still supports private
+fragment reads. Sensitive queries use imperative `client.query`; watched queries and preload
+reject them because those retain results. Sensitive mutations reject optimistic responses.
+Live fragments anywhere in a sensitive operation, and operation-level `@live`, fail the build.
+Persistence is proposed (R17); it must exclude these results. Callers own the returned values
+and must avoid logging or retaining secrets themselves. No server change is required.

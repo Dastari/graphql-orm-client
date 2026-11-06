@@ -122,6 +122,8 @@ export interface FragmentArtifact<TData = unknown, TName extends string = string
 }
 
 export interface OperationArtifact<TData = unknown, TVariables = Record<string, unknown>> {
+  /** Plain result only: no normalisation, retention, fragment references or live delivery. */
+  readonly sensitive?: true
   /** Type-only: the root's data and variables. */
   readonly " $types"?: { readonly data: TData; readonly variables: TVariables }
   readonly kind: "query" | "mutation" | "subscription"

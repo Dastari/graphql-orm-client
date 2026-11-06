@@ -866,6 +866,10 @@ export class Client {
     options: { policy?: FetchPolicy; signal?: AbortSignal } = {}
   ): Promise<{ data: T; errors: readonly GraphQLErrorLike[] }> {
     if (artifact.kind !== "query") throw new Error(`${artifact.name} is not a query`)
+    if (artifact.sensitive) {
+      const { snapshot, errors } = await this.execute(artifact, variables, options)
+      return { data: snapshot.data, errors }
+    }
     const selector = selectorOf(artifact, variables)
     if ((options.policy ?? "store-or-network") === "store-or-network") {
       const stored = this.store.lookup<T>(selector)
@@ -979,6 +983,10 @@ export class Client {
       const errors = response.errors ?? []
       options.beforeWrite?.()
       if (!response.data) throw new OperationError(artifact.name, errors)
+      if (artifact.sensitive) return {
+        snapshot: { data: response.data as T, missing: false, seen: new Set(), selector: selectorOf(artifact, variables) },
+        errors,
+      }
       const rootId = artifact.kind === "query" ? ROOT_ID : `client:${artifact.kind}:${++this.mutationCount}`
       const target = options.isolated ? new Store() : this.store
       normalize(target, artifact.normalization, response.data, contextOf(artifact, variables), rootId, artifact.rootType)
@@ -1001,6 +1009,7 @@ export class Client {
     variables: V,
     options: FetchPolicy | WatchOptions = "store-and-network"
   ): WatchedQuery<T> & { open(): void; close(): void } {
+    if (artifact.sensitive) throw new Error(`${artifact.name}: @sensitive queries use client.query; watched results retain values`)
     const { policy = "store-and-network", pollMs } = typeof options === "string" ? { policy: options } : options
     const key = `${queryKey(artifact, variables)}:${policy}`
     let resource = this.resources.get(key) as QueryResource<T> | undefined
@@ -1101,7 +1110,7 @@ export class Client {
     // A misspelt policy must not quietly store a secret.
     if (options.policy !== undefined && options.policy !== "store" && options.policy !== "no-store")
       throw new Error(`${artifact.name}: unknown mutation policy ${JSON.stringify(options.policy)}`)
-    const isolated = options.policy === "no-store"
+    const isolated = artifact.sensitive || options.policy === "no-store"
     if (isolated && options.optimisticResponse)
       throw new Error(`${artifact.name}: optimisticResponse can't be combined with policy "no-store"`)
     let layer: OptimisticLayer | null = null

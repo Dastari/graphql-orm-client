@@ -43,3 +43,16 @@ The client only works against graphql-orm services and their router.
 
 Verify: the route makes one request on first load, a second visit within the retention
 period makes none, and signing out clears every record.
+
+### Sensitive operations (R9)
+
+Declare `@sensitive` on a query or mutation. Generation records `sensitive: true` and strips
+the directive from the wire document. Results are plain values with fragment selections expanded;
+they carry no fragment references and cannot be opened by `readFragment`. No store (including
+a private store), retention or inspector receives the result. Existing matching entities remain
+unchanged, just as with mutation `policy: "no-store"`. That older option still supports private
+fragment reads. Sensitive queries use imperative `client.query`; watched queries and preload
+reject them because those retain results. Sensitive mutations reject optimistic responses.
+Live fragments anywhere in a sensitive operation, and operation-level `@live`, fail the build.
+Persistence is proposed (R17); it must exclude these results. Callers own the returned values
+and must avoid logging or retaining secrets themselves. No server change is required.
