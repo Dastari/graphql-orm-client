@@ -1,6 +1,6 @@
 ---
 name: graphql-orm-client-adopt
-description: Install graphql-orm-client in an application, configure the network and one client per signed-in identity, run the generator, wire route loaders and move an Apollo application across route by route.
+description: Install graphql-orm-client in an application, configure the network and one client per signed-in identity, pull and check schema snapshots, run the generator, wire route loaders and move an Apollo application across route by route.
 ---
 
 # Adopt graphql-orm-client
@@ -12,7 +12,12 @@ Install a versioned GitHub release archive (`pnpm add https://github.com/Dastari
 The client only works against graphql-orm services and their router.
 
 1. **Schema snapshot.** Keep the router's SDL in the repository (for example
-   `schema/router.graphql`) and refresh it with the project's schema pull script.
+   `schema/router.graphql`) and refresh it with `graphql-orm-client schema pull --url <router> --token-env TOKEN`.
+   Set `schema` in the project config first. Commit the SDL and its `.sha256` sidecar.
+   Use `schema pull --check` in CI for server drift; it never writes and an unreachable server fails.
+   Credentials come from `--token-env NAME` or `--header-env name=NAME`, never literal flags.
+   Once the hash exists, `generate --check` also verifies snapshot integrity and provenance.
+   After pulling a changed schema, run `generate`. Existing projects without a sidecar keep working.
 2. **Generate.** Add `graphql-orm-client.config.json` (`schema`, `documents`, `out`,
    `scalars`; `keys` for composite or non-`Id` keys on types without `NodeId`; `versions` only for a version field other than graphql-orm's `RecordVersion`, or `null` to stop selecting it).
    Run `graphql-orm-client generate`, and run `generate --check` in CI. Write every document with

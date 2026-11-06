@@ -112,6 +112,7 @@ silently stale data.
 **R23. Schema pull with drift detection.** `graphql-orm-client schema pull` writes the snapshot and
 its hash. `generate --check` fails when generated output doesn't match. Consumers currently write
 their own.
+*Built:* sorted SDL snapshots, SHA-256 sidecars, read-only drift checks and opt-in generation integrity checks.
 
 ## 3. What real applications need beyond records
 
