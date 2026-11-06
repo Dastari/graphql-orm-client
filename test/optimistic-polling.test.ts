@@ -1,17 +1,17 @@
 import { describe, expect, it } from "vitest"
 import { createClient, readFragment } from "../src/client.js"
-import { compiled, device, fleet, frags, mockNetwork, mockSubscriptions, ops } from "./fixtures.js"
+import { compiled, widget, catalog, frags, mockNetwork, mockSubscriptions, ops } from "./fixtures.js"
 
-type FleetData = { Devices: { Edges: { Node: object }[] } }
-const rowName = (data: FleetData | undefined, index = 0) =>
-  readFragment<{ Name: string }>(frags.DeviceRow, data!.Devices.Edges[index]!.Node).Name
+type CatalogData = { Widgets: { Edges: { Node: object }[] } }
+const rowName = (data: CatalogData | undefined, index = 0) =>
+  readFragment<{ Name: string }>(frags.WidgetRow, data!.Widgets.Edges[index]!.Node).Name
 
 function renameResponse(id: string, name: string, version: number) {
   return {
-    UpdateDevice: {
-      __typename: "DeviceResult",
+    UpdateWidget: {
+      __typename: "WidgetResult",
       Success: true,
-      Entity: { ...device(id, { Name: name }), Hostname: null, RowVersion: version, Hardware: null },
+      Entity: { ...widget(id, { Name: name }), Sku: null, RowVersion: version, Spec: null },
     },
   }
 }
@@ -20,15 +20,15 @@ describe("optimistic mutations", () => {
   it("shows the expected result at once and replaces it with the server's", async () => {
     let respond!: (name: string) => void
     const { network } = mockNetwork(({ name }) =>
-      name === "FleetPage"
-        ? { data: fleet([device("d1")]) }
+      name === "CatalogPage"
+        ? { data: catalog([widget("d1")]) }
         : new Promise((resolve) => (respond = (serverName) => resolve({ data: renameResponse("d1", serverName, 2) })))
     )
     const client = createClient({ network })
-    const list = client.watchQuery<FleetData>(ops.FleetPage, {})
+    const list = client.watchQuery<CatalogData>(ops.CatalogPage, {})
     list.open()
     await list.refetch()
-    const pending = client.mutate(ops.RenameDevice, { Id: "d1", Name: "guess" }, {
+    const pending = client.mutate(ops.RenameWidget, { Id: "d1", Name: "guess" }, {
       optimisticResponse: renameResponse("d1", "guess", 1),
     })
     expect(rowName(list.getState().data)).toBe("guess")
@@ -39,40 +39,40 @@ describe("optimistic mutations", () => {
 
   it("rolls back on failure", async () => {
     const { network } = mockNetwork(({ name }) =>
-      name === "FleetPage" ? { data: fleet([device("d1")]) } : { data: null, errors: [{ message: "denied" }] }
+      name === "CatalogPage" ? { data: catalog([widget("d1")]) } : { data: null, errors: [{ message: "denied" }] }
     )
     const client = createClient({ network })
-    const list = client.watchQuery<FleetData>(ops.FleetPage, {})
+    const list = client.watchQuery<CatalogData>(ops.CatalogPage, {})
     list.open()
     await list.refetch()
     await expect(
-      client.mutate(ops.RenameDevice, { Id: "d1", Name: "guess" }, { optimisticResponse: renameResponse("d1", "guess", 1) })
+      client.mutate(ops.RenameWidget, { Id: "d1", Name: "guess" }, { optimisticResponse: renameResponse("d1", "guess", 1) })
     ).rejects.toThrow("denied")
-    expect(rowName(list.getState().data)).toBe("device-d1")
+    expect(rowName(list.getState().data)).toBe("widget-d1")
   })
 
   it("never rolls back over a newer write", async () => {
     let fail!: () => void
     const subscriptions = mockSubscriptions()
     const { network } = mockNetwork(({ name }) =>
-      name === "FleetPage"
-        ? { data: fleet([device("d1")]) }
+      name === "CatalogPage"
+        ? { data: catalog([widget("d1")]) }
         : new Promise((resolve) => (fail = () => resolve({ data: null, errors: [{ message: "denied" }] })))
     )
     const client = createClient({
       network,
       live: { artifacts: compiled.live, subscribe: subscriptions.subscribe, setTimeout: () => 0, clearTimeout: () => {} },
     })
-    const list = client.watchQuery<FleetData>(ops.FleetPage, {})
+    const list = client.watchQuery<CatalogData>(ops.CatalogPage, {})
     list.open()
     await list.refetch()
     client.live!.flush()
-    const pending = client.mutate(ops.RenameDevice, { Id: "d1", Name: "guess" }, {
+    const pending = client.mutate(ops.RenameWidget, { Id: "d1", Name: "guess" }, {
       optimisticResponse: renameResponse("d1", "guess", 1),
     })
-    // A live event renames the device while the mutation is in flight.
-    const stream = subscriptions.find("LiveDevice")[0]!
-    stream.sink.next({ data: { DeviceChanged: { __typename: "DeviceChangedEvent", Action: "UPDATED", Device: device("d1", { Name: "from-live" }) } } })
+    // A live event renames the widget while the mutation is in flight.
+    const stream = subscriptions.find("LiveWidget")[0]!
+    stream.sink.next({ data: { WidgetChanged: { __typename: "WidgetChangedEvent", Action: "UPDATED", Widget: widget("d1", { Name: "from-live" }) } } })
     fail()
     await expect(pending).rejects.toThrow()
     expect(rowName(list.getState().data)).toBe("from-live")
@@ -117,28 +117,28 @@ describe("polling", () => {
 
   it("falls back to polling for @live records no subscription covers", async () => {
     const clock = timers()
-    const { network } = mockNetwork(() => ({ data: fleet([device("d1"), device("d2"), device("d3")]) }))
+    const { network } = mockNetwork(() => ({ data: catalog([widget("d1"), widget("d2"), widget("d3")]) }))
     const subscriptions = mockSubscriptions()
     const client = createClient({
       network,
       polling: { ...clock, liveFallbackMs: 15_000 },
       live: {
-        artifacts: { ...compiled.live, Device: { ...compiled.live.Device!, keyOptional: false } },
+        artifacts: { ...compiled.live, Widget: { ...compiled.live.Widget!, keyOptional: false } },
         subscribe: subscriptions.subscribe,
         maxKeyedSubscriptions: 2,
         setTimeout: () => 0,
         clearTimeout: () => {},
       },
     })
-    const list = client.watchQuery(ops.FleetPage, {})
+    const list = client.watchQuery(ops.CatalogPage, {})
     list.open()
     await list.refetch()
-    // Three devices with a cap of two per-record subscriptions: the query polls.
+    // Three widgets with a cap of two per-record subscriptions: the query polls.
     expect([...clock.intervals.values()].map((entry) => entry.ms)).toEqual([15_000])
 
     const withoutLive = createClient({ network, polling: { ...clock, liveFallbackMs: 20_000 } })
     clock.intervals.clear()
-    const other = withoutLive.watchQuery(ops.FleetPage, {})
+    const other = withoutLive.watchQuery(ops.CatalogPage, {})
     other.open()
     await other.refetch()
     // No live layer at all: every @live record is uncovered.

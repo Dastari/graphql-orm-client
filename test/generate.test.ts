@@ -11,11 +11,11 @@ const outDir = join(root, "test", "generated")
 describe("extractDocuments", () => {
   it("finds graphql() templates and strings, and refuses interpolation", () => {
     const code = [
-      "const A = graphql(`query A { Device(Id: \"x\") { Name } }`)",
-      "const B = graphql(\n  \"fragment B on Device { Name }\"\n)",
+      "const A = graphql(`query A { Widget(Id: \"x\") { Name } }`)",
+      "const B = graphql(\n  \"fragment B on Widget { Name }\"\n)",
       "notgraphql(`query C { x }`)",
     ].join("\n")
-    expect(extractDocuments(code)).toEqual(['query A { Device(Id: "x") { Name } }', "fragment B on Device { Name }"])
+    expect(extractDocuments(code)).toEqual(['query A { Widget(Id: "x") { Name } }', "fragment B on Widget { Name }"])
     expect(() => extractDocuments("graphql(`query ${name} { x }`)")).toThrow(/interpolate/)
   })
 })
@@ -23,56 +23,56 @@ describe("extractDocuments", () => {
 describe("generate", () => {
   const options = {
     keys: { Slot: ["Site", "Name"], PageInfo: null },
-    versions: { Device: "RowVersion" },
+    versions: { Widget: "RowVersion" },
     importFrom: "../../src/index.js",
   }
   const source = generate(schema, documents, options)
 
   it("emits typed artifacts, live artifacts and graphql() overloads", () => {
-    expect(source).toContain("export type DeviceRowFragment = {")
-    expect(source).toContain('as unknown as FragmentArtifact<DeviceRowFragment, "DeviceRow">')
-    expect(source).toContain("export type FleetPageVariables = { readonly Where?: DeviceWhereInput | null }")
-    expect(source).toContain("export type DeviceWhereInput = { readonly Name?: StringFilter | null; readonly OrganisationId?: StringFilter | null }")
+    expect(source).toContain("export type WidgetRowFragment = {")
+    expect(source).toContain('as unknown as FragmentArtifact<WidgetRowFragment, "WidgetRow">')
+    expect(source).toContain("export type CatalogPageVariables = { readonly Where?: WidgetWhereInput | null }")
+    expect(source).toContain("export type WidgetWhereInput = { readonly Name?: StringFilter | null; readonly VendorId?: StringFilter | null }")
     expect(source).toContain("export const live = ")
-    expect(source).toMatch(/export function graphql\(source: "fragment DeviceRow on Device @live \{/)
+    expect(source).toMatch(/export function graphql\(source: "fragment WidgetRow on Widget @live \{/)
   })
 
   it("refuses a graphql() call with more than one definition", () => {
-    expect(() => generate(schema, ["fragment A on Device { Name } fragment B on Device { Id }"])).toThrow(/exactly one/)
+    expect(() => generate(schema, ["fragment A on Widget { Name } fragment B on Widget { Id }"])).toThrow(/exactly one/)
   })
 
   it("type-checks: masked roots, typed fragments, typed variables and overloads", () => {
     mkdirSync(outDir, { recursive: true })
     writeFileSync(join(outDir, "graphql.ts"), source)
-    const fleetSource = documents.find((document) => document.startsWith("query FleetPage"))!
+    const catalogSource = documents.find((document) => document.startsWith("query CatalogPage"))!
     writeFileSync(
       join(outDir, "usage.ts"),
-      `import { DeviceDetailFragment, DeviceRowFragment, FleetPageQuery, OrganisationBadgeFragment, SearchPageQuery, TicketRowFragment, TicketsPageQuery, graphql } from "./graphql.js"
+      `import { WidgetDetailFragment, WidgetRowFragment, CatalogPageQuery, VendorBadgeFragment, SearchPageQuery, TicketRowFragment, TicketsPageQuery, graphql } from "./graphql.js"
 import { readFragment, type Client } from "../../src/index.js"
 
 declare const client: Client
 
 export async function usage() {
-  const fleet = graphql(${JSON.stringify(fleetSource)})
-  const { snapshot } = await client.execute(fleet, { Where: { Name: { Eq: "a" } } })
-  const edge = snapshot.data.Devices.Edges[0]!
+  const catalog = graphql(${JSON.stringify(catalogSource)})
+  const { snapshot } = await client.execute(catalog, { Where: { Name: { Eq: "a" } } })
+  const edge = snapshot.data.Widgets.Edges[0]!
   const cursor: string = edge.Cursor
-  const total: number | null = snapshot.data.Devices.PageInfo.TotalCount
-  const row = readFragment(DeviceRowFragment, edge.Node)
+  const total: number | null = snapshot.data.Widgets.PageInfo.TotalCount
+  const row = readFragment(WidgetRowFragment, edge.Node)
   const name: string = row.Name
-  const org = row.Organisation ? readFragment(OrganisationBadgeFragment, row.Organisation) : null
-  const display: string | undefined = org?.DisplayName
+  const vendor = row.Vendor ? readFragment(VendorBadgeFragment, row.Vendor) : null
+  const display: string | undefined = vendor?.DisplayName
   // @ts-expect-error the root sees a masked reference, not the row's fields
   edge.Node.Name
   // @ts-expect-error a reference only opens the fragment that produced it
-  readFragment(DeviceDetailFragment, edge.Node)
+  readFragment(WidgetDetailFragment, edge.Node)
   // @ts-expect-error variables are typed
-  await client.execute(FleetPageQuery, { Where: { Name: { Eq: 1 } } })
+  await client.execute(CatalogPageQuery, { Where: { Name: { Eq: 1 } } })
   const search = await client.execute(SearchPageQuery, { Text: "a" })
   for (const hit of search.snapshot.data.Search) {
-    if (hit.__typename === "Device") {
-      const deviceName: string = hit.Name
-      void deviceName
+    if (hit.__typename === "Widget") {
+      const widgetName: string = hit.Name
+      void widgetName
     } else {
       const orgName: string = hit.DisplayName
       void orgName

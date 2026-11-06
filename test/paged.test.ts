@@ -25,7 +25,7 @@ describe("@paged compilation", () => {
     })
     expect(ops.TicketsPage.text).not.toContain("@paged")
     expect(ops.TicketsPage.text).toMatch(/PageInfo \{\s+__typename\s+TotalCount\s+HasNextPage\s+HasPreviousPage\s+\}/)
-    expect(ops.FleetPage.paged).toBeUndefined()
+    expect(ops.CatalogPage.paged).toBeUndefined()
   })
 
   const refuse = (document: string, message: RegExp) =>
@@ -33,7 +33,7 @@ describe("@paged compilation", () => {
 
   it("refuses a page argument that isn't a variable or isn't graphql-orm's PageInput", () => {
     refuse(`query A { Tickets(Page: { Limit: 5 }) @paged { Edges { Node { Id } } } }`, /as a variable/)
-    refuse(`query A($Page: KeysetPageInput) { Devices(Page: $Page) @paged { Edges { Node { Id } } } }`, /Limit and Offset/)
+    refuse(`query A($Page: KeysetPageInput) { Widgets(Page: $Page) @paged { Edges { Node { Id } } } }`, /Limit and Offset/)
   })
 
   it("refuses @paged in a fragment, twice in one operation, inside a list or with @connection", () => {
@@ -47,7 +47,7 @@ describe("@paged compilation", () => {
     )
     refuse(`query A($Page: PageInput) { Tickets(Page: $Page) @paged @connection(key: "x") { Edges { Node { Id } } } }`, /also be a @connection/)
     refuse(
-      `query A($Page: PageInput) { Search(Text: "x") { ... on Organisation { Tickets(Page: $Page) @paged { Edges { Node { Id } } } } } }`,
+      `query A($Page: PageInput) { Search(Text: "x") { ... on Vendor { Tickets(Page: $Page) @paged { Edges { Node { Id } } } } } }`,
       /inside a list/
     )
   })
@@ -59,7 +59,7 @@ describe("@paged compilation", () => {
     })
     expect(() => pageVariables(ops.TicketsPage, {}, -1, 25)).toThrow(RangeError)
     expect(() => pageVariables(ops.TicketsPage, {}, 0, 0)).toThrow(RangeError)
-    expect(() => pageVariables(ops.FleetPage, {}, 0, 10)).toThrow(/no @paged field/)
+    expect(() => pageVariables(ops.CatalogPage, {}, 0, 10)).toThrow(/no @paged field/)
   })
 })
 
@@ -309,7 +309,7 @@ describe("@connection on an offset PageInput", () => {
   it("is detected from the schema", () => {
     const connection = (ops.TicketsScroll.selections[0] as { connection?: { offset?: string } }).connection
     expect(connection?.offset).toBe("Offset")
-    const keyset = (ops.FleetScroll.selections[0] as { connection?: { offset?: string } }).connection
+    const keyset = (ops.CatalogScroll.selections[0] as { connection?: { offset?: string } }).connection
     expect(keyset?.offset).toBeUndefined()
     expect(ticketPage([]).Tickets.Edges).toEqual([])
   })

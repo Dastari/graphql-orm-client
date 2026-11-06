@@ -13,16 +13,16 @@ const schema = buildSchema(`
   type Query {
     node(NodeId: ID!): Node
     nodes(NodeIds: [ID!]!): [Node]!
-    Devices(Limit: Int): [Device!]!
+    Widgets(Limit: Int): [Widget!]!
     Slots: [Slot!]!
     Settings: Settings
   }
   interface Node { NodeId: ID! }
-  type Device implements Node {
+  type Widget implements Node {
     NodeId: ID!
     Id: String!
     Name: String!
-    Hostname: String
+    Sku: String
     Readings(Last: Int): [Int!]!
   }
   type Slot implements Node {
@@ -35,76 +35,76 @@ const schema = buildSchema(`
 `)
 
 const documents = [
-  `fragment DeviceCard on Device @refetchable { Name Hostname }`,
-  `fragment DeviceName on Device { Name }`,
-  `query DeviceList { Devices { ...DeviceCard ...DeviceName } }`,
+  `fragment WidgetCard on Widget @refetchable { Name Sku }`,
+  `fragment WidgetName on Widget { Name }`,
+  `query WidgetList { Widgets { ...WidgetCard ...WidgetName } }`,
   `fragment SlotLabel on Slot @refetchable { Label }`,
   `query SlotList { Slots { ...SlotLabel } }`,
 ]
 
 const compiled = compile(schema, documents)
-const DeviceCard = compiled.fragments.DeviceCard!
-const DeviceList = compiled.operations.DeviceList!
-const nodeId = encodeNodeId("Device", ["d1"])
+const WidgetCard = compiled.fragments.WidgetCard!
+const WidgetList = compiled.operations.WidgetList!
+const nodeId = encodeNodeId("Widget", ["d1"])
 
 const row = (overrides: Record<string, unknown> = {}) => ({
-  __typename: "Device",
+  __typename: "Widget",
   Id: "d1",
   Name: "alpha",
-  Hostname: "alpha.local",
+  Sku: "alpha.local",
   ...overrides,
 })
 
 describe("@refetchable fragments", () => {
   it("compile a node(NodeId) query and strip the directive", () => {
-    expect(DeviceCard.refetch?.name).toBe("DeviceCardRefetch")
-    expect(DeviceCard.refetch?.text).toContain("query DeviceCardRefetch($NodeId: ID!)")
-    expect(DeviceCard.refetch?.text).toContain("node(NodeId: $NodeId)")
-    expect(DeviceCard.refetch?.text).toContain("fragment DeviceCard on Device {")
-    expect(DeviceCard.refetch?.text).not.toContain("@refetchable")
-    expect(DeviceList.text).not.toContain("@refetchable")
-    expect(compiled.fragments.DeviceName!.refetch).toBeUndefined()
+    expect(WidgetCard.refetch?.name).toBe("WidgetCardRefetch")
+    expect(WidgetCard.refetch?.text).toContain("query WidgetCardRefetch($NodeId: ID!)")
+    expect(WidgetCard.refetch?.text).toContain("node(NodeId: $NodeId)")
+    expect(WidgetCard.refetch?.text).toContain("fragment WidgetCard on Widget {")
+    expect(WidgetCard.refetch?.text).not.toContain("@refetchable")
+    expect(WidgetList.text).not.toContain("@refetchable")
+    expect(compiled.fragments.WidgetName!.refetch).toBeUndefined()
     // The generated query is not one of the application's operations.
-    expect(Object.keys(compiled.operations).sort()).toEqual(["DeviceList", "SlotList"])
+    expect(Object.keys(compiled.operations).sort()).toEqual(["SlotList", "WidgetList"])
   })
 
   it("take a queryName", () => {
-    const named = compile(schema, [`fragment DeviceCard on Device @refetchable(queryName: "CardAgain") { Name }`])
-    expect(named.fragments.DeviceCard!.refetch?.name).toBe("CardAgain")
+    const named = compile(schema, [`fragment WidgetCard on Widget @refetchable(queryName: "CardAgain") { Name }`])
+    expect(named.fragments.WidgetCard!.refetch?.name).toBe("CardAgain")
   })
 
   it("refuse a type without Node, a schema without node, operation variables and name clashes", () => {
     expect(() => compile(schema, [`fragment S on Settings @refetchable { Theme }`])).toThrow(/Settings does not implement Node/)
-    const plain = buildSchema(`type Query { Device: Device } type Device { Id: String! Name: String! }`)
-    expect(() => compile(plain, [`fragment D on Device @refetchable { Name }`])).toThrow(/no node\(NodeId\) lookup/)
+    const plain = buildSchema(`type Query { Widget: Widget } type Widget { Id: String! Name: String! }`)
+    expect(() => compile(plain, [`fragment D on Widget @refetchable { Name }`])).toThrow(/no node\(NodeId\) lookup/)
     expect(() =>
-      compile(schema, [`fragment D on Device @refetchable { Readings(Last: $Last) }`, `query Q($Last: Int) { Devices { ...D } }`])
+      compile(schema, [`fragment D on Widget @refetchable { Readings(Last: $Last) }`, `query Q($Last: Int) { Widgets { ...D } }`])
     ).toThrow(/can't use operation variables/)
     expect(() =>
-      compile(schema, [`fragment D on Device @refetchable(queryName: "Q") { Name }`, `query Q { Devices { ...D } }`])
+      compile(schema, [`fragment D on Widget @refetchable(queryName: "Q") { Name }`, `query Q { Widgets { ...D } }`])
     ).toThrow(CompileError)
   })
 
   it("refetch one record by NodeId and update every view of it", async () => {
     let name = "alpha"
     const { network, requests } = mockNetwork(({ name: operation, variables }) =>
-      operation === "DeviceList"
-        ? { data: { Devices: [row({ Name: name })] } }
-        : { data: { node: variables.NodeId === nodeId ? row({ Name: name, Hostname: "moved.local" }) : null } }
+      operation === "WidgetList"
+        ? { data: { Widgets: [row({ Name: name })] } }
+        : { data: { node: variables.NodeId === nodeId ? row({ Name: name, Sku: "moved.local" }) : null } }
     )
     const client = createClient({ network })
-    const list = client.watchQuery<{ Devices: object[] }>(DeviceList, {})
+    const list = client.watchQuery<{ Widgets: object[] }>(WidgetList, {})
     list.open()
     await list.refetch()
-    const ref = list.getState().data!.Devices[0]!
+    const ref = list.getState().data!.Widgets[0]!
     name = "renamed"
-    const result = await client.refetchFragment(DeviceCard, ref)
+    const result = await client.refetchFragment(WidgetCard, ref)
     expect(result).toEqual({ found: true, errors: [] })
-    expect(requests.at(-1)).toMatchObject({ name: "DeviceCardRefetch", variables: { NodeId: nodeId } })
-    expect(client.store.get(nodeId)?.fields.get("Hostname")).toBe("moved.local")
+    expect(requests.at(-1)).toMatchObject({ name: "WidgetCardRefetch", variables: { NodeId: nodeId } })
+    expect(client.store.get(nodeId)?.fields.get("Sku")).toBe("moved.local")
     expect(client.store.get(nodeId)?.fields.get("Name")).toBe("renamed")
     // The list query was not sent again.
-    expect(requests.filter((request) => request.name === "DeviceList")).toHaveLength(1)
+    expect(requests.filter((request) => request.name === "WidgetList")).toHaveLength(1)
   })
 
   it("identify a record by the server's NodeId when its key is not Id", async () => {
@@ -128,44 +128,44 @@ describe("@refetchable fragments", () => {
 
   it("remove a record the lookup no longer returns, and keep it on errors", async () => {
     let answer: { data: unknown; errors?: { message: string }[] } = { data: { node: null }, errors: [{ message: "unavailable" }] }
-    const { network } = mockNetwork(({ name }) => (name === "DeviceList" ? { data: { Devices: [row()] } } : (answer as never)))
+    const { network } = mockNetwork(({ name }) => (name === "WidgetList" ? { data: { Widgets: [row()] } } : (answer as never)))
     const client = createClient({ network })
-    await client.execute(DeviceList, {})
-    const { snapshot } = await client.execute<{ Devices: object[] }>(DeviceList, {})
-    const ref = snapshot.data.Devices[0]!
-    const failed = await client.refetchFragment(DeviceCard, ref)
+    await client.execute(WidgetList, {})
+    const { snapshot } = await client.execute<{ Widgets: object[] }>(WidgetList, {})
+    const ref = snapshot.data.Widgets[0]!
+    const failed = await client.refetchFragment(WidgetCard, ref)
     expect(failed.found).toBe(false)
     expect(failed.errors).toHaveLength(1)
     expect(client.store.get(nodeId)).toBeDefined()
     answer = { data: { node: null } }
-    expect((await client.refetchFragment(DeviceCard, ref)).found).toBe(false)
+    expect((await client.refetchFragment(WidgetCard, ref)).found).toBe(false)
     expect(client.store.get(nodeId)).toBeUndefined()
   })
 
   it("refuse a fragment that is not @refetchable", async () => {
-    const { network } = mockNetwork(() => ({ data: { Devices: [row()] } }))
+    const { network } = mockNetwork(() => ({ data: { Widgets: [row()] } }))
     const client = createClient({ network })
-    const { snapshot } = await client.execute<{ Devices: object[] }>(DeviceList, {})
-    await expect(client.refetchFragment(compiled.fragments.DeviceName!, snapshot.data.Devices[0]!)).rejects.toThrow(
+    const { snapshot } = await client.execute<{ Widgets: object[] }>(WidgetList, {})
+    await expect(client.refetchFragment(compiled.fragments.WidgetName!, snapshot.data.Widgets[0]!)).rejects.toThrow(
       /not @refetchable/
     )
   })
 
   it("useRefetchableFragment re-renders with the refetched record", async () => {
-    let hostname = "alpha.local"
+    let sku = "alpha.local"
     const { network } = mockNetwork(({ name }) =>
-      name === "DeviceList" ? { data: { Devices: [row()] } } : { data: { node: row({ Hostname: hostname }) } }
+      name === "WidgetList" ? { data: { Widgets: [row()] } } : { data: { node: row({ Sku: sku }) } }
     )
     const client = createClient({ network })
-    function Card({ device }: { device: object }) {
-      const { data, refetch, refetching } = useRefetchableFragment<{ Name: string; Hostname: string | null }>(DeviceCard, device)
+    function Card({ widget }: { widget: object }) {
+      const { data, refetch, refetching } = useRefetchableFragment<{ Name: string; Sku: string | null }>(WidgetCard, widget)
       return (
-        <button onClick={() => void refetch()}>{`${data.Name} ${data.Hostname} ${refetching ? "refetching" : "idle"}`}</button>
+        <button onClick={() => void refetch()}>{`${data.Name} ${data.Sku} ${refetching ? "refetching" : "idle"}`}</button>
       )
     }
     function List() {
-      const { data } = useQuery<{ Devices: object[] }>(DeviceList, {})
-      return <>{data?.Devices.map((device, index) => <Card key={index} device={device} />)}</>
+      const { data } = useQuery<{ Widgets: object[] }>(WidgetList, {})
+      return <>{data?.Widgets.map((widget, index) => <Card key={index} widget={widget} />)}</>
     }
     render(
       <ClientProvider client={client}>
@@ -173,7 +173,7 @@ describe("@refetchable fragments", () => {
       </ClientProvider>
     )
     expect(await screen.findByText("alpha alpha.local idle")).toBeTruthy()
-    hostname = "moved.local"
+    sku = "moved.local"
     await act(async () => {
       fireEvent.click(screen.getByRole("button"))
     })

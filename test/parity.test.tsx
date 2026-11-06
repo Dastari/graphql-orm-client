@@ -3,7 +3,7 @@ import { act, render, screen } from "@testing-library/react"
 import { describe, expect, it } from "vitest"
 import { OperationError, createClient, readFragment } from "../src/client.js"
 import { ClientProvider, useMutation, useQuery, useSubscription } from "../src/react/index.js"
-import { device, fleet, frags, mockNetwork, mockSubscriptions, ops, ticket, ticketPage, ticketServer } from "./fixtures.js"
+import { widget, catalog, frags, mockNetwork, mockSubscriptions, ops, ticket, ticketPage, ticketServer } from "./fixtures.js"
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0))
 type TicketsData = { Tickets: { Edges: { Node: object }[] } }
@@ -286,24 +286,24 @@ describe("refetchQueries", () => {
   it("refetches open queries by artifact or name, and after a mutation", async () => {
     const server = ticketServer(2)
     const { network, requests } = mockNetwork((request) =>
-      request.name === "Reopen" ? { data: reopened() } : request.name === "FleetPage" ? { data: fleet([device("d1")]) } : server.network.execute(request, {})
+      request.name === "Reopen" ? { data: reopened() } : request.name === "CatalogPage" ? { data: catalog([widget("d1")]) } : server.network.execute(request, {})
     )
     const client = createClient({ network })
     const tickets = client.watchQuery(ops.TicketsPage, { Page: { Limit: 2, Offset: 0 } })
-    const devices = client.watchQuery(ops.FleetPage, {})
+    const widgets = client.watchQuery(ops.CatalogPage, {})
     tickets.open()
-    devices.open()
+    widgets.open()
     await settle()
     const count = (name: string) => requests.filter((request) => request.name === name).length
     await client.refetchQueries([ops.TicketsPage])
-    expect([count("TicketsPage"), count("FleetPage")]).toEqual([2, 1])
-    await client.refetchQueries(["FleetPage"])
-    expect([count("TicketsPage"), count("FleetPage")]).toEqual([2, 2])
+    expect([count("TicketsPage"), count("CatalogPage")]).toEqual([2, 1])
+    await client.refetchQueries(["CatalogPage"])
+    expect([count("TicketsPage"), count("CatalogPage")]).toEqual([2, 2])
     await client.mutate(ops.Reopen, { Id: "t1" }, { refetchQueries: [ops.TicketsPage] })
     expect(count("TicketsPage")).toBe(3)
-    devices.close()
-    await client.refetchQueries(["FleetPage"])
-    expect(count("FleetPage")).toBe(2)
+    widgets.close()
+    await client.refetchQueries(["CatalogPage"])
+    expect(count("CatalogPage")).toBe(2)
     tickets.close()
   })
 })

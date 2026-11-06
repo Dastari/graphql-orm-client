@@ -6,9 +6,9 @@ import type { SubscriptionSink } from "../src/live.js"
 /** A schema in graphql-orm's shape: PascalCase fields, Id keys, keyset connections, Where inputs. */
 export const schema = buildSchema(`
   type Query {
-    Devices(Where: DeviceWhereInput, Page: KeysetPageInput): DeviceConnection!
-    Device(Id: String!): Device
-    Organisation(Id: String!): Organisation
+    Widgets(Where: WidgetWhereInput, Page: KeysetPageInput): WidgetConnection!
+    Widget(Id: String!): Widget
+    Vendor(Id: String!): Vendor
     Slot(Site: String!, Name: String!): Slot
     Search(Text: String!): [SearchHit!]!
     Tickets(Where: TicketWhereInput, Page: PageInput): TicketConnection!
@@ -17,15 +17,15 @@ export const schema = buildSchema(`
     ReportRows(Limit: Int!): [ReportRow!]!
   }
   type Mutation {
-    UpdateDevice(Id: String!, Input: UpdateDeviceInput!): DeviceResult!
+    UpdateWidget(Id: String!, Input: UpdateWidgetInput!): WidgetResult!
     ReopenTicket(Id: String!): ReopenResult!
     Ping: Boolean!
     IssueToken(Id: String!): TokenResult!
   }
   type Subscription {
-    DeviceChanged(Filter: SubscriptionFilterInput, Key: String): DeviceChangedEvent!
+    WidgetChanged(Filter: SubscriptionFilterInput, Key: String): WidgetChangedEvent!
     SlotChanged(Filter: SubscriptionFilterInput, Keys: [SlotKeyInput!]): SlotChangedEvent!
-    OrganisationChanged(Filter: SubscriptionFilterInput): OrganisationChangedEvent!
+    VendorChanged(Filter: SubscriptionFilterInput): VendorChangedEvent!
     TicketChanged(Filter: SubscriptionFilterInput, Key: String, Keys: [String!]): TicketChangedEvent!
   }
   type TicketChangedEvent { Action: ChangeAction!, ChangeKind: ChangeKind!, Id: String!, Ticket: Ticket }
@@ -43,68 +43,68 @@ export const schema = buildSchema(`
   input SlotKeyInput { Site: String!, Name: String! }
   enum ChangeAction { CREATED UPDATED DELETED }
   enum ChangeKind { DIRECT PROPAGATED }
-  type DeviceChangedEvent { Action: ChangeAction!, ChangeKind: ChangeKind!, Id: String!, Device: Device }
+  type WidgetChangedEvent { Action: ChangeAction!, ChangeKind: ChangeKind!, Id: String!, Widget: Widget }
   type SlotChangedEvent { Action: ChangeAction!, ChangeKind: ChangeKind!, Slot: Slot }
-  type OrganisationChangedEvent { Action: ChangeAction!, ChangeKind: ChangeKind!, Id: String!, Organisation: Organisation }
-  input DeviceWhereInput { Name: StringFilter, OrganisationId: StringFilter }
+  type VendorChangedEvent { Action: ChangeAction!, ChangeKind: ChangeKind!, Id: String!, Vendor: Vendor }
+  input WidgetWhereInput { Name: StringFilter, VendorId: StringFilter }
   input StringFilter { Eq: String, Contains: String }
   input KeysetPageInput { after: String, limit: Int }
-  input UpdateDeviceInput { Name: String }
+  input UpdateWidgetInput { Name: String }
   type PageInfo { HasNextPage: Boolean!, HasPreviousPage: Boolean!, EndCursor: String, TotalCount: Int }
-  type DeviceConnection { Edges: [DeviceEdge!]!, PageInfo: PageInfo! }
-  type DeviceEdge { Cursor: String!, Node: Device! }
-  type Device {
+  type WidgetConnection { Edges: [WidgetEdge!]!, PageInfo: PageInfo! }
+  type WidgetEdge { Cursor: String!, Node: Widget! }
+  type Widget {
     Id: String!
     Name: String!
-    Hostname: String
-    ConnectionState: String!
+    Sku: String
+    StockState: String!
     RowVersion: Int!
-    Organisation: Organisation
-    Hardware: DeviceHardware
+    Vendor: Vendor
+    Spec: WidgetSpec
   }
-  type DeviceHardware { Model: String, Serial: String }
-  type Organisation { Id: String!, DisplayName: String!, Devices: [Device!]!, Tickets(Page: PageInput): TicketConnection! }
+  type WidgetSpec { Model: String, Code: String }
+  type Vendor { Id: String!, DisplayName: String!, Widgets: [Widget!]!, Tickets(Page: PageInput): TicketConnection! }
   type Slot { Site: String!, Name: String!, State: String! }
-  type DeviceResult { Success: Boolean!, Error: String, Entity: Device }
-  union SearchHit = Device | Organisation
+  type WidgetResult { Success: Boolean!, Error: String, Entity: Widget }
+  union SearchHit = Widget | Vendor
 `)
 
 export const documents = [
-  `fragment DeviceRow on Device @live {
+  `fragment WidgetRow on Widget @live {
     Name
-    ConnectionState
-    Organisation { ...OrganisationBadge }
+    StockState
+    Vendor { ...VendorBadge }
   }`,
-  `fragment OrganisationBadge on Organisation @live { DisplayName }`,
+  `fragment VendorBadge on Vendor @live { DisplayName }`,
   `fragment SlotState on Slot @live { State }`,
-  `fragment DeviceDetail on Device {
+  `fragment WidgetDetail on Widget {
     Name
-    Hostname
+    Sku
     RowVersion
-    Hardware { Model Serial }
+    Spec { Model Code }
   }`,
-  `query FleetPage($Where: DeviceWhereInput) {
-    Devices(Where: $Where, Page: { limit: 50 }) {
-      Edges { Cursor Node { ...DeviceRow } }
+  `query CatalogPage($Where: WidgetWhereInput) {
+    Widgets(Where: $Where, Page: { limit: 50 }) {
+      Edges { Cursor Node { ...WidgetRow } }
       PageInfo { HasNextPage EndCursor TotalCount }
     }
   }`,
-  `query FleetScroll($Where: DeviceWhereInput, $Page: KeysetPageInput) {
-    Devices(Where: $Where, Page: $Page) @connection(key: "fleet") {
-      Edges { Node { ...DeviceRow } }
+  `query CatalogScroll($Where: WidgetWhereInput, $Page: KeysetPageInput) {
+    Widgets(Where: $Where, Page: $Page) @connection(key: "catalog") {
+      Edges { Node { ...WidgetRow } }
       PageInfo { TotalCount }
     }
   }`,
-  `query DevicePage($Id: String!) {
-    Device(Id: $Id) { ...DeviceDetail ...DeviceRow }
+  `query WidgetPage($Id: String!) {
+    Widget(Id: $Id) { ...WidgetDetail ...WidgetRow }
   }`,
   `query SlotPage($Site: String!, $Name: String!) {
     Slot(Site: $Site, Name: $Name) { State ...SlotState }
   }`,
   `query SearchPage($Text: String!) {
     Search(Text: $Text) {
-      ... on Device { Name }
-      ... on Organisation { DisplayName }
+      ... on Widget { Name }
+      ... on Vendor { DisplayName }
     }
   }`,
   `fragment TicketRow on Ticket @live { Title State }`,
@@ -134,26 +134,26 @@ export const documents = [
   `subscription TicketFeed($Keys: [String!]) {
     TicketChanged(Keys: $Keys) { Action Ticket { ...TicketRow } }
   }`,
-  `mutation RenameDevice($Id: String!, $Name: String!) {
-    UpdateDevice(Id: $Id, Input: { Name: $Name }) {
+  `mutation RenameWidget($Id: String!, $Name: String!) {
+    UpdateWidget(Id: $Id, Input: { Name: $Name }) {
       Success
-      Entity { ...DeviceRow ...DeviceDetail }
+      Entity { ...WidgetRow ...WidgetDetail }
     }
   }`,
 ]
 
 export const compiled = compile(schema, documents, {
   keys: { Slot: ["Site", "Name"], PageInfo: null },
-  versions: { Device: "RowVersion" },
+  versions: { Widget: "RowVersion" },
 })
 
 export const ops = compiled.operations as Record<
-  | "FleetPage"
-  | "FleetScroll"
-  | "DevicePage"
+  | "CatalogPage"
+  | "CatalogScroll"
+  | "WidgetPage"
   | "SlotPage"
   | "SearchPage"
-  | "RenameDevice"
+  | "RenameWidget"
   | "TicketsPage"
   | "TicketsScroll"
   | "LookupName"
@@ -166,33 +166,33 @@ export const ops = compiled.operations as Record<
   (typeof compiled.operations)[string]
 >
 export const frags = compiled.fragments as Record<
-  "DeviceRow" | "OrganisationBadge" | "DeviceDetail" | "SlotState" | "TicketRow",
+  "WidgetRow" | "VendorBadge" | "WidgetDetail" | "SlotState" | "TicketRow",
   (typeof compiled.fragments)[string]
 >
 
-export const org = (id: string, name: string) => ({ __typename: "Organisation", Id: id, DisplayName: name })
+export const vendor = (id: string, name: string) => ({ __typename: "Vendor", Id: id, DisplayName: name })
 
-export const device = (id: string, overrides: Record<string, unknown> = {}) => ({
-  __typename: "Device",
+export const widget = (id: string, overrides: Record<string, unknown> = {}) => ({
+  __typename: "Widget",
   Id: id,
-  Name: `device-${id}`,
-  ConnectionState: "online",
-  Organisation: org("acme", "Acme"),
+  Name: `widget-${id}`,
+  StockState: "online",
+  Vendor: vendor("acme", "Acme"),
   ...overrides,
 })
 
-export const fleet = (
-  devices: readonly Record<string, unknown>[],
+export const catalog = (
+  widgets: readonly Record<string, unknown>[],
   page: { hasNext?: boolean; endCursor?: string | null; total?: number } = {}
 ) => ({
-  Devices: {
-    __typename: "DeviceConnection",
-    Edges: devices.map((node) => ({ __typename: "DeviceEdge", Cursor: `c-${String(node.Id)}`, Node: node })),
+  Widgets: {
+    __typename: "WidgetConnection",
+    Edges: widgets.map((node) => ({ __typename: "WidgetEdge", Cursor: `c-${String(node.Id)}`, Node: node })),
     PageInfo: {
       __typename: "PageInfo",
       HasNextPage: page.hasNext ?? false,
-      EndCursor: page.endCursor ?? (devices.length ? `c-${String(devices.at(-1)!.Id)}` : null),
-      TotalCount: page.total ?? devices.length,
+      EndCursor: page.endCursor ?? (widgets.length ? `c-${String(widgets.at(-1)!.Id)}` : null),
+      TotalCount: page.total ?? widgets.length,
     },
   },
 })

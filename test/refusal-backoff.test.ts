@@ -2,10 +2,10 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import { createClient, type Client } from "../src/client.js"
 import type { LiveOptions } from "../src/live.js"
 import { encodeNodeId } from "../src/node-id.js"
-import { compiled, device, mockNetwork, mockSubscriptions } from "./fixtures.js"
+import { compiled, widget, mockNetwork, mockSubscriptions } from "./fixtures.js"
 
 const WINDOW = 5 * 60_000
-const deviceId = (id: string) => encodeNodeId("Device", [id])
+const widgetId = (id: string) => encodeNodeId("Widget", [id])
 const refusal = [{ message: "subscription refused", extensions: { code: "SUBSCRIPTION_NOT_ALLOWED" } }]
 const lost = { data: null, errors: [{ message: "lost", extensions: { code: "SUBSCRIPTION_CONTINUITY_LOST" } }] }
 
@@ -51,7 +51,7 @@ function setup(live: Partial<LiveOptions> = {}) {
     sent += 1
     return subscriptions.subscribe(request, sink)
   }
-  const { network } = mockNetwork(() => ({ data: { Devices: { __typename: "DeviceConnection", Edges: [], PageInfo: null } } }))
+  const { network } = mockNetwork(() => ({ data: { Widgets: { __typename: "WidgetConnection", Edges: [], PageInfo: null } } }))
   const options: LiveOptions = {
     artifacts: compiled.live,
     subscribe,
@@ -65,10 +65,10 @@ function setup(live: Partial<LiveOptions> = {}) {
 }
 
 const hold = (client: Client, ids: readonly string[], holder = "q") =>
-  client.live!.hold(holder, new Map([["Device", new Set(ids.map(deviceId))]]))
+  client.live!.hold(holder, new Map([["Widget", new Set(ids.map(widgetId))]]))
 
 /** Hold records, apply it, and refuse the streams that start. */
-function refuseAll(subscriptions: ReturnType<typeof mockSubscriptions>, name = "LiveDevice") {
+function refuseAll(subscriptions: ReturnType<typeof mockSubscriptions>, name = "LiveWidget") {
   for (const entry of subscriptions.find(name)) entry.sink.error(refusal)
 }
 
@@ -79,7 +79,7 @@ describe("refused-stream back-off", () => {
     live.flush()
     expect(sent()).toBe(1)
     refuseAll(subscriptions)
-    expect(subscriptions.find("LiveDevice")).toHaveLength(0)
+    expect(subscriptions.find("LiveWidget")).toHaveLength(0)
     expect(time.windows().map((timer) => timer.ms)).toEqual([WINDOW])
 
     // Refreshes: the same records again, then others, then none and back.
@@ -92,7 +92,7 @@ describe("refused-stream back-off", () => {
     hold(client, ["d1"])
     live.flush()
     expect(sent()).toBe(1)
-    expect(live.status().Device).toMatchObject({ subscriptions: 0, backedOff: true })
+    expect(live.status().Widget).toMatchObject({ subscriptions: 0, backedOff: true })
 
     // The window ends: one more subscribe, refused again, and another window starts.
     time.fire(WINDOW)
@@ -113,15 +113,15 @@ describe("refused-stream back-off", () => {
     time.fire(WINDOW)
     // No trigger, no flush: the retry happened on its own, and this time it is admitted.
     expect(sent()).toBe(2)
-    const stream = subscriptions.find("LiveDevice")
+    const stream = subscriptions.find("LiveWidget")
     expect(stream).toHaveLength(1)
-    expect(live.status().Device).toMatchObject({ subscriptions: 1, backedOff: false })
+    expect(live.status().Widget).toMatchObject({ subscriptions: 1, backedOff: false })
     expect(time.windows()).toHaveLength(0)
 
     stream[0]!.sink.next({
-      data: { DeviceChanged: { __typename: "DeviceChangedEvent", Action: "UPDATED", Device: device("d1", { Name: "after" }) } },
+      data: { WidgetChanged: { __typename: "WidgetChangedEvent", Action: "UPDATED", Widget: widget("d1", { Name: "after" }) } },
     })
-    expect(client.store.get(deviceId("d1"))?.fields.get("Name")).toBe("after")
+    expect(client.store.get(widgetId("d1"))?.fields.get("Name")).toBe("after")
     // Later changes don't send another subscribe: the stream is open.
     hold(client, ["d1"], "other")
     live.flush()
@@ -151,21 +151,21 @@ describe("refused-stream back-off", () => {
     live.flush()
     expect(sent()).toBe(1)
     for (let round = 0; round < 3; round += 1) {
-      const stream = subscriptions.find("LiveDevice")[0]!
+      const stream = subscriptions.find("LiveWidget")[0]!
       stream.sink.next(lost)
       stream.sink.complete()
       expect(time.windows()).toHaveLength(0)
       time.fireResync()
-      expect(subscriptions.find("LiveDevice")).toHaveLength(1)
+      expect(subscriptions.find("LiveWidget")).toHaveLength(1)
     }
     expect(sent()).toBe(4)
     // SUBSCRIPTION_SOURCE_CLOSED is the same.
-    const stream = subscriptions.find("LiveDevice")[0]!
+    const stream = subscriptions.find("LiveWidget")[0]!
     stream.sink.next({ data: null, errors: [{ message: "closed", extensions: { code: "SUBSCRIPTION_SOURCE_CLOSED" } }] })
     stream.sink.complete()
     time.fireResync()
     expect(sent()).toBe(5)
-    expect(live.status().Device?.backedOff).toBe(false)
+    expect(live.status().Widget?.backedOff).toBe(false)
     client.dispose()
   })
 
@@ -180,38 +180,38 @@ describe("refused-stream back-off", () => {
     }
     expect(sent()).toBe(5)
     expect(time.windows()).toHaveLength(0)
-    expect(live.status().Device?.backedOff).toBe(false)
+    expect(live.status().Widget?.backedOff).toBe(false)
     client.dispose()
   })
 
   it("keeps immediate retry for a type opted out, while others back off", () => {
-    const { client, live, subscriptions, time, sent } = setup({ refusalBackoff: { ms: WINDOW, types: { Device: false } } })
-    live.hold("q", new Map([["Device", new Set([deviceId("d1")])], ["Organisation", new Set([encodeNodeId("Organisation", ["acme"])])]]))
+    const { client, live, subscriptions, time, sent } = setup({ refusalBackoff: { ms: WINDOW, types: { Widget: false } } })
+    live.hold("q", new Map([["Widget", new Set([widgetId("d1")])], ["Vendor", new Set([encodeNodeId("Vendor", ["acme"])])]]))
     live.flush()
     expect(sent()).toBe(2)
-    refuseAll(subscriptions, "LiveDevice")
-    refuseAll(subscriptions, "LiveOrganisation")
-    live.hold("q", new Map([["Device", new Set([deviceId("d1")])], ["Organisation", new Set([encodeNodeId("Organisation", ["acme"])])]]))
+    refuseAll(subscriptions, "LiveWidget")
+    refuseAll(subscriptions, "LiveVendor")
+    live.hold("q", new Map([["Widget", new Set([widgetId("d1")])], ["Vendor", new Set([encodeNodeId("Vendor", ["acme"])])]]))
     live.flush()
-    // Device started again at once; Organisation waits.
-    expect(subscriptions.find("LiveDevice")).toHaveLength(1)
-    expect(subscriptions.find("LiveOrganisation")).toHaveLength(0)
+    // Widget started again at once; Vendor waits.
+    expect(subscriptions.find("LiveWidget")).toHaveLength(1)
+    expect(subscriptions.find("LiveVendor")).toHaveLength(0)
     expect(sent()).toBe(3)
-    expect(live.status().Device?.backedOff).toBe(false)
-    expect(live.status().Organisation?.backedOff).toBe(true)
+    expect(live.status().Widget?.backedOff).toBe(false)
+    expect(live.status().Vendor?.backedOff).toBe(true)
     expect(time.windows().map((timer) => timer.ms)).toEqual([WINDOW])
     client.dispose()
   })
 
   it("applies a type's own window, and a window for one type alone when there is no default", () => {
-    const { client, live, subscriptions, time } = setup({ refusalBackoff: { types: { Device: 1234_000 } } })
-    live.hold("q", new Map([["Device", new Set([deviceId("d1")])], ["Organisation", new Set([encodeNodeId("Organisation", ["acme"])])]]))
+    const { client, live, subscriptions, time } = setup({ refusalBackoff: { types: { Widget: 1234_000 } } })
+    live.hold("q", new Map([["Widget", new Set([widgetId("d1")])], ["Vendor", new Set([encodeNodeId("Vendor", ["acme"])])]]))
     live.flush()
-    refuseAll(subscriptions, "LiveDevice")
-    refuseAll(subscriptions, "LiveOrganisation")
+    refuseAll(subscriptions, "LiveWidget")
+    refuseAll(subscriptions, "LiveVendor")
     expect(time.windows().map((timer) => timer.ms)).toEqual([1234_000])
     live.flush()
-    expect(subscriptions.find("LiveOrganisation")).toHaveLength(1)
+    expect(subscriptions.find("LiveVendor")).toHaveLength(1)
     client.dispose()
   })
 
@@ -219,10 +219,10 @@ describe("refused-stream back-off", () => {
     const { client, live, subscriptions, sent } = setup({ refusalBackoff: true })
     hold(client, ["d1", "d2"])
     live.flush()
-    subscriptions.find("LiveDevice").find((entry) => entry.request.variables.Key === "d1")!.sink.error(refusal)
+    subscriptions.find("LiveWidget").find((entry) => entry.request.variables.Key === "d1")!.sink.error(refusal)
     hold(client, ["d1", "d2", "d3"])
     live.flush()
-    expect(subscriptions.find("LiveDevice").map((entry) => entry.request.variables.Key).sort()).toEqual(["d2", "d3"])
+    expect(subscriptions.find("LiveWidget").map((entry) => entry.request.variables.Key).sort()).toEqual(["d2", "d3"])
     expect(sent()).toBe(3)
     client.dispose()
   })
@@ -260,7 +260,7 @@ describe("refused-stream back-off", () => {
         const { client, live, subscriptions, sent } = setup({ refusalBackoff: true })
         hold(client, ["d1"])
         live.flush()
-        refuse(subscriptions.find("LiveDevice")[0]! as never)
+        refuse(subscriptions.find("LiveWidget")[0]! as never)
         hold(client, ["d1"], "again")
         live.flush()
         expect(sent()).toBe(1)
@@ -275,7 +275,7 @@ describe("refused-stream back-off", () => {
       [
         "an end after events were delivered",
         (stream) => {
-          stream.sink.next({ data: { DeviceChanged: { __typename: "DeviceChangedEvent", Action: "UPDATED", Device: device("d1") } } })
+          stream.sink.next({ data: { WidgetChanged: { __typename: "WidgetChangedEvent", Action: "UPDATED", Widget: widget("d1") } } })
           stream.sink.next({ data: null, errors: refusal })
           stream.sink.complete()
         },
@@ -283,7 +283,7 @@ describe("refused-stream back-off", () => {
       [
         "GraphQL errors after events were delivered",
         (stream) => {
-          stream.sink.next({ data: { DeviceChanged: { __typename: "DeviceChangedEvent", Action: "UPDATED", Device: device("d1") } } })
+          stream.sink.next({ data: { WidgetChanged: { __typename: "WidgetChangedEvent", Action: "UPDATED", Widget: widget("d1") } } })
           stream.sink.error(refusal)
         },
       ],
@@ -294,12 +294,12 @@ describe("refused-stream back-off", () => {
         const { client, live, subscriptions, time, sent } = setup({ refusalBackoff: true })
         hold(client, ["d1"])
         live.flush()
-        end(subscriptions.find("LiveDevice")[0]! as never)
+        end(subscriptions.find("LiveWidget")[0]! as never)
         expect(time.windows()).toHaveLength(0)
         hold(client, ["d1"], "again")
         live.flush()
         expect(sent()).toBe(2)
-        expect(live.status().Device?.backedOff).toBe(false)
+        expect(live.status().Widget?.backedOff).toBe(false)
         client.dispose()
       })
     }
@@ -372,7 +372,7 @@ describe("refused-stream back-off", () => {
       const { client, live, subscriptions, time, sent } = setup({ refusalBackoff: true })
       hold(client, ["d1", "d2"])
       live.flush()
-      const [first, second] = subscriptions.find("LiveDevice")
+      const [first, second] = subscriptions.find("LiveWidget")
       first!.sink.error(refusal)
       const pending = [...time.timers.values()].find((timer) => timer.ms === WINDOW)!
       client.dispose()

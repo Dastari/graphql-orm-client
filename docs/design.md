@@ -45,35 +45,35 @@ A component declares a fragment on the type it renders. Parents spread their chi
 fragments, so every route's query is fully known at build time.
 
 ```tsx
-const DeviceRowFragment = graphql(`
-  fragment DeviceRow on Device @live {
+const WidgetRowFragment = graphql(`
+  fragment WidgetRow on Widget @live {
     Id
-    Hostname
-    LastSeen
-    ...DeviceHealth
+    Sku
+    UpdatedAt
+    ...WidgetHealth
   }
 `)
 
-function DeviceRow({ device }: { device: FragmentRef<typeof DeviceRowFragment> }) {
-  const data = useFragment(DeviceRowFragment, device)
-  return <Row name={data.Hostname} seen={data.LastSeen} health={data} />
+function WidgetRow({ widget }: { widget: FragmentRef<typeof WidgetRowFragment> }) {
+  const data = useFragment(WidgetRowFragment, widget)
+  return <Row name={data.Sku} seen={data.UpdatedAt} health={data} />
 }
 
-const FleetPageQuery = graphql(`
-  query FleetPage($Where: DeviceWhereInput) {
-    Devices(Where: $Where, Page: { limit: 50 }) {
-      Edges { Node { ...DeviceRow } }
+const CatalogPageQuery = graphql(`
+  query CatalogPage($Where: WidgetWhereInput) {
+    Widgets(Where: $Where, Page: { limit: 50 }) {
+      Edges { Node { ...WidgetRow } }
       PageInfo { HasNextPage EndCursor }
     }
   }
 `)
 
 // Route loader: start the request before rendering.
-loader: ({ context, deps }) => context.client.preload(FleetPageQuery, { Where: deps.where })
+loader: ({ context, deps }) => context.client.preload(CatalogPageQuery, { Where: deps.where })
 
-function FleetPage() {
-  const { data } = useQuery(FleetPageQuery, useLoaderDeps())
-  return data?.Devices.Edges.map((edge) => <DeviceRow key={edge.Node.Id} device={edge.Node} />)
+function CatalogPage() {
+  const { data } = useQuery(CatalogPageQuery, useLoaderDeps())
+  return data?.Widgets.Edges.map((edge) => <WidgetRow key={edge.Node.Id} widget={edge.Node} />)
 }
 ```
 
@@ -84,8 +84,8 @@ fragment reference (data masking), so a parent cannot come to depend on them by 
 
 Some screens don't render records one component at a time. A data table needs complete row
 objects for sorting, filtering and column rendering, and an application may map server data into
-domain models before rendering. A device fleet table is one example: one `FleetDeviceFacts`
-fragment feeds the table columns, device identity, navigation and usage views.
+domain models before rendering. A widget catalog table is one example: one `CatalogWidgetFacts`
+fragment feeds the table columns, widget identity, navigation and usage views.
 
 In that case the fragment belongs to the adapter that builds the view model, not to a component:
 
@@ -166,9 +166,9 @@ const client = createClient({
     // Proposed from here: scope, per-type policy and persistence.
     scope: identityKey,            // a change disposes the store synchronously
     types: {
-      Device: { staleMs: 30_000 },
-      ReleaseCatalog: { staleMs: 5 * 60_000 },
-      EnrollmentRequest: { expiresField: "ExpiresAtEpoch" },
+      Widget: { staleMs: 30_000 },
+      PriceList: { staleMs: 5 * 60_000 },
+      Invitation: { expiresField: "ExpiresAt" },
     },
     persistence: null,             // or indexedDbPersistence({ name, maxBytes })
   },
@@ -189,7 +189,7 @@ const client = createClient({
 
 A root reports `idle` (skipped), `loading`, `ready`, `refreshing` or `error`. `usePagedQuery` and
 `watchPagedQuery` keep the previous page while another page loads, and keep it across new
-variables within the same hold scope (a new search term on the same organisation), as
+variables within the same hold scope (a new search term on the same vendor), as
 `refreshing` instead of blanking. A different scope never shows another scope's records.
 
 ## Live layer
@@ -231,7 +231,7 @@ how to narrow it:
 | `key` | the field has a `Key` argument | one per held record, up to `maxKeyedSubscriptions` (50). Past that, one per type if `Key` is optional; otherwise the rest overflow and their holders poll |
 | `unkeyed` | neither | one per type; events for records nobody holds are dropped |
 
-The payload's entity field is found by type (`Device` in `DeviceChangedEvent`), and its action
+The payload's entity field is found by type (`Widget` in `WidgetChangedEvent`), and its action
 by name. Types with `@live` fragments but no usable subscription are listed in
 `compile(...).liveUnavailable`, and their holders must poll. `client.live.status()` reports
 per-type counts, including overflow beyond the `key`-mode limit. A `DELETED` event removes the
@@ -253,7 +253,7 @@ createClient({
     // immediate retry:
     refusalBackoff: { ms: DEFAULT_REFUSAL_BACKOFF_MS, types: { Ticket: false } },
     // or: refusalBackoff: true            every type, five minutes
-    //     refusalBackoff: { types: { Device: 60_000 } }   Device only, one minute
+    //     refusalBackoff: { types: { Widget: 60_000 } }   Widget only, one minute
   },
 })
 ```
@@ -294,8 +294,8 @@ In React, `useMutation(Mutation)` returns `commit`, `inFlight` and `error`; `com
 same arguments as `client.mutate` and rejects when the mutation fails.
 
 ```ts
-await client.mutate(RenameDeviceMutation, { Id: id, Name: name }, {
-  optimisticResponse: { UpdateDevice: { __typename: "DeviceResult", Success: true, Entity: { __typename: "Device", Id: id, Name: name } } },
+await client.mutate(RenameWidgetMutation, { Id: id, Name: name }, {
+  optimisticResponse: { UpdateWidget: { __typename: "WidgetResult", Success: true, Entity: { __typename: "Widget", Id: id, Name: name } } },
 })
 ```
 
@@ -307,7 +307,7 @@ await client.mutate(RenameDeviceMutation, { Id: id, Name: name }, {
   rolled back.
 - **Lists.** Inserting into or removing from a list is not automatic. Refetch the affected query
   (`refetchQueries`), or rely on the live layer.
-- **Refetching after.** `mutate(..., { refetchQueries: [TicketsPageQuery, "FleetPage"] })` reads
+- **Refetching after.** `mutate(..., { refetchQueries: [TicketsPageQuery, "CatalogPage"] })` reads
   those open queries again once the mutation succeeds, and resolves after them.
   `client.refetchQueries([...])` does the same at any time, and `"active"` refetches every open query.
 - **Cancelling.** `mutate(..., { signal })` cancels the request and rolls back the optimistic layer.
@@ -357,9 +357,9 @@ await client.mutate(RenameDeviceMutation, { Id: id, Name: name }, {
 Mark a paginated list field `@connection(key: "...")`, and pass its paging argument as a variable:
 
 ```graphql
-query FleetScroll($Where: DeviceWhereInput, $Page: KeysetPageInput) {
-  Devices(Where: $Where, Page: $Page) @connection(key: "fleet") {
-    Edges { Node { ...DeviceRow } }
+query CatalogScroll($Where: WidgetWhereInput, $Page: KeysetPageInput) {
+  Widgets(Where: $Where, Page: $Page) @connection(key: "catalog") {
+    Edges { Node { ...WidgetRow } }
     PageInfo { TotalCount }
   }
 }
@@ -398,7 +398,7 @@ query TicketsPage($Where: TicketWhereInput, $Page: PageInput) {
 function TicketTable({ where }: { where: TicketWhereInput }) {
   const [pageIndex, setPageIndex] = useState(0)
   const [pageSize, setPageSize] = useState(25)
-  const page = usePagedQuery(TicketsPageQuery, { Where: where }, { pageIndex, pageSize, scope: organisationId })
+  const page = usePagedQuery(TicketsPageQuery, { Where: where }, { pageIndex, pageSize, scope: vendorId })
   const rows = useFragmentList(TicketRowFragment, page.data?.Tickets.Edges.map((edge) => edge.Node))
   return (
     <Table rows={rows} busy={page.placeholder} pageIndex={pageIndex} pageSize={pageSize}
@@ -445,13 +445,13 @@ Mark a fragment `@refetchable` to read its record again without refetching the r
 produced it:
 
 ```graphql
-fragment DeviceCard on Device @refetchable {
+fragment WidgetCard on Widget @refetchable {
   Name
-  Hostname
+  Sku
 }
 ```
 
-- **Query.** The compiler adds `query DeviceCardRefetch($NodeId: ID!) { node(NodeId: $NodeId) { ...DeviceCard } }`
+- **Query.** The compiler adds `query WidgetCardRefetch($NodeId: ID!) { node(NodeId: $NodeId) { ...WidgetCard } }`
   to the fragment artifact (`fragment.refetch`). `@refetchable(queryName: "...")` renames it.
   The directive isn't sent to the server.
 - **Requirements.** The schema needs the router's `node(NodeId)` lookup, and the fragment's
@@ -477,7 +477,7 @@ period, like a preload. It rejects with `OperationError` when the server returns
 ## Plain subscriptions
 
 Subscriptions that aren't the live layer's, such as an operation's own
-`subscription FileOperations { FileOperationChanged(...) { ... } }`, run through the same
+`subscription ExportJobs { ExportJobChanged(...) { ... } }`, run through the same
 `live.subscribe` transport. `live.artifacts` can be left out when an application has no `@live`
 fragments.
 

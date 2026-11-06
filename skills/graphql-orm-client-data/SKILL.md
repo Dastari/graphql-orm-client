@@ -10,11 +10,11 @@ Status: early alpha. Check the installed `docs/design.md` for the current API.
 ## Components declare their own data
 
 - Give every component that renders server data its own fragment, in the same file, on the
-  type it renders. Name it after the component (`DeviceRow` → `fragment DeviceRow on Device`).
+  type it renders. Name it after the component (`WidgetRow` → `fragment WidgetRow on Widget`).
 - Read it with `useFragment(Fragment, ref)`. The component receives a fragment reference,
   never a raw result object.
 - Select only the fields the component renders. To render a child component, spread the
-  child's fragment (`...DeviceHealth`) and pass the reference down. Do not select the child's
+  child's fragment (`...WidgetHealth`) and pass the reference down. Do not select the child's
   fields in the parent.
 - You don't need to select `NodeId` or the key fields; the compiler adds them. A type without a
   `NodeId` or a complete key is stored inside its parent, not as its own record.
@@ -36,7 +36,7 @@ Status: early alpha. Check the installed `docs/design.md` for the current API.
   (graphql-orm's `PageInput`). Read it with `usePagedQuery(Query, variables, { pageIndex,
   pageSize, scope })`; `pageIndex` counts from 0. Feed `totalCount`, `pageCount`,
   `hasNextPage`/`hasPreviousPage` to the pager and dim the rows while `placeholder` is true (the
-  previous page is shown while the next loads). Pass `scope` (the organisation, say) to keep rows
+  previous page is shown while the next loads). Pass `scope` (the vendor, say) to keep rows
   on screen across a filter change; without it, only page changes keep them. Order by a unique last
   key (`{ Id: ASC }`) so pages don't overlap, and keep `pageSize` within the server's maximum (100).
   Don't build `Limit`/`Offset` by hand, and don't put the page in component state twice.

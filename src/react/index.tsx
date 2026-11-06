@@ -124,7 +124,7 @@ export interface PagedQueryOptions extends QueryOptions {
   readonly pageSize?: number
   /**
    * Keep the previous page on screen while new `variables` load, as long as this value is
-   * unchanged (for example the organisation shown). Without it, only a change of page or page
+   * unchanged (for example the vendor shown). Without it, only a change of page or page
    * size keeps the previous page; `null` never keeps it.
    */
   readonly scope?: string | null
