@@ -130,3 +130,18 @@ it("handles synchronous socket notifications while stopping a stream without rec
   expect(clock.pending().filter((timer) => timer.ms > 16)).toHaveLength(1)
   client.dispose(); expect(clock.pending()).toHaveLength(0)
 })
+
+it("an item arriving starts the retry count again, so a long stream outlives occasional failures", () => {
+  const { client, stream, streams, clock, emit } = setup()
+  stream.open()
+  for (let n = 1; n <= 20; n++) {
+    emit(n)
+    streams.one("Output").sink.error(new Error("socket gone"))
+    clock.advance(60_000)
+  }
+  emit(21)
+  clock.advance(16)
+  expect(stream.getState().status).toBe("open")
+  expect(stream.getState().sequence).toBe(21)
+  client.dispose()
+})

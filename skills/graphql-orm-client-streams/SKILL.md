@@ -20,9 +20,11 @@ description: Build ephemeral streams for progress, AI text deltas, terminal outp
   covers observed sequence continuity, never unseen tails. `unprovable` is not healthy. Gaps are
   sticky; overflow evicts oldest items and increments `dropped`.
 - Use `graphqlWsTransport(ws)` through `live`. Reconnect uses its connection signal and resumes with
-  the last cursor. Retries use `live.restart` delays, at most `maxRetries` (default eight total).
+  the last cursor. Retries use `live.restart` delays, at most `maxRetries` in a row (default eight); an item arriving starts the count again.
   Refusals fail immediately and normal completion ends. Dispose the failed handle before explicitly
   creating another, to avoid unbounded retry loops.
+- Declare a sequence for any source that bursts. The router can drop frames under a burst with no error (graphql-orm#359), and only a
+  sequence makes that visible, as `state.gap`.
 - Test bursts with `createMockStreams` and `createTestClock`: send raw `next` frames, then fail or
   signal socket reconnect, replay overlap, and assert gaps, buffer drops and empty state on disposal.
   Read the design's R11 section for full state semantics.

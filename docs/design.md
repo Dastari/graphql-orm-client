@@ -795,8 +795,7 @@ No browser global is accessed at module import time.
 Use `graphqlWsTransport(ws)` so socket recovery signals through `live.connection`; the handle cancels
 the transport's stale-variable resubscription and subscribes with the last cursor. Transport errors,
 continuity errors, schema reload and capacity/unavailability errors retry using `live.restart`'s
-minimum and maximum delays, with jitter and a minimum positive delay. `maxRetries` defaults to eight
-for the handle's entire lifetime, including socket recoveries; delivering an item does not reset it.
+minimum and maximum delays, with jitter and a minimum positive delay. `maxRetries` counts retries in a row, since the last item, including socket recoveries, and defaults to eight.
 `live.restart: false` disables automatic retries. Refusals and other GraphQL errors fail immediately;
 normal completion ends without retry. Create a new handle explicitly after a failure. Plain
 `client.subscribe` and `useSubscription` retain their existing store-writing behavior.
@@ -809,12 +808,10 @@ than ten React renders, plus gaps, unprovable continuity, overflow, disposal and
 A loopback run used the conformance router binary (graphql-orm-router 0.8.1 built from the 0.90.1
 source) with a test-owned Node subgraph declaring `output(after: Int)` and explicit integer replay:
 1,000 items, socket dropped after 500, resume at 500, no missing/duplicate items, 278 notifications.
-The source sent one item every 5 ms. Unpaced bursts and batches of ten every 10 ms instead produced
-observable missing ranges through that router; those no-loss runs failed and the client reported
-`gap`. The cause was not isolated. This does not demonstrate generic server replay. The generated
-ORM service was not used: its `FaultStreams` exercises continuity errors, not replaying output.
-React render counts, refusal storms, overflow and identity cleanup were tested with mocks only;
-no browser conformance or window-budget measurement was run for R11.
+The source sent one item every 5 ms. An unpaced burst through the router loses items, and the stream reports the gap. That loss
+is the router's, not the client's: a bare socket with no client received 274 of 1000 frames from the same source, with no error frame
+(router 0.8.1 at `graphql-orm-v0.90.1`, graphql-orm#359). So for a source that bursts, declare a sequence so the loss shows, and don't
+rely on the router delivering every frame.
 
 R11 budget run (`pnpm budgets --skip-window`): main 48,554 raw / 15,767 gzip bytes and React
 7,096 / 2,875, within checked-in limits. Comparing minified source closures with the branch's parent

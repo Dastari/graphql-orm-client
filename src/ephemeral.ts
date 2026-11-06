@@ -22,7 +22,7 @@ export interface EphemeralOptions<D, T, V, C = unknown> {
   /** Maximum items retained, required and positive. Oldest items are dropped and counted. */
   readonly bufferSize: number
   readonly sequence?: StreamSequence<T, V, C>
-  /** Total automatic retries, default 8. Refusals fail immediately. */
+  /** Automatic retries in a row, default 8; an item arriving starts the count again. Refusals fail immediately. */
   readonly maxRetries?: number
 }
 
@@ -136,6 +136,7 @@ export function ephemeral<D, T, V extends Variables, C>(
             if (sequence !== undefined && state.sequence !== undefined && sequence <= state.sequence) return
             const gap = sequence !== undefined && state.sequence !== undefined && sequence !== state.sequence + 1
               ? state.gap ?? { expected: state.sequence + 1, received: sequence } : state.gap
+            attempts = 0
             const items = [...state.items, item]
             const dropped = Math.max(0, items.length - options.bufferSize)
             state = { ...state, status: "open", items: dropped ? items.slice(dropped) : items, cursor: spec?.cursor ? spec.cursor(item) : undefined, sequence, gap, continuity: gap ? "gap" : spec?.resume ? "observed" : state.continuity, dropped: state.dropped + dropped, error: null }
