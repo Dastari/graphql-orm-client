@@ -148,6 +148,9 @@ export const compiled = compile(schema, documents, {
   versions: { Widget: "RowVersion" },
 })
 
+// These shared fixtures exercise legacy artifact compatibility; R3 tests compile fresh artifacts.
+for (const operation of Object.values(compiled.operations)) delete (operation as { lists?: readonly string[] }).lists
+
 export const ops = compiled.operations as Record<
   | "CatalogPage"
   | "CatalogScroll"

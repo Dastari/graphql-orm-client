@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- R3: generated `OperationArtifact.lists` enables one un-narrowed stream per open list type,
+  including empty and count-only lists. Events invalidate membership, order and totals through
+  the existing re-read limiter. Unheld rows are not stored. List interest opens before the read;
+  confirming reads narrow the subscribe gap without eliminating it.
+- Regenerated `@connection` queries refresh the loaded range and serialize load-more with refresh.
+  Bounded refresh retains the tail and reports `listRefreshTruncated` and degraded health.
+
+R3 migration: regenerate to turn list behavior on; previously generated modules without `lists`
+keep today's keyed behavior. A list opens a stream only for a type with a `@live` fragment somewhere in
+the project, so regenerating gives no new type a stream. `refetch()` and polls on a regenerated
+`@connection` query read the loaded range, not just the first page. Set `live.listStreams: false` to opt out and poll lists. An un-narrowed
+stream costs the server one row-policy check per event per subscriber. Review
+`live.maxRereadPages` (default 10) and `live.maxRereadRows` (default 100, set to the server maximum),
+and render `QueryState.listRefreshTruncated` when a loaded tail cannot be refreshed. Required-key
+schemas poll with `list-key-required`; disabling streams reports `list-streams-disabled`.
+Without a delete preimage grant no event is sent: correction waits for the next event or poll.
 - Add `pnpm conformance` and a CI version matrix for a SQLite graphql-orm example service
   behind the real router, in this repository only. The suite checks admission, events, NodeIds, versions,
   pagination, doctor verdicts and repeated Node and Chromium recovery. The default is
