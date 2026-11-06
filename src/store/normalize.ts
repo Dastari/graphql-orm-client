@@ -4,6 +4,8 @@ import { argumentValue, fieldStorageKey, storageKey, type Variables } from "./ar
 import { ROOT_ID, type Store, type StoredRecord } from "./store.js"
 
 export interface NormalizeContext {
+  /** Loaded-range refresh boundary; Infinity replaces the complete range. */
+  readonly connectionTailFrom?: number
   readonly keys: Readonly<Record<string, readonly string[]>>
   readonly versions: Readonly<Record<string, string>>
   readonly variables: Variables
@@ -166,9 +168,9 @@ function writeConnection(
   const record = store.getOrCreate(id, typename)
   const page = argumentValue(selection.args, spec.paging[0] ?? "", context.variables) as Record<string, unknown> | null | undefined
   const offset = spec.offset ? page?.[spec.offset] : undefined
-  const appending = spec.offset
+  const appending = context.connectionTailFrom === undefined && (spec.offset
     ? typeof offset === "number" && offset > 0
-    : page?.[spec.after] !== undefined && page?.[spec.after] !== null
+    : page?.[spec.after] !== undefined && page?.[spec.after] !== null)
 
   const edgesSelection = findLink(selection.selections, spec.edges)
   const pageInfoSelection = findLink(selection.selections, spec.pageInfo)
@@ -196,7 +198,7 @@ function writeConnection(
   } else {
     const previousHead = typeof record.fields.get(HEAD_LENGTH) === "number" ? (record.fields.get(HEAD_LENGTH) as number) : existing.length
     const fresh = new Set(incoming)
-    const tail = existing.slice(previousHead).filter((edge) => edge !== null && !fresh.has(edge))
+    const tail = existing.slice(context.connectionTailFrom ?? previousHead).filter((edge) => edge !== null && !fresh.has(edge))
     merged = [...incoming, ...tail]
     keepPageInfo = tail.length > 0
     store.setField(record, HEAD_LENGTH, incoming.length)

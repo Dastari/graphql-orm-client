@@ -1,7 +1,7 @@
 # Live by default: design for requirement groups 1 and 2
 
 Status: **proposed; the owner approved the direction on 2026-11-06. Built so far: the restart of ended
-streams (fact 4), in 0.1.0-alpha.7; R20 and R7, in 0.1.0-alpha.8; R8 and R6, in 0.1.0-alpha.9. R4's client-side overlap and confirming reads are built; true gap closure still needs a server started signal. Group 1 and R2 are built.** Requirement numbers refer to [requirements.md](../requirements.md).
+streams (fact 4), in 0.1.0-alpha.7; R20 and R7, in 0.1.0-alpha.8; R8 and R6, in 0.1.0-alpha.9. R4's client-side overlap and confirming reads are built; true gap closure still needs a server started signal. Group 1, R2 and R3 are built.** Requirement numbers refer to [requirements.md](../requirements.md).
 Unless noted, server facts were read from graphql-orm `main` at `9d1a482` and not run against a live
 router; R21 is what will prove them. The large application's backend is on graphql-orm 0.90.1.
 
@@ -149,7 +149,7 @@ Built on the client:
   and restores the previous request cost.
 - **Limits:** because of fact 2, bounded overlap and confirming reads narrow the gap and do not
   close it against a real server. Only a started signal can prove admission. R3 list streams
-  before the read remain proposed. Versions reject older events and read responses. Identical
+  open before the read, with a confirming read after settling. Versions reject older events and read responses. Identical
   unversioned snapshots are harmless; different unversioned snapshots remain last-arrival-wins.
 - **Unexpected ends and reconnect:** restart with back-off and re-read through `live.connection`.
   `readAgain` follows a read in flight with one more, coalescing repeated stale marks.
@@ -191,7 +191,7 @@ hand-written version is refused, and relations lack the generated version on the
 
 Holder stale marks and R4 confirming reads share `live.minRereadMs` (default 2000). They follow a
 read in flight, pause while inactive, and catch up once on return. 100 events in a second schedule
-two automatic reads. List membership invalidation remains R3, proposed.
+two automatic reads. List membership invalidation uses the same limiter (R3, built).
 
 Validation: 16/16 acceptance runs against generated graphql-orm 0.90.1 and real router 0.8.1,
 8 per `ws` synchronous-event setting. Actual `INVALID_INPUT` full refusal, thin event, computed-field
@@ -202,6 +202,13 @@ Also fixed here: a composite key's field names come from `<Type>KeyInput` and it
 server `NodeId`, by exact match, so a composite type needs no `keys` configuration, and `key` mode reads key fields from the stored record, not by decoding the `NodeId`.
 
 ### R3. Lists stay correct
+
+**Built.** See [the implementation and validation](../design.md#list-streams-r3).
+The keyset bound is `live.maxRereadPages` (10); offset is `live.maxRereadRows` (100, configure to
+the server maximum). A retained tail sets `QueryState.listRefreshTruncated` and degraded health.
+List streams open before the first read, including empty and count-only queries; settling confirms
+a newly opened stream, narrowing the gap without closing it. Required-key schemas poll, with an
+operation-naming health diagnostic.
 
 - `OperationArtifact` gains `lists: string[]`, the types the operation shows in a list.
 - **At most one stream per type.** A type with a list open uses one stream not narrowed by key, and
@@ -236,7 +243,7 @@ alpha.5 archive until it chooses to move.
 | Back-off by default (built) | `live.refusalBackoff` | `false` | Client upgrade |
 | Refused types poll (built) | `polling.liveFallbackMs` | `null` | Client upgrade |
 | Compiled stream selection | `liveSelection` in the generator | `"as-written"` | Regeneration |
-| List re-reads | `live.listStreams` | `false` until `live` is `default` | Regeneration: older artifacts have no `lists` |
+| List re-reads | `live.listStreams` | `false` (lists poll) | Regeneration: older artifacts have no `lists` |
 | Live by default | `live` in the generator | `"explicit"` | Regeneration |
 
 Each gets changelog steps. The generator warns about a stream selection the new rules would have

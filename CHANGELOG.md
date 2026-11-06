@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- R3: generated `OperationArtifact.lists` enables one un-narrowed stream per open list type,
+  including empty and count-only lists. Events invalidate membership, order and totals through
+  the existing re-read limiter. Unheld rows are not stored. List interest opens before the read;
+  confirming reads narrow the subscribe gap without eliminating it.
+- Regenerated `@connection` queries refresh the loaded range and serialize load-more with refresh.
+  Bounded refresh retains the tail and reports `listRefreshTruncated` and degraded health.
+
+R3 migration: regenerate to turn list behavior on; previously generated modules without `lists`
+keep today's keyed behavior. Set `live.listStreams: false` to opt out and poll lists. An un-narrowed
+stream costs the server one row-policy check per event per subscriber. Review
+`live.maxRereadPages` (default 10) and `live.maxRereadRows` (default 100, set to the server maximum),
+and render `QueryState.listRefreshTruncated` when a loaded tail cannot be refreshed. Required-key
+schemas poll with `list-key-required`; disabling streams reports `list-streams-disabled`.
+Without a delete preimage grant no event is sent: correction waits for the next event or poll.
+
+
 - Generate flattened full/thin live projections. Unsupported full selections fall back to keys only;
   events re-read holders for omitted fields and changed relation links. Health retains
   `selection-refused`, and doctor distinguishes admitted/quiet fallback. Quiet fallback fails strict

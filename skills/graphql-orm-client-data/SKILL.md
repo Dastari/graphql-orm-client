@@ -1,6 +1,6 @@
 ---
 name: graphql-orm-client-data
-description: Use full/thin stream projections and bounded holder re-reads (minRereadMs); Write components with graphql-orm-client fragments and route roots, page through tables by number (@paged, usePagedQuery), load more (@connection), refetch, run mutations (including one-time secrets with `no-store`) and plain subscriptions, and port Apollo queries without request waterfalls or over-fetching, and test components against a mock network, scripted streams and a controllable clock (graphql-orm-client/test).
+description: Keep regenerated lists and counts current with list streams and bounded loaded-page refresh; use full/thin stream projections and bounded holder re-reads (minRereadMs); Write components with graphql-orm-client fragments and route roots, page through tables by number (@paged, usePagedQuery), load more (@connection), refetch, run mutations (including one-time secrets with `no-store`) and plain subscriptions, and port Apollo queries without request waterfalls or over-fetching, and test components against a mock network, scripted streams and a controllable clock (graphql-orm-client/test).
 ---
 
 # Fragments, roots, pagination and mutations
@@ -131,3 +131,21 @@ expect(client.live.status().Ticket.subscriptions).toBe(1)
   socket drop the transport recovers from by itself, where nothing ends: use it with `onReconnect`.
 - `clock.advance(ms)` fires timers without letting promises settle; use `clock.tick(ms)` when a request is
   involved.
+
+## Regenerated lists
+
+Regenerate to emit operation `lists`: root and nested lists and count-only connections use one
+un-narrowed stream per type, opened before the read even when empty. Every event re-reads lists
+through `live.minRereadMs`; unheld rows are not stored. Server cost: one row-policy check per event
+per subscriber. `live.listStreams: false` makes lists poll; required-key schemas also poll. Old
+artifacts retain keyed behavior. Health names the operation for disabled/required-key list streams;
+a quiet list is unconfirmed, never live. Confirming reads after settleMs narrow, but cannot close,
+the subscribe gap without a server acknowledgement.
+
+`@paged` keeps the shown page. `@connection` refreshes the loaded range: offset in one request up
+to `live.maxRereadRows` (100, match the service maximum); keyset through returned cursors up to
+`live.maxRereadPages` (10). Load-more serializes with refresh. Beyond the bound, a retained tail
+may be stale: draw `QueryState.listRefreshTruncated` and health `list-refresh-truncated` honestly.
+No server snapshot across keyset pages is promised. Without a delete preimage grant, the server
+sends no DELETED event; only the next event or poll repairs the list. Do not promise immediate
+delete visibility when polling is disabled. See docs/design.md, List streams (R3), for validation.

@@ -1,6 +1,6 @@
 ---
 name: graphql-orm-client-live
-description: Use full/thin stream projections and bounded holder re-reads (minRereadMs); Keep graphql-orm-client data live with @live fragments and generated Changed subscriptions, overlap replacements and confirm first reads (settleMs), back off from refused streams, order writes by record version, use polling fallbacks, draw live status (useLiveHealth, liveHealth), check streams against a real router (doctor) and diagnose stale data.
+description: Keep regenerated lists and counts current with list streams and bounded loaded-page refresh; use full/thin stream projections and bounded holder re-reads (minRereadMs); Keep graphql-orm-client data live with @live fragments and generated Changed subscriptions, overlap replacements and confirm first reads (settleMs), back off from refused streams, order writes by record version, use polling fallbacks, draw live status (useLiveHealth, liveHealth), check streams against a real router (doctor) and diagnose stale data.
 ---
 
 # Live data and cache policy
@@ -37,11 +37,11 @@ Status: early alpha. Check the installed `docs/design.md` and `docs/graphql-orm-
   When the version field has a read policy some users fail, or isn't available to
   subscriptions, set `versions: { Type: null }` so selecting it doesn't fail their reads.
 
-- The first load reads, subscribes, then confirms with one more read after `live.settleMs` (default
+- A keyed record's first load reads, subscribes, then confirms with one more read after `live.settleMs` (default
   250 ms). Newly streamed records use the same confirming read; queries already covered do not.
   This adds a request per query on first load. Set `live: { settleMs: false }` to restore the previous
   request cost. There is no subscribe acknowledgement: the delay narrows the gap, it cannot close
-  it against a real server. R3's list streams before reads are still proposed.
+  it against a real server. Regenerated list streams open before reads (see below).
 - Stream replacements overlap for the settle delay (250 ms with confirming reads disabled), keeping
   baseline coverage if the candidate fails. Keys keep stable chunks. Router capacity errors use
   ordinary restart back-off, never a five-minute refusal window. At full capacity replacements
@@ -129,3 +129,21 @@ that token's identity. It runs introspection and subscriptions only.
    `client.refetchActive()` from the `connected` event. After
    `SUBSCRIPTION_CONTINUITY_LOST`, the client resubscribes and refetches by itself; if that happens
    often, a bulk writer is outrunning the server's `event_channel_capacity`.
+
+## Regenerated lists
+
+Regenerate to emit operation `lists`: root and nested lists and count-only connections use one
+un-narrowed stream per type, opened before the read even when empty. Every event re-reads lists
+through `live.minRereadMs`; unheld rows are not stored. Server cost: one row-policy check per event
+per subscriber. `live.listStreams: false` makes lists poll; required-key schemas also poll. Old
+artifacts retain keyed behavior. Health names the operation for disabled/required-key list streams;
+a quiet list is unconfirmed, never live. Confirming reads after settleMs narrow, but cannot close,
+the subscribe gap without a server acknowledgement.
+
+`@paged` keeps the shown page. `@connection` refreshes the loaded range: offset in one request up
+to `live.maxRereadRows` (100, match the service maximum); keyset through returned cursors up to
+`live.maxRereadPages` (10). Load-more serializes with refresh. Beyond the bound, a retained tail
+may be stale: draw `QueryState.listRefreshTruncated` and health `list-refresh-truncated` honestly.
+No server snapshot across keyset pages is promised. Without a delete preimage grant, the server
+sends no DELETED event; only the next event or poll repairs the list. Do not promise immediate
+delete visibility when polling is disabled. See docs/design.md, List streams (R3), for validation.

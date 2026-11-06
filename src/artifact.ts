@@ -29,6 +29,8 @@ export interface ConnectionSpec {
   readonly pageInfo: string
   readonly endCursor: string
   readonly hasNextPage: string
+  /** Schema field accepting the requested page size. Absent in legacy artifacts. */
+  readonly limit?: string
   /** The field of the paging argument that carries the cursor to continue after. */
   readonly after: string
   /**
@@ -137,6 +139,8 @@ export interface OperationArtifact<TData = unknown, TVariables = Record<string, 
   readonly normalization: readonly Selection[]
   /** Types whose full stream omits fields selected by this query. Absent in legacy artifacts. */
   readonly liveReread?: readonly string[]
+  /** Entity types shown in lists, including count-only connections. Absent in legacy artifacts. */
+  readonly lists?: readonly string[]
   /** Key fields per concrete type, in primary-key order. */
   readonly keys: Readonly<Record<string, readonly string[]>>
   /** Record-version field per type, where the type has one. */

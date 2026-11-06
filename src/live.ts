@@ -75,6 +75,12 @@ export interface LiveConnection {
 }
 
 export interface LiveOptions {
+  /** Use one un-narrowed stream per open list type. Default true; false makes lists poll. */
+  readonly listStreams?: boolean
+  /** Maximum keyset pages refreshed automatically. Default 10. */
+  readonly maxRereadPages?: number
+  /** Server maximum offset page size. Default 100; set to the service maximum. */
+  readonly maxRereadRows?: number
   /** Minimum interval between automatic re-reads of a query. Default 2000 ms. */
   readonly minRereadMs?: number
   /**
@@ -97,7 +103,7 @@ export interface LiveOptions {
   /** Delay before changes to the held records reach the server. Default 50 ms. */
   readonly debounceMs?: number
   /**
-   * Confirm newly subscribed records with one read after this delay (default 250 ms).
+   * Confirm newly subscribed records or list queries with one read after this delay (default 250 ms).
    * No subscribe acknowledgement exists: this narrows, but cannot close, the first-read gap.
    * `false` disables confirming reads, restoring the previous request cost.
    */
@@ -252,6 +258,7 @@ export class LiveManager {
   private readonly thin = new Set<string>()
   private readonly mismatched = new Set<string>()
   private readonly keyOrder = new Map<string, readonly string[]>()
+  private readonly lists = new Map<string, readonly string[]>()
   private readonly holders = new Map<string, Targets>()
   private readonly active = new Map<string, ActiveType>()
   private timer: unknown = null
@@ -279,7 +286,7 @@ export class LiveManager {
     this.disconnect =
       options.connection?.subscribe(({ reconnected }) => {
         this.onChange()
-        if (reconnected && !this.disposed && this.holders.size) this.resync(new Set(this.holders.keys()))
+        if (reconnected && !this.disposed) this.resync(new Set([...this.holders.keys(), ...this.lists.keys()]))
       }) ?? null
   }
 
@@ -321,6 +328,25 @@ export class LiveManager {
     else this.holders.set(holder, targets)
     this.schedule()
     this.onChange()
+  }
+
+  /** Register list interest before the first read, independently of held records. */
+  holdLists(holder: string, types: readonly string[]): void {
+    if (this.disposed) return
+    if (types.length) this.lists.set(holder, types)
+    else this.lists.delete(holder)
+    this.flush()
+  }
+
+  /** Whether a list can receive events for rows it does not hold. */
+  listReason(typename: string): "list-streams-disabled" | "list-key-required" | null {
+    if (this.options.listStreams === false) return "list-streams-disabled"
+    const artifact = this.artifacts[typename]
+    return artifact && artifact.mode !== "unkeyed" && !artifact.keyOptional ? "list-key-required" : null
+  }
+
+  private listHolders(typename: string): string[] {
+    return [...this.lists].filter(([, types]) => types.includes(typename)).map(([holder]) => holder)
   }
 
   status(): Readonly<Record<string, LiveTypeStatus>> {
@@ -377,6 +403,7 @@ export class LiveManager {
     }
     this.active.clear()
     this.holders.clear()
+    this.lists.clear()
   }
 
   private schedule(): void {
@@ -412,7 +439,9 @@ export class LiveManager {
       this.active.set(artifact.typename, active)
       const wanted = new Map<string, Record<string, unknown>>()
       active.overflow = 0
-      if (ids.length > 0) {
+      const list = this.listHolders(artifact.typename).length > 0 && this.listReason(artifact.typename) === null
+      if (list) wanted.set("all", {})
+      else if (ids.length > 0) {
         if (artifact.mode === "unkeyed") {
           wanted.set("all", {})
         } else if (artifact.mode === "key") {
@@ -453,13 +482,13 @@ export class LiveManager {
       for (const key of ["all", "thin:all"]) if (active.subscriptions.has(key)) active.coverage.set(key, new Set(ids))
       const covering = new Set(ids)
       for (const [key, stop] of [...active.subscriptions]) {
-        if (![...(active.coverage.get(key) ?? [])].some((id) => covering.has(id))) {
+        if (!(list && key.replace(/^thin:/, "") === "all") && ![...(active.coverage.get(key) ?? [])].some((id) => covering.has(id))) {
           stop()
           active.subscriptions.delete(key)
           active.coverage.delete(key)
         }
       }
-      if ((!ids.length || !active.subscriptions.size) && active.transition) {
+      if (((!ids.length && !list) || !active.subscriptions.size) && active.transition) {
         this.cancelTimer(active.transition.handle)
         active.transition = null
       }
@@ -475,7 +504,7 @@ export class LiveManager {
       for (const [key, variables] of wanted) {
         if (active.subscriptions.has(key)) continue
         const rawKey = key.replace(/^thin:/, "")
-        const covered = artifact.mode === "keys"
+        const covered = rawKey === "all" ? new Set(ids) : artifact.mode === "keys"
           ? new Set(active.chunks.find((chunk) => rawKey === `keys:${[...chunk].sort().join(",")}`))
           : new Set(rawKey === "all" ? ids : [rawKey])
         active.coverage.set(key, covered)
@@ -488,7 +517,7 @@ export class LiveManager {
         for (const id of covered) if (!alreadyCovered.has(id)) gained.add(id)
       }
       if (started && (baseline.size > 0 || this.options.settleMs !== false)) {
-        const holders = new Set<string>()
+        const holders = new Set<string>(list ? this.listHolders(artifact.typename) : [])
         for (const [holder, targets] of this.holders) {
           if ([...(targets.get(artifact.typename) ?? [])].some((id) => gained.has(id))) holders.add(holder)
         }
@@ -560,11 +589,11 @@ export class LiveManager {
   private confirmationTimer: unknown = null
 
   private queueConfirmation(holders: ReadonlySet<string>): void {
-    for (const holder of holders) if (this.holders.has(holder)) this.confirmations.add(holder)
+    for (const holder of holders) if (this.holders.has(holder) || this.lists.has(holder)) this.confirmations.add(holder)
     if (this.confirmationTimer !== null || !this.confirmations.size) return
     this.confirmationTimer = this.after(() => {
       this.confirmationTimer = null
-      const current = new Set([...this.confirmations].filter((holder) => this.holders.has(holder)))
+      const current = new Set([...this.confirmations].filter((holder) => this.holders.has(holder) || this.lists.has(holder)))
       this.confirmations.clear()
       if (!this.disposed && current.size) this.resync(current)
     }, 0)
@@ -727,7 +756,7 @@ export class LiveManager {
   /** Start the type's missing streams, then read what shows the type. */
   private restartNow(typename: string): void {
     this.reconcile(typename)
-    const holders = new Set<string>()
+    const holders = new Set<string>(this.listHolders(typename))
     for (const [holder, targets] of this.holders) if (targets.get(typename)?.size) holders.add(holder)
     if (holders.size) this.resync(holders)
     else this.restarts.delete(typename)
@@ -761,8 +790,12 @@ export class LiveManager {
     const id = identify(entity, keys)
     if (id === null) return
     // A stream without keys carries every record of the type; only held records are written.
-    if (!this.held().get(artifact.typename)?.has(id)) return
     this.noteEvent(artifact.typename)
+    const listHolders = new Set(this.listHolders(artifact.typename))
+    if (!this.held().get(artifact.typename)?.has(id)) {
+      this.onEvent(listHolders, artifact.typename, thin, artifact.rereadFragments ?? [])
+      return
+    }
     if (payload[artifact.actionField] === "DELETED") {
       this.store.delete(id)
     } else {
@@ -775,8 +808,8 @@ export class LiveManager {
       for (const embeddedId of embedded) if (embeddedId.startsWith(`${root}.`)) this.store.delete(embeddedId)
     }
     this.store.publish()
-    if (artifact.thinOperation) {
-      const holders = new Set<string>()
+    {
+      const holders = listHolders
       for (const [holder, targets] of this.holders) {
         if (targets.get(artifact.typename)?.has(id)) holders.add(holder)
       }

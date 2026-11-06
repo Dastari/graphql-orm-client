@@ -27,6 +27,9 @@ const compiled = compile(schema, [
   `query GaugePage { Gauges { ...GaugeRow } }`,
 ])
 
+// Keep this suite focused on keyed record streams; R3 has regenerated-list tests.
+for (const operation of Object.values(compiled.operations)) delete (operation as { lists?: readonly string[] }).lists
+
 function setup(responses: { slots?: unknown[]; gauges?: unknown[] }) {
   const clock = createTestClock()
   const streams = createMockStreams()

@@ -10,7 +10,7 @@ screen.
 > layer, cursor and offset pagination, page-number navigation, optimistic mutations, polling, plain
 > subscriptions and the generator with TypeScript types all work and are tested. Real applications
 > use it, and APIs may still change. Live updates are opt-in per fragment (`@live`) and have known
-> gaps: see [the requirements](docs/requirements.md).
+> limits: see [the requirements](docs/requirements.md).
 
 ## Why not Apollo or Relay
 
@@ -90,6 +90,11 @@ Generated streams omit relations, argument scalars and `NodeId`. Unsupported sca
 keys-only fallback; events re-read holders to refresh omitted fields, including changed relation links.
 Automatic re-reads are limited per query by `live.minRereadMs` (default 2000). Generator setting
 `liveSelection: "as-written"` preserves legacy selections; old generated modules keep working.
+
+Regenerated lists, including empty lists and counts, open one un-narrowed stream per type before
+the first read and re-read on events. `live.listStreams: false` makes lists poll; old artifacts keep
+keyed behavior until regenerated. Loaded pages refresh within documented bounds;
+`QueryState.listRefreshTruncated` reports a retained stale tail.
 
 Live queries read once more after their records gain a stream (default `live.settleMs: 250`).
 This adds a request on first load and narrows the read/subscribe gap; without a server subscribe
