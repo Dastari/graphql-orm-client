@@ -1,6 +1,6 @@
 ---
 name: graphql-orm-client-live
-description: Keep graphql-orm-client data live with generated Changed subscriptions, per-type cache policy, record versions, expiry and polling fallbacks.
+description: Keep graphql-orm-client data live with generated Changed subscriptions, back off from refused streams, per-type cache policy, record versions, expiry and polling fallbacks.
 ---
 
 # Live data and cache policy
@@ -27,6 +27,15 @@ Status: early alpha. Check the installed `docs/design.md` and `docs/graphql-orm-
   `client.subscribe` or `useSubscription`, on the same `live.subscribe` transport. Its events are
   written into the store, but the client doesn't resubscribe for it: on
   `SUBSCRIPTION_CONTINUITY_LOST`, subscribe again and refetch.
+- By default, a stream that ends (other than by lost events) starts again on the next change to the
+  records it holds, so a router that refuses it sees a doomed subscribe on every list refresh. Turn
+  on `live: { refusalBackoff: true }` (five minutes) or `{ ms, types: { Type: ms | false } }`: a stream
+  the server refused (GraphQL errors answering the subscribe, or an error-only frame then `complete`,
+  before any event) sends no request for the window and then subscribes again by itself.
+  `SUBSCRIPTION_CONTINUITY_LOST` and `SUBSCRIPTION_SOURCE_CLOSED` still restart at once, and a
+  transport failure is never remembered. The client doesn't refetch when the window ends, so keep a
+  poll behind each backed-off type; give a type with no poll `false`. `client.live.status()` shows
+  `backedOff`. Don't wrap `live.subscribe` to build this yourself.
 - Paged tables (`usePagedQuery`) keep only the visible page live; changing page moves the
   subscription to the new page's rows.
 

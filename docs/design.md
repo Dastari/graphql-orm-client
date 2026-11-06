@@ -11,7 +11,7 @@ Status: partly built. Implemented and tested:
 - `readFragment`;
 - React: `ClientProvider`, `useQuery`, `usePagedQuery`, `useFragment`, `useFragmentList`,
   `useMutation` and `useSubscription`;
-- the live layer: `compile(...).live`, `LiveManager`, and `createClient({ live })`;
+- the live layer: `compile(...).live`, `LiveManager`, `createClient({ live })`, and opt-in back-off for refused streams;
 - the generator: `graphql-orm-client generate` with `--check`. It emits typed artifacts, masked
   reference types, the `live` artifacts and an overloaded `graphql()`.
 
@@ -199,7 +199,8 @@ variables within the same hold scope (a new search term on the same organisation
    `SUBSCRIPTION_SOURCE_CLOSED`. After a random delay below `live.resyncJitterMs` (default
    1 s), the live layer subscribes again, then refetches the roots that show that type. Any
    other end of a stream (a transport error, a plain `complete`) releases it without a retry;
-   the next change to the held records starts it again. After a socket reconnect the
+   the next change to the held records starts it again. A stream the server refuses can be held
+   back for a window instead (see [Refused streams](#refused-streams)). After a socket reconnect the
    application calls `client.refetchActive()`, until the server supports replay from a sequence
    number.
 5. **Release.** When records are released, it narrows or ends the subscriptions.
@@ -223,6 +224,57 @@ by name. Types with `@live` fragments but no usable subscription are listed in
 `compile(...).liveUnavailable`, and their holders must poll. `client.live.status()` reports
 per-type counts, including overflow beyond the `key`-mode limit. A `DELETED` event removes the
 record, and any query that showed it reads again.
+
+### Refused streams
+
+By default, a stream that ended for any reason except lost events starts again on the next change to
+the records it holds, so a router that refuses a stream sees another doomed subscribe on every list
+refresh. `live: { refusalBackoff }` (off by default) remembers the refusal instead:
+
+```ts
+createClient({
+  network,
+  live: {
+    artifacts: live,
+    subscribe,
+    // Five minutes for every type, except Ticket, which has no poll behind it and stays on
+    // immediate retry:
+    refusalBackoff: { ms: DEFAULT_REFUSAL_BACKOFF_MS, types: { Ticket: false } },
+    // or: refusalBackoff: true            every type, five minutes
+    //     refusalBackoff: { types: { Device: 60_000 } }   Device only, one minute
+  },
+})
+```
+
+- **What counts as a refusal.** A stream that ends before delivering any event, by either of these: the
+  server answers the subscribe with GraphQL errors (graphql-ws delivers an array of errors to the
+  sink's `error`, as an `error` message), or it sends frames with errors and no data and then
+  completes. Both mean the router said no to this subscribe, whatever the code; the client has no list
+  of refusal codes and does not guess one.
+- **What does not.** Lost events: a frame carrying `SUBSCRIPTION_CONTINUITY_LOST` or
+  `SUBSCRIPTION_SOURCE_CLOSED` still restarts after the jitter and refetches, whatever the option, and
+  is never remembered (a continuity code on the `error` channel is also left alone, as before). A
+  transport failure (an `Error`, a socket close event) says nothing about the stream: graphql-ws owns
+  reconnection, and the stream starts again on the next change. A `complete` with no frames is a
+  clean end, because a healthy stream with nothing to report can end that way. A stream that
+  delivered an event and then fails is not a refusal.
+- **Identity of a stream.** The type's `<Type>Changed` operation; in `key` mode, that operation for one
+  record (a refusal of one record's stream doesn't hold back another's, as when the router caps the
+  streams per connection). The chunk of keys in `keys` mode is not part of it: it changes whenever a
+  list refresh changes the held records, so one refused stream would look new every time.
+- **During the window.** No request is sent for that stream however often the held records change, and
+  the stream is not removed from the layer: when the window ends, it subscribes again by itself if its
+  records are still held. A refusal then starts another window; an admitted stream stays open. The
+  window is a timer (`live.setTimeout`, `live.clearTimeout`), so tests drive it without waiting.
+  `client.live.status()` reports `backedOff` per type.
+- **What the client does not do.** It doesn't refetch when a window ends: events during the window
+  were missed, so keep a poll (`pollMs`, or the live polling fallback) behind every type that backs
+  off, and leave a type on immediate retry (`false`) when nothing else refreshes it.
+- **Disposal.** The memory and its timers belong to the client's live layer and go with the client when
+  the identity changes. A refusal recorded for one identity cannot hold back the next identity's
+  client, and one that arrives after disposal is ignored.
+- **Not covered.** Plain subscriptions (`client.subscribe`) are never restarted by the client, so they
+  have no loop to break.
 
 ## Mutations
 
