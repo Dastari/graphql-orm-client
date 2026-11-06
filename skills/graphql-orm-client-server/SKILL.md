@@ -20,8 +20,9 @@ change that breaks one of these leaves the client with stale or duplicated data.
   tickets, state rows. A bare `#[graphql_orm(version)]` is compare-and-swap only.
 - Add `node_id` (`#[graphql_entity(node_id)]`, graphql-orm 0.86.0) to entities whose fragments
   should be refetchable on their own.
-- Set `propagate_change = "up"` on relations whose parent views show child state. Deleting a child
-  doesn't notify its parent yet (graphql-orm #290).
+- Set `propagate_change = "up"` on relations whose parent views show child state. From graphql-orm 0.93.0 deleting a
+  child notifies its parent too (#290). Regenerate the client before adopting 0.93.0: a module generated before
+  0.1.0-alpha.10 treats that event as the parent being deleted.
 - Grant `RowPolicy::can_read_deleted_preimage` where clients must see deletes: without it, `DELETED`
   doesn't reach subscribers.
 - Keep fields that must update live as persisted scalars. A `Changed` payload refuses relations and
