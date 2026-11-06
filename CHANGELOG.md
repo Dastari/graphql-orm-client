@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add `pnpm budgets` and a separate CI job for R22: store, live-event notifications, large-schema
+  compilation, built entry sizes and real Chromium pop-out windows. No runtime API change.
 - R4: stable key chunks, bounded stream overlap, and confirming reads for newly subscribed records.
   A failed replacement retains the old streams. Router operation-limit errors retry with ordinary
   back-off, retaining old coverage and polling uncovered records until capacity becomes available.
