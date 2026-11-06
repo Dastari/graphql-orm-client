@@ -130,7 +130,7 @@ function variablesFor(artifact: LiveArtifact): Record<string, unknown> | null {
 }
 
 /** Codes about the connection or the moment, which say nothing about whether this stream is admitted. */
-const INCONCLUSIVE_CODES = new Set(["SUBSCRIPTION_SCHEMA_RELOAD", "SERVICE_UNAVAILABLE", "SUBSCRIPTION_LIMIT_EXCEEDED"])
+const INCONCLUSIVE_CODES = new Set(["SUBSCRIPTION_SCHEMA_RELOAD", "SERVICE_UNAVAILABLE", "SUBGRAPH_UNAVAILABLE", "SUBSCRIPTION_LIMIT_EXCEEDED"])
 
 type Outcome = Pick<StreamReport, "verdict" | "code" | "detail">
 type Frame = { id?: string; type?: string; payload?: unknown }

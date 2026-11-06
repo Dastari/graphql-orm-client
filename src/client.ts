@@ -92,7 +92,8 @@ export interface ClientOptions {
 export interface PollingOptions {
   /**
    * How often a query refetches when it shows `@live` records that no subscription covers: types
-   * without a usable Changed subscription, or records beyond a per-record cap. Default 30 s;
+   * without a usable Changed subscription, records beyond a per-record cap, or a stream waiting out a
+   * refusal window. Default 30 s;
    * `null` disables the fallback.
    */
   readonly liveFallbackMs?: number | null
@@ -492,7 +493,7 @@ class QueryResource<T> implements WatchedQuery<T> {
     if (this.users === 0) return
     const live = this.client.live
     const targets = new Map<string, Set<string>>()
-    let uncovered = false
+    this.uncovered = false
     this.liveHoldings = new Map()
     readSelections(this.client.store, selectorOf(this.artifact, this.variables), {
       inlineSpreads: true,
@@ -503,7 +504,7 @@ class QueryResource<T> implements WatchedQuery<T> {
         holding.fragments.add(fragment)
         this.liveHoldings.set(typename, holding)
         if (!live?.covers(typename)) {
-          uncovered = true
+          this.uncovered = true
           return
         }
         const ids = targets.get(typename) ?? new Set<string>()
@@ -512,10 +513,20 @@ class QueryResource<T> implements WatchedQuery<T> {
       },
     })
     live?.hold(this.key, targets)
-    const overflowing = live ? [...targets.keys()].some((typename) => live.overflows(typename)) : false
-    this.fallbackPoll = uncovered || overflowing
-    this.schedulePoll()
+    this.refreshFallbackPoll()
     this.client.healthChanged()
+  }
+
+  private uncovered = false
+
+  /** Poll when this query holds `@live` records that nothing else keeps fresh. */
+  refreshFallbackPoll(): void {
+    if (this.users === 0) return
+    const live = this.client.live
+    const types = [...this.liveHoldings.keys()]
+    const exposed = live ? types.some((typename) => live.covers(typename) && (live.overflows(typename) || live.refusedNow(typename))) : false
+    this.fallbackPoll = this.uncovered || exposed
+    this.schedulePoll()
   }
 
   private set(state: QueryState<T>): void {
@@ -665,7 +676,10 @@ export class Client {
               if (resource.users > 0 && holders.has(resource.key)) void resource.readAgain()
             }
           },
-          (timing) => this.healthChanged(timing)
+          (timing) => this.healthChanged(timing),
+          () => {
+            for (const resource of this.resources.values()) resource.refreshFallbackPoll()
+          }
         )
       : null
     this.clock = options.live?.now ?? Date.now

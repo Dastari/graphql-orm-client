@@ -87,7 +87,7 @@ describe("client.liveHealth", () => {
 
     clock.advance(1)
     await clock.tick(1000)
-    expect(client.liveTypeHealth("Ticket")).toMatchObject({ state: "unconfirmed", retryAt: null })
+    expect(client.liveTypeHealth("Ticket")).toMatchObject({ state: "unconfirmed", retryAt: null, reason: null, code: null })
     expect(client.liveTypeHealth("Ticket").lastEventAt).not.toBeNull()
     clock.advance(5)
     streams.one("LiveTicket").emit(ticket("third", 3))
@@ -112,13 +112,16 @@ describe("client.liveHealth", () => {
       const { client, clock, streams, open } = setup({ live: { refusalBackoff: true }, polling: { liveFallbackMs: null } })
       await open()
       streams.one("LiveTicket").refuse("INVALID_INPUT")
-      expect(client.liveTypeHealth("Ticket")).toMatchObject({ state: "refused", reason: "selection-refused", code: "INVALID_INPUT", pollMs: null, retryAt: clock.now() + 5 * 60_000 })
+      const health = client.liveTypeHealth("Ticket")
+      expect(health).toMatchObject({ state: "refused", reason: "selection-refused", code: "INVALID_INPUT", pollMs: null })
+      expect(health.retryAt).toBeGreaterThanOrEqual(clock.now() + 4 * 60_000)
+      expect(health.retryAt).toBeLessThanOrEqual(clock.now() + 6 * 60_000)
       expect(client.liveHealth().worst).toBe("refused")
       client.dispose()
     })
 
     it("names another code as a plain refusal, on the ordinary back-off too", async () => {
-      const { client, streams, open } = setup()
+      const { client, streams, open } = setup({ live: { refusalBackoff: false }, polling: { liveFallbackMs: null } })
       await open()
       streams.one("LiveTicket").refuse("FORBIDDEN", { frame: "next" })
       expect(client.liveTypeHealth("Ticket")).toMatchObject({ state: "refused", reason: "refused", code: "FORBIDDEN" })
@@ -126,12 +129,27 @@ describe("client.liveHealth", () => {
     })
 
     it("names a router's limit", async () => {
-      const { client, streams, open } = setup()
+      const { client, streams, open } = setup({ polling: { liveFallbackMs: null } })
       await open()
       streams.one("LiveTicket").refuse("SUBSCRIPTION_LIMIT_EXCEEDED")
       expect(client.liveTypeHealth("Ticket")).toMatchObject({ state: "refused", reason: "over-cap" })
       client.dispose()
     })
+  })
+
+  it("keeps a refusal's reason while another stream of the type ends, and drops the code once it's healthy", async () => {
+    const artifacts = { Ticket: { ...compiled.live.Ticket!, mode: "key" as const, keyArgument: "Key", keyOptional: true } }
+    const { client, clock, streams, open } = setup({ live: { artifacts, refusalBackoff: { ms: 1000 } }, polling: { liveFallbackMs: null } })
+    await open("t1")
+    await open("t2")
+    expect(streams.find("LiveTicket")).toHaveLength(2)
+    streams.find("LiveTicket")[0]!.refuse("SUBSCRIPTION_LIMIT_EXCEEDED")
+    streams.find("LiveTicket")[0]!.unavailable()
+    expect(client.liveTypeHealth("Ticket")).toMatchObject({ state: "refused", reason: "over-cap", code: "SUBSCRIPTION_LIMIT_EXCEEDED" })
+    await clock.tick(5000)
+    expect(streams.find("LiveTicket")).toHaveLength(2)
+    expect(client.liveTypeHealth("Ticket")).toMatchObject({ state: "unconfirmed", reason: null, code: null })
+    client.dispose()
   })
 
   describe("a failing stream", () => {

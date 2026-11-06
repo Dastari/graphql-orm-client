@@ -80,7 +80,7 @@ const ends: [string, string, string | null, (stream: Stream) => void][] = [
 describe("a stream that ends without the client asking", () => {
   for (const [label, reason, code, end] of ends) {
     it(`restarts and reads again after ${label}, and status says why`, async () => {
-      const context = setup()
+      const context = setup({ refusalBackoff: false })
       const list = await open(context)
       const { live, subscriptions, time } = context
       end(liveWidget(context))
@@ -232,10 +232,10 @@ describe("a stream that ends without the client asking", () => {
       const reads = context.reads()
       liveWidget(context).sink.error(errors("INVALID_INPUT"))
       expect(live.status().Widget).toMatchObject({ backedOff: true, restarting: false, lastEnd: { reason: "refused" } })
-      time.advance(5 * 60_000 - 1)
+      time.advance(4 * 60_000 - 1)
       expect(subscriptions.find("LiveWidget")).toHaveLength(0)
       expect(context.reads()).toBe(reads)
-      time.advance(1)
+      time.advance(2 * 60_000 + 1)
       expect(subscriptions.find("LiveWidget")).toHaveLength(1)
       await settle()
       expect(context.reads()).toBe(reads + 1)

@@ -33,7 +33,7 @@ export interface LiveTypeHealth {
   readonly state: LiveState
   /** Null when `live`, `unconfirmed` or `idle`, or for a stream simply starting up. */
   readonly reason: LiveReason | null
-  /** The server's `extensions.code` for the last end, when it gave one. */
+  /** The server's `extensions.code` behind `reason`, when it gave one. Null when there's no `reason`. */
   readonly code: string | null
   /** Records of the type that open queries show through `@live` fragments. */
   readonly held: number
@@ -117,23 +117,25 @@ export function typeHealth(status: LiveTypeStatus | undefined, holdings: readonl
     lastEventAt: status?.lastEventAt ?? null,
     lastReadAt: reads.length ? Math.max(...reads) : null,
     retryAt: status?.retryAt ?? null,
-    code: status?.lastEnd?.code ?? null,
+    code: null,
   }
-  const withPoll = (state: "refused" | "unavailable", reason: LiveReason | null): LiveTypeHealth => ({
+  const code = status?.lastEnd?.code ?? null
+  const withPoll = (state: "refused" | "unavailable", reason: LiveReason | null, reasonCode: string | null = code): LiveTypeHealth => ({
     ...base,
     state: pollMs === null ? state : "polling",
     reason,
+    code: reasonCode,
   })
   if (held === 0) return { ...base, state: "idle", reason: null }
   if (!status) return withPoll("unavailable", options.hasLiveLayer ? "no-stream" : "no-live-layer")
   const reason = reasonOfEnd(status.lastEnd)
-  if (status.backedOff) return withPoll("refused", reason)
+  if (status.backedOff) return withPoll("refused", reasonOfEnd(status.lastRefusal), status.lastRefusal?.code ?? null)
   if (status.restarting) {
     if (status.lastEnd?.reason === "refused") return withPoll("refused", reason)
     if (status.restartAttempts >= UNAVAILABLE_AFTER_ATTEMPTS) return withPoll("unavailable", reason)
-    return { ...base, state: "connecting", reason }
+    return { ...base, state: "connecting", reason, code }
   }
-  if (status.overflow > 0) return withPoll("unavailable", "over-cap")
+  if (status.overflow > 0) return withPoll("unavailable", "over-cap", null)
   if (status.subscriptions === 0) {
     // Nothing is waiting to bring it back: `restart: false`, an end that stays down until the records change.
     if (status.lastEnd) return withPoll("unavailable", reason)

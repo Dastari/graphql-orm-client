@@ -1,7 +1,7 @@
 # Live by default: design for requirement groups 1 and 2
 
 Status: **proposed; the owner approved the direction on 2026-11-06. Built so far: the restart of ended
-streams (fact 4), in 0.1.0-alpha.7; R20 and R7, in 0.1.0-alpha.8.** Requirement numbers refer to [requirements.md](../requirements.md).
+streams (fact 4), in 0.1.0-alpha.7; R20 and R7, in 0.1.0-alpha.8; R8 and R6, in 0.1.0-alpha.9. Group 1 is built.** Requirement numbers refer to [requirements.md](../requirements.md).
 Unless noted, server facts were read from graphql-orm `main` at `9d1a482` and not run against a live
 router; R21 is what will prove them. The large application's backend is on graphql-orm 0.90.1.
 
@@ -99,7 +99,7 @@ useLiveHealth(typename?)     // graphql-orm-client/react
 
 ### R8. `graphql-orm-client doctor --url <router>`
 
-**Built, unreleased.** Also added: `--json`, and `unknown` fails the run, because a stream that couldn't be
+**Built in 0.1.0-alpha.9.** Also added: `--json`, and `unknown` fails the run, because a stream that couldn't be
 tested mustn't pass.
 
 Credentials come from named environment variables, never arguments. It uses only introspection and
@@ -116,7 +116,7 @@ graphql-transport-ws itself, so it needs no new dependency.
 
 ### R6. Back-off on by default
 
-`refusalBackoff` defaults to on, and `false` restores today's behaviour. What changes:
+**Built in 0.1.0-alpha.9.** `refusalBackoff` defaults to on, and `false` restores the behaviour before it. What changes:
 
 - A refusal excludes `SUBSCRIPTION_SCHEMA_RELOAD`, `SERVICE_UNAVAILABLE` and `SUBGRAPH_UNAVAILABLE`,
   which are outages and take the restart path in R4. Code lists stay this short: anything else that
@@ -206,8 +206,8 @@ alpha.5 archive until it chooses to move.
 | Change | Setting | Restores the old behaviour | Comes with |
 | --- | --- | --- | --- |
 | Ended streams restart and re-read (built) | `live.restart` | `false` | Client upgrade |
-| Back-off by default | `live.refusalBackoff` | `false` | Client upgrade |
-| Refused types poll | `polling.liveFallbackMs` | `null` | Client upgrade |
+| Back-off by default (built) | `live.refusalBackoff` | `false` | Client upgrade |
+| Refused types poll (built) | `polling.liveFallbackMs` | `null` | Client upgrade |
 | Compiled stream selection | `liveSelection` in the generator | `"as-written"` | Regeneration |
 | List re-reads | `live.listStreams` | `false` until `live` is `default` | Regeneration: older artifacts have no `lists` |
 | Live by default | `live` in the generator | `"explicit"` | Regeneration |

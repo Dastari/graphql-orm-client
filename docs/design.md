@@ -323,8 +323,11 @@ guards everything it sends. Credentials come only from named environment variabl
 
 ### Refused streams
 
-By default, a refused stream restarts like any other end, with the back-off above. `live: {
-refusalBackoff }` (off by default) waits a longer window instead:
+By default, a refused stream waits out a window of five minutes, varying by 20% either way. It sends nothing
+for that stream however often the held records change, and the queries holding it poll
+(`polling.liveFallbackMs`, 30 s) so their records still refresh. When the window ends it subscribes again and they
+read, because events were missed. `live: { refusalBackoff }` configures it, and `false` leaves refused streams on
+the ordinary back-off above, with no window and no poll:
 
 ```ts
 createClient({
@@ -359,9 +362,8 @@ createClient({
   records are still held. A refusal then starts another window; an admitted stream stays open. The
   window is a timer (`live.setTimeout`, `live.clearTimeout`), so tests drive it without waiting.
   `client.live.status()` reports `backedOff` per type.
-- **When a window ends,** the queries that show the type read again, because events during the window
-  were missed. During the window nothing refreshes them, so keep a poll (`pollMs`, or the live polling
-  fallback) behind a type with a long window, or give it `false` for the ordinary back-off.
+- **With the poll off** (`polling.liveFallbackMs: null`), nothing refreshes the records during a window, and
+  `client.liveHealth()` says `refused`. With it on, it says `polling`, with the refusal as the `reason`.
 - **Disposal.** The memory and its timers belong to the client's live layer and go with the client when
   the identity changes. A refusal recorded for one identity cannot hold back the next identity's
   client, and one that arrives after disposal is ignored.
