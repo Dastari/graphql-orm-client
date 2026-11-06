@@ -9,6 +9,40 @@
 - Confirm that persisted-key federated fields can be admitted in a stream, while
   NodeId-key fetches are refused on 0.90.1. Record refusal frames and descriptor catalogue gaps; see
   `conformance/README.md`. Generated NodeId streams remain a known server/client gap.
+- Generate flattened full/thin live projections. Unsupported full selections fall back to keys only;
+  events re-read holders for omitted fields and changed relation links. Health retains
+  `selection-refused`, and doctor distinguishes admitted/quiet fallback. Quiet fallback fails strict
+  mode; working fallback otherwise passes.
+- Automatic stale, restart and R4 confirming reads share `live.minRereadMs` (default 2000). Repeated
+  confirmations from changing query membership are bounded, and inactive queries catch up on return.
+- Infer composite keys from `<Type>KeyInput` and build key arguments from stored fields.
+
+Migration: before regeneration, set `liveSelection: "as-written"` to retain previous stream text,
+then review generator warnings naming excluded fragment fields. Existing generated modules keep
+legacy behavior without a version bump. To adopt projections, remove the setting and regenerate.
+Composite keys need no `keys` setting and no particular snapshot order: the client finds the order from a
+record's server `NodeId`. If no order matches, health shows `identity-mismatch`: that type opens no stream and
+polls, rather than dropping every event. Review `live.minRereadMs` if automatic re-read timing matters, and run
+doctor against the deployed identity. Managed RecordVersion remains in full; thin streams carry no
+version and use last-arrival-wins when neither write carries one.
+
+- Add `pnpm budgets` and a separate CI job for R22: store, live-event notifications, large-schema
+  compilation, built entry sizes and real Chromium pop-out windows. No runtime API change.
+- R4: stable key chunks, bounded stream overlap, and confirming reads for newly subscribed records.
+  A failed replacement retains the old streams. Router operation-limit errors retry with ordinary
+  back-off, retaining old coverage and polling uncovered records until capacity becomes available.
+- **Request cost change:** a live query now makes one additional read after its records first gain
+  a stream, after `live.settleMs` (default 250 ms). This also confirms newly covered keys during
+  replacement, coalesced per query. To restore the previous request count, set
+  `live: { settleMs: false }`. No generated artifact change or regeneration is needed.
+  Overlap and confirming reads narrow gaps; without a server started signal they cannot guarantee
+  gap-free delivery against a real server. Without versions, last-arrival-wins still applies.
+- Add `schema pull --url <router>` and read-only `schema pull --check`, using doctor's
+  introspection path and environment credentials. Sorted SDL has a SHA-256 sidecar.
+- Opt in to snapshot integrity and generated provenance checks by running `schema pull`, then
+  `generate`, and committing the SDL, its `.sha256` sidecar and generated output.
+  Projects without a sidecar keep their previous behavior. See the design for exit codes.
+
 
 ## 0.1.0-alpha.9 (2026-11-06)
 

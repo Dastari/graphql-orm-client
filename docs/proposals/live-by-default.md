@@ -1,7 +1,7 @@
 # Live by default: design for requirement groups 1 and 2
 
 Status: **proposed; the owner approved the direction on 2026-11-06. Built so far: the restart of ended
-streams (fact 4), in 0.1.0-alpha.7; R20 and R7, in 0.1.0-alpha.8; R8 and R6, in 0.1.0-alpha.9. Group 1 is built.** Requirement numbers refer to [requirements.md](../requirements.md).
+streams (fact 4), in 0.1.0-alpha.7; R20 and R7, in 0.1.0-alpha.8; R8 and R6, in 0.1.0-alpha.9. R4's client-side overlap and confirming reads are built; true gap closure still needs a server started signal. Group 1 and R2 are built.** Requirement numbers refer to [requirements.md](../requirements.md).
 R21's `conformance/` fixture now runs the admission, key delivery, delete, node, version,
 list and router-frame facts against `graphql-orm-v0.90.1` (adfa608d), router 0.8.1 and SQLite.
 Other facts remain source-read from `main` at `9d1a482` unless noted. Recovery assertions
@@ -11,7 +11,7 @@ and fixture accommodations are documented in [conformance](../../conformance/REA
 
 1. **A stream is admitted or refused whole.** `validate_subscription_selection` refuses a `Changed`
    subscription if any selected entity field isn't a persisted, subscribable column, with the generic
-   `INVALID_INPUT`. Today the compiler spreads `@live` fragments unchanged, so one relation or computed
+   `INVALID_INPUT`. Legacy generation spreads `@live` fragments unchanged, so one relation or computed
    field in one fragment stops every fragment of that type. `NodeId` is refused too: run on
    0.90.1, source-read on 0.91.1. The real wire shape is `next` with `INVALID_INPUT`, then
    `complete`; managed RecordVersion is accepted, while a computed hand-written one is refused.
@@ -112,7 +112,7 @@ subscriptions, and one code path refuses any other operation, with a test.
 1. Introspect the served schema and validate every compiled document against it.
 2. Open each live operation with `Keys: []` where possible, which admission checks and which matches no
    rows, for `--stream-ms` (default 3000).
-3. Print `admitted`, `not-refused`, `refused <code>`, `missing` or `invalid`, for the identity used.
+3. Print `admitted`, `not-refused`, `fallback-admitted`, `fallback-not-refused`, `refused <code>`, `missing` or `invalid`, for the identity used.
 
 `not-refused` is a separate word because of fact 2. Exit is non-zero for refused, missing or invalid.
 `--strict` adds `not-refused`. A type that can't be tested reports `unknown`, never `ok`. It speaks
@@ -137,27 +137,40 @@ Order: R4, R2, R3, R1.
 
 ### R4. No lost events
 
-- **Replacing a stream.** Start the new one, then stop the old, as graphql-orm documents. Duplicates
-  are dropped by version; without a version the same snapshot is written twice, which is harmless.
-- **Chunks stop shifting.** Keys are sliced after sorting today, so one new key restarts every later
-  chunk. Keys get a stable chunk until it is released.
-- **Newly covered keys are re-read,** since events before the subscribe aren't replayed.
-- **First read.** A type shown in a list has its stream (R3) opened before the read. Other roots can't
-  know their keys first, so the order is read, subscribe, then one confirming re-read after
-  `live.settleMs` (250 ms). Because of fact 2 this narrows the gap and doesn't close it against a real
-  server. Tests can prove the ordering; only a started signal can prove no gap.
-- **Any end we didn't ask for restarts,** with jittered exponential delay (1 s to 60 s), then re-reads.
-  A reload also asks the transport for a fresh connection, because a retired connection answers
-  `SERVICE_UNAVAILABLE` to new subscribes.
-- **Reconnect** re-reads through the transport's `connection`, so applications stop wiring
-  `client.refetchActive()`. One that still does causes no extra request, since `fetch` joins a read in
-  flight.
-- **A read in flight can't absorb a stale mark.** Today `fetch` returns the one in flight, which may
-  predate the event. The mark must trigger another read afterwards.
+Built on the client:
+
+- **Replacement:** start the successor and retain the baseline for `live.settleMs` (default 250 ms;
+  250 ms with confirming reads disabled). One candidate generation per type bounds bursts. A failed
+  candidate leaves the baseline open. Refusals retain their back-off path. Capacity errors
+  (`SUBSCRIPTION_LIMIT_EXCEEDED`) use ordinary restart back-off, never the refusal window. At the
+  router's 32-operation connection limit both generations count: old coverage stays, newly uncovered
+  records poll, and replacements retry until there is capacity. No admission is inferred from silence.
+- **Stable chunks:** a key keeps its chunk until released; adding a key changes one chunk.
+- **Newly covered keys and first load:** read, subscribe, then one confirming re-read after
+  `live.settleMs` (250 ms), only for queries holding records that gained a stream. The same timer
+  serves both cases, with reads coalesced across types. Already streamed records need no extra read.
+  This adds one request per query on first load. `live.settleMs: false` disables confirming reads
+  and restores the previous request cost.
+- **Limits:** because of fact 2, bounded overlap and confirming reads narrow the gap and do not
+  close it against a real server. Only a started signal can prove admission. R3 list streams
+  before the read remain proposed. Versions reject older events and read responses. Identical
+  unversioned snapshots are harmless; different unversioned snapshots remain last-arrival-wins.
+- **Unexpected ends and reconnect:** restart with back-off and re-read through `live.connection`.
+  `readAgain` follows a read in flight with one more, coalescing repeated stale marks.
+- **Disposal and release:** disposal cancels timers and streams, including the overlap, and rejects
+  late events. Releasing the last holder removes coverage as before.
+
+Validation (2026-11-06): the key-set change with an event written during overlap passed
+8/8 runs with Node `ws` defaults and 8/8 with `allowSynchronousEvents: false`, against
+router 0.8.1 built from `graphql-orm-v0.90.1`. Every run received the event on both streams,
+updated the store before retirement, and retired the baseline. The subgraph was the owner's
+Node test subgraph, not a generated graphql-orm service. First-read confirmation, operation-limit
+failure, refusal, disposal and reconnect behavior were tested with mocks, not this real-router
+scenario. These runs do not prove subscription admission or general gap-free delivery.
 
 ### R2. What goes in a stream
 
-The compiler stops spreading fragments and builds the selection:
+**Built.** The compiler builds flattened projections by default; `liveSelection: "as-written"` retains legacy spreading:
 
 | Selected in a fragment | In the stream | Keeps it current |
 | --- | --- | --- |
@@ -171,12 +184,26 @@ The compiler stops spreading fragments and builds the selection:
 Without a server marker a scalar can't be classified, so each type compiles to two selections:
 **full** (keys, version and scalars) and **thin** (keys only). The client tries full. If the server
 refuses it with `INVALID_INPUT`, or a future dedicated code, it uses thin for the life of the client, and
-health shows `selection-refused`. Every event then means a re-read. This costs one doomed subscribe per
-type per client and never guesses: the server decides. `doctor` reports which types fall back, so a team
+health shows `selection-refused`. Every event then means a re-read. The type switches once per client and never guesses: the server decides. Concurrent full streams
+already sent before the refusal can also be refused; there is no admission acknowledgement to serialize
+them without delaying coverage. No further full streams are sent after the switch. `doctor` reports which types fall back, so a team
 can see and fix them. A marker removes the fallback and tells the compiler up front.
 
-Also fixed here: composite keys come from `<Type>KeyInput`, so a composite type needs no `keys`
-configuration, and `key` mode reads key fields from the stored record, not by decoding the `NodeId`.
+Server source checked in both 0.90.1 and main `9d1a482`: generated `RecordVersion` maps to the
+managed persisted column and its subscription policy. It is not refused on every entity. A computed
+hand-written version is refused, and relations lack the generated version on these versions.
+
+Holder stale marks and R4 confirming reads share `live.minRereadMs` (default 2000). They follow a
+read in flight, pause while inactive, and catch up once on return. 100 events in a second schedule
+two automatic reads. List membership invalidation remains R3, proposed.
+
+Validation: 16/16 acceptance runs against generated graphql-orm 0.90.1 and real router 0.8.1,
+8 per `ws` synchronous-event setting. Actual `INVALID_INPUT` full refusal, thin event, computed-field
+refresh, changed relation link, managed-version full event and composite key stream were exercised.
+Main was source-read, not run. Doctor fallback passes normally; strict mode fails a quiet thin probe.
+
+Also fixed here: a composite key's field names come from `<Type>KeyInput` and its order from a held record's
+server `NodeId`, by exact match, so a composite type needs no `keys` configuration, and `key` mode reads key fields from the stored record, not by decoding the `NodeId`.
 
 ### R3. Lists stay correct
 

@@ -13,7 +13,7 @@ const schema = buildSchema(`
   type TicketChangedEvent { Action: ChangeAction!, Ticket: Ticket }
   type Ticket { Id: ID!, Title: String!, RecordVersion: Int! }
 `)
-const compiled = compile(schema, [`fragment TicketTitle on Ticket @live { Title }`, `query TicketPage($Id: ID!) { Ticket(Id: $Id) { ...TicketTitle } }`])
+const compiled = compile(schema, [`fragment TicketTitle on Ticket @live { Title }`, `query TicketPage($Id: ID!) { Ticket(Id: $Id) { ...TicketTitle } }`], { liveSelection: "as-written" })
 const TicketPage = compiled.operations.TicketPage!
 const nodeId = encodeNodeId("Ticket", ["t1"])
 const FIVE_MINUTES = 5 * 60_000

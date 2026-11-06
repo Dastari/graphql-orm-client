@@ -1,3 +1,4 @@
+import { seedManualHolds } from "./fixtures.js"
 import { buildSchema } from "graphql"
 import { describe, expect, it } from "vitest"
 import { createClient, readFragment } from "../src/client.js"
@@ -31,7 +32,8 @@ function setup(live: Partial<LiveOptions> = {}, responder?: Parameters<typeof mo
   const client = createClient({
     network,
     live: {
-      artifacts: compiled.live,
+      minRereadMs: 1, artifacts: compiled.live,
+      settleMs: false,
       subscribe: (request, sink) => {
         subscribes += 1
         order.push(request.name)
@@ -165,6 +167,7 @@ describe("a stream that ends without the client asking", () => {
     it("isn't shortened by changes to the held records", async () => {
       const context = setup()
       await open(context)
+      seedManualHolds(context.client)
       const { live, subscriptions } = context
       liveWidget(context).sink.error(new Error("socket gone"))
       const subscribes = context.subscribes()
@@ -259,7 +262,8 @@ describe("a stream that ends without the client asking", () => {
           },
         },
         live: {
-          artifacts: compiled.live,
+          minRereadMs: 1, artifacts: compiled.live,
+          settleMs: false,
           subscribe: subscriptions.subscribe,
           debounceMs: 0,
           ...time.live,
@@ -309,7 +313,8 @@ describe("a stream that ends without the client asking", () => {
           execute: () => new Promise((resolve) => answers.push(() => resolve({ data: { Ticket: ticket("old", 1) } }))),
         },
         live: {
-          artifacts: compiled.live,
+          minRereadMs: 1, artifacts: compiled.live,
+          settleMs: false,
           subscribe: subscriptions.subscribe,
           debounceMs: 0,
           ...time.live,

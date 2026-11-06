@@ -69,12 +69,12 @@ The composite Slot is excluded from generated GraphQL mutations (repository writ
 seed it). Otherwise the generated placeholder `gomCompositeKeyWritesUnavailable`
 has no operation catalogue entry and the router rejects the descriptor.
 
-The current compiler selects NodeId in Widget streams, which 0.90.1 refuses with
-`next { errors: [{ extensions: { code: "INVALID_INPUT" } }] }`, then `complete`.
-The admission test preserves this reproduction. Recovery uses a hand-adjusted
-subscription with NodeId removed to test transport recovery independently; the
-normal query still uses the real NodeId and managed version. No `src/` fix is
-included. These tests do not prove an unmodified generated NodeId stream works.
+A hand-written stream selecting NodeId is refused with `next { errors: [{ extensions: { code: "INVALID_INPUT" } }] }`,
+then `complete`. Generated streams don't select it, and recovery runs on the generated stream unchanged.
+
+Introspection through the router lists `SlotKeyInput` as `Name, Site`, while the service's SDL and its NodeId use
+`Site, Name`. The suite pins this and proves that a real composite-key event reaches its record, written through
+the service's `/slot` route with the repository's `update_by_key`.
 
 ## Local measurements
 

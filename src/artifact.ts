@@ -135,6 +135,8 @@ export interface OperationArtifact<TData = unknown, TVariables = Record<string, 
   readonly selections: readonly Selection[]
   /** Every field the response contains, fragments inlined: what the normaliser walks. */
   readonly normalization: readonly Selection[]
+  /** Types whose full stream omits fields selected by this query. Absent in legacy artifacts. */
+  readonly liveReread?: readonly string[]
   /** Key fields per concrete type, in primary-key order. */
   readonly keys: Readonly<Record<string, readonly string[]>>
   /** Record-version field per type, where the type has one. */
@@ -168,8 +170,12 @@ export interface LiveArtifact {
   readonly keyFields: readonly string[]
   /** The field also works without a key: past the `key`-mode limit, use one stream of the type. */
   readonly keyOptional?: boolean
-  /** The subscription to run, selecting every `@live` fragment on the type. */
+  /** The full subscription projection, or legacy fragment-spreading operation. */
   readonly operation: OperationArtifact
+  /** Keys-only projection; absent in legacy artifacts. */
+  readonly thinOperation?: OperationArtifact
+  /** Fragments requiring holder re-reads even on full events. */
+  readonly rereadFragments?: readonly string[]
 }
 
 export type Artifact = OperationArtifact | FragmentArtifact | LiveArtifact

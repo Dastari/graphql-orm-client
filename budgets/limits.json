@@ -1,0 +1,185 @@
+{
+  "measuredOn": "2026-11-06",
+  "budgets": {
+    "storeWriteMs": {
+      "max": 500,
+      "measured": 23.158,
+      "margin": "Shared-runner allowance; median of five full 10,000-row normalizations.",
+      "localRunRange": [
+        21.215,
+        24.781
+      ]
+    },
+    "storeReadMs": {
+      "max": 300,
+      "measured": 7.833,
+      "margin": "Shared-runner allowance; median of five 10,000-fragment traversals.",
+      "localRunRange": [
+        5.757,
+        7.95
+      ]
+    },
+    "storeCollectMs": {
+      "max": 300,
+      "measured": 4.14,
+      "margin": "Shared-runner allowance; median of five full unretained collections.",
+      "localRunRange": [
+        3.647,
+        4.857
+      ]
+    },
+    "storeHeapBytes": {
+      "max": 24000000,
+      "measured": 8196336,
+      "margin": "Retained normalized graph after forced GC; excludes the preallocated input.",
+      "localRunRange": [
+        8194704,
+        8216240
+      ]
+    },
+    "storeAfterGCBytes": {
+      "max": 4000000,
+      "measured": 14960,
+      "margin": "Allows V8 bookkeeping noise while catching retention of the full graph.",
+      "localRunRange": [
+        8752,
+        25224
+      ]
+    },
+    "burstMs": {
+      "max": 750,
+      "measured": 32.552,
+      "margin": "100 events over one simulated second; median of five wall-time runs on shared runners.",
+      "localRunRange": [
+        30.552,
+        36.359
+      ]
+    },
+    "burstNotifications": {
+      "max": 100,
+      "measured": 100,
+      "margin": "Exactly one per changed row, no notification amplification; also asserted equal to 100.",
+      "localRunRange": [
+        100,
+        100
+      ]
+    },
+    "compileMs": {
+      "max": 30000,
+      "measured": 7580.862,
+      "margin": "About four times the local median for shared CI runners; includes schema construction, validation and artifacts.",
+      "localRunRange": [
+        7542.151,
+        8122.624
+      ]
+    },
+    "mainRawBytes": {
+      "max": 50000,
+      "measured": 39582,
+      "margin": "Minified standalone entry closure, external peers; permits modest runtime growth.",
+      "localRunRange": [
+        39582,
+        39582
+      ]
+    },
+    "mainGzipBytes": {
+      "max": 17000,
+      "measured": 13077,
+      "margin": "Level-9 gzip of the same standalone closure.",
+      "localRunRange": [
+        13077,
+        13077
+      ]
+    },
+    "reactRawBytes": {
+      "max": 10000,
+      "measured": 6969,
+      "margin": "Standalone React closure including shared client code; peers external.",
+      "localRunRange": [
+        6969,
+        6969
+      ]
+    },
+    "reactGzipBytes": {
+      "max": 4000,
+      "measured": 2834,
+      "margin": "Level-9 gzip of the React closure.",
+      "localRunRange": [
+        2834,
+        2834
+      ]
+    },
+    "windows1HeapBytes": {
+      "max": 25000000,
+      "measured": 9048332,
+      "margin": "10,000 rows per real window; permits browser/V8 version variance.",
+      "localRunRange": [
+        9047648,
+        9049680
+      ]
+    },
+    "windows3HeapBytes": {
+      "max": 75000000,
+      "measured": 23083224,
+      "margin": "Three independent 10,000-row clients.",
+      "localRunRange": [
+        23082212,
+        23085396
+      ]
+    },
+    "windows6HeapBytes": {
+      "max": 150000000,
+      "measured": 43677244,
+      "margin": "Six independent 10,000-row clients.",
+      "localRunRange": [
+        43675372,
+        43678796
+      ]
+    },
+    "windows1Sockets": {
+      "max": 1,
+      "measured": 1,
+      "margin": "Exactly one socket per window; also checked during readiness.",
+      "localRunRange": [
+        1,
+        1
+      ]
+    },
+    "windows3Sockets": {
+      "max": 3,
+      "measured": 3,
+      "margin": "Exactly one socket per window.",
+      "localRunRange": [
+        3,
+        3
+      ]
+    },
+    "windows6Sockets": {
+      "max": 6,
+      "measured": 6,
+      "margin": "Exactly one socket per window.",
+      "localRunRange": [
+        6,
+        6
+      ]
+    },
+    "windowMarginalHeapBytes": {
+      "max": 25000000,
+      "measured": 7017366,
+      "margin": "Maximum marginal JS heap across 1\u21923 and 3\u21926 windows; browser variance allowance.",
+      "localRunRange": [
+        7017090,
+        7017858
+      ]
+    }
+  },
+  "machine": {
+    "date": "2026-11-06T22:20:24.650Z",
+    "node": "v24.13.1",
+    "os": "Linux 6.17.13-3-pve",
+    "cpu": "AMD Ryzen 9 9955HX 16-Core Processor",
+    "cpus": 16,
+    "chromium": "158.0.8127.18"
+  },
+  "baselineMethod": "Median of five complete command runs; each timing within each command is itself a median of five samples. Window heap is a median of five independent browser runs."
+}

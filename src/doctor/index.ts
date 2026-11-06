@@ -16,7 +16,7 @@ import type { CompileResult } from "../compiler/compile.js"
  * - `invalid`: the stream's document doesn't validate against the served schema.
  * - `unknown`: it couldn't be tested. Never counted as passing.
  */
-export type StreamVerdict = "admitted" | "not-refused" | "refused" | "missing" | "invalid" | "unknown"
+export type StreamVerdict = "fallback-admitted" | "fallback-not-refused" | "admitted" | "not-refused" | "refused" | "missing" | "invalid" | "unknown"
 
 export interface StreamReport {
   readonly typename: string
@@ -95,19 +95,24 @@ export function assertReadOnly(text: string): void {
   }
 }
 
-async function readServedSchema(options: DoctorOptions): Promise<GraphQLSchema> {
+/** Read only introspection, shared by doctor and schema pull. */
+export async function readServedSchema(options: Pick<DoctorOptions, "url" | "headers" | "fetch">): Promise<GraphQLSchema> {
   const query = getIntrospectionQuery()
   assertReadOnly(query)
   const send = options.fetch ?? globalThis.fetch
-  const response = await send(options.url, {
+  let response: Response
+  try { response = await send(options.url, {
     method: "POST",
     headers: { "content-type": "application/json", accept: "application/graphql-response+json, application/json;q=0.9", ...options.headers },
     body: JSON.stringify({ query }),
-  })
+    signal: AbortSignal.timeout(10000),
+  }) } catch { throw Object.assign(new Error("Introspection failed: server unreachable"), { schemaCode: "server unreachable", exitCode: 3 }) }
   const body = (await response.json().catch(() => null)) as { data?: IntrospectionQuery; errors?: { message: string }[] } | null
+  if ([401, 403, 4401].includes(response.status) || body?.errors?.some((error) => ["401", "403", "4401", "UNAUTHENTICATED", "UNAUTHORIZED", "FORBIDDEN"].includes(String((error as { extensions?: { code?: unknown } }).extensions?.code))))
+    throw Object.assign(new Error("Introspection failed: authentication refused"), { schemaCode: "authentication refused", exitCode: 4 })
   if (body?.data?.__schema) return buildClientSchema(body.data)
   const reason = body?.errors?.map((error) => error.message).join("; ") ?? `the endpoint answered ${response.status}`
-  throw new Error(`Introspection failed: ${reason}`)
+  throw Object.assign(new Error(`Introspection failed: ${reason}`), { schemaCode: "introspection unavailable or disabled", exitCode: 5 })
 }
 
 function fragmentsByType(compiled: CompileResult): Map<string, string[]> {
@@ -295,15 +300,25 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
   }
   const outcomes = await probeStreams(probes, options)
   for (const { artifact, key } of pending) {
+    let outcome = outcomes.get(key) ?? { verdict: "unknown" as const, code: null, detail: "not tested" }
+    if (outcome.verdict === "refused" && outcome.code === "INVALID_INPUT" && artifact.thinOperation) {
+      const operation = artifact.thinOperation
+      const thin = await probeStreams([{ key, name: operation.name, query: operation.text, variables: variablesFor(artifact)! }], options)
+      outcome = thin.get(key) ?? { verdict: "unknown", code: null, detail: "thin not tested" }
+      if (outcome.verdict === "admitted" || outcome.verdict === "not-refused") outcome = {
+        ...outcome, verdict: outcome.verdict === "admitted" ? "fallback-admitted" : "fallback-not-refused",
+        detail: `full refused INVALID_INPUT; thin: ${outcome.detail}`,
+      }
+    }
     reports.push({
       typename: artifact.typename,
       operation: artifact.operation.name,
       fragments: fragments.get(artifact.typename) ?? [],
-      ...(outcomes.get(key) ?? { verdict: "unknown" as const, code: null, detail: "not tested" }),
+      ...outcome,
     })
   }
   reports.sort((a, b) => a.typename.localeCompare(b.typename))
-  const failing: readonly StreamVerdict[] = options.strict ? ["refused", "missing", "invalid", "unknown", "not-refused"] : ["refused", "missing", "invalid", "unknown"]
+  const failing: readonly StreamVerdict[] = options.strict ? ["refused", "missing", "invalid", "unknown", "not-refused", "fallback-not-refused"] : ["refused", "missing", "invalid", "unknown"]
   return {
     url: options.url,
     servedTypes: schema ? Object.keys(schema.getTypeMap()).length : null,

@@ -1,6 +1,6 @@
 ---
 name: graphql-orm-client-live
-description: Keep graphql-orm-client data live with @live fragments and generated Changed subscriptions, back off from refused streams, order writes by record version, use polling fallbacks, draw live status (useLiveHealth, liveHealth), check streams against a real router (doctor) and diagnose stale data.
+description: Use full/thin stream projections and bounded holder re-reads (minRereadMs); Keep graphql-orm-client data live with @live fragments and generated Changed subscriptions, overlap replacements and confirm first reads (settleMs), back off from refused streams, order writes by record version, use polling fallbacks, draw live status (useLiveHealth, liveHealth), check streams against a real router (doctor) and diagnose stale data.
 ---
 
 # Live data and cache policy
@@ -12,9 +12,18 @@ Status: early alpha. Check the installed `docs/design.md` and `docs/graphql-orm-
 - Mark a fragment `@live` when its fields should update while on screen. The live layer
   subscribes to the type's generated `<Entity>Changed` events for the records that are
   retained. Do not write subscription operations by hand for this.
-- A `@live` fragment may select only persisted scalars of its type. A relation or computed field
-  in any `@live` fragment makes the server refuse the type's whole stream, and the build doesn't
-  catch it. Move those fields to a fragment without `@live`, and refresh them with a poll or a refetch.
+- A `@live` fragment can include relations and computed fields. New generation flattens keys,
+  version and scalars without arguments; it omits relations/composites, argument scalars and NodeId.
+  Full refused with INVALID_INPUT switches to keys-only thin for this client. Health retains
+  `selection-refused`; thin refusal uses normal back-off. Every thin event, and full events for
+  holders selecting omitted fields, schedule re-reads, which catch changed relation links too.
+- Health reason `identity-mismatch` means a server `NodeId` doesn't match the key fields in any order, so no stream
+  opens and holders poll. Check `keys` and the key fields' types. Composite key order needs no configuration.
+- Automatic stale, reconnect and confirming reads share `live.minRereadMs` (default 2000): leading
+  and trailing reads, following an in-flight read and paused while `polling.isActive()` is false.
+  Missing versions remain last-arrival-wins. `liveSelection: "as-written"` preserves legacy stream
+  text; old artifacts have no thin fallback. Doctor reports fallback separately; quiet thin is
+  still uncertain and fails `--strict`.
 - `@live` updates records already held. A new row, a removed row or a changed total needs a refetch
   (`refetchQueries`) or a poll.
 - Live delivery needs the server to write that state through the ORM. If a type's state is
@@ -27,6 +36,16 @@ Status: early alpha. Check the installed `docs/design.md` and `docs/graphql-orm-
   The client then selects and orders by the generated `RecordVersion` with no configuration.
   When the version field has a read policy some users fail, or isn't available to
   subscriptions, set `versions: { Type: null }` so selecting it doesn't fail their reads.
+
+- The first load reads, subscribes, then confirms with one more read after `live.settleMs` (default
+  250 ms). Newly streamed records use the same confirming read; queries already covered do not.
+  This adds a request per query on first load. Set `live: { settleMs: false }` to restore the previous
+  request cost. There is no subscribe acknowledgement: the delay narrows the gap, it cannot close
+  it against a real server. R3's list streams before reads are still proposed.
+- Stream replacements overlap for the settle delay (250 ms with confirming reads disabled), keeping
+  baseline coverage if the candidate fails. Keys keep stable chunks. Router capacity errors use
+  ordinary restart back-off, never a five-minute refusal window. At full capacity replacements
+  wait for room while old coverage stays and newly uncovered records use the polling fallback.
 
 - A subscription document of the application's own (not a `@live` fragment's) runs through
   `client.subscribe` or `useSubscription`, on the same `live.subscribe` transport. Its events are
@@ -54,7 +73,7 @@ Status: early alpha. Check the installed `docs/design.md` and `docs/graphql-orm-
   holding it poll meanwhile (`polling.liveFallbackMs`, 30 s) and read when the window ends, and it starts
   working by itself once the server accepts it. `live: { refusalBackoff: { ms, types: { Type: ms | false } } }`
   changes the window, and `false` means the ordinary back-off instead, for a type or for all. A schema reload,
-  lost events, `SERVICE_UNAVAILABLE`, `SUBGRAPH_UNAVAILABLE` and a transport failure are never refusals. Don't
+  lost events, `SERVICE_UNAVAILABLE`, `SUBGRAPH_UNAVAILABLE`, `SUBSCRIPTION_LIMIT_EXCEEDED` and a transport failure are never refusals. Don't
   wrap `live.subscribe` to build this.
 - Paged tables (`usePagedQuery`) keep only the visible page live; changing page moves the
   subscription to the new page's rows.

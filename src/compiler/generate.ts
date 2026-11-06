@@ -69,7 +69,7 @@ export function generate(schema: GraphQLSchema, sources: readonly string[], opti
   }
   if (problems.length) throw new CompileError(problems)
 
-  const compiled = compile(schema, unique, options)
+  const compiled = compile(schema, unique, { ...options, onWarning: options.onWarning ?? console.warn })
   const scalars = { ...BUILT_IN_SCALARS, ...options.scalars }
   const named = new Map<string, string>()
 

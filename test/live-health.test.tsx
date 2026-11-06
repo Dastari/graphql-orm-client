@@ -24,7 +24,7 @@ const compiled = compile(schema, [
   `fragment NoteBody on Note @live { Body }`,
   `query TicketPage($Id: ID!) { Ticket(Id: $Id) { ...TicketTitle } }`,
   `query NotePage($Id: ID!) { Note(Id: $Id) { ...NoteBody } }`,
-])
+], { liveSelection: "as-written" })
 const TicketPage = compiled.operations.TicketPage!
 const NotePage = compiled.operations.NotePage!
 const ticket = (Title: string, RecordVersion = 1, Id = "t1") => ({ __typename: "Ticket", Id, Title, RecordVersion })
@@ -46,7 +46,7 @@ function setup(options: { live?: Partial<LiveOptions> | false; polling?: ClientO
     polling: { ...clock.polling, ...options.polling },
     ...(options.live === false
       ? {}
-      : { live: { artifacts: compiled.live, subscribe: streams.subscribe, debounceMs: 0, onDiagnostic: (diagnostic) => diagnostics.push(diagnostic), ...clock.live, ...options.live } }),
+      : { live: { artifacts: compiled.live, settleMs: false, subscribe: streams.subscribe, debounceMs: 0, onDiagnostic: (diagnostic) => diagnostics.push(diagnostic), ...clock.live, ...options.live } }),
   })
   const open = async (id = "t1") => {
     const query = client.watchQuery(TicketPage, { Id: id })
@@ -132,7 +132,7 @@ describe("client.liveHealth", () => {
       const { client, streams, open } = setup({ polling: { liveFallbackMs: null } })
       await open()
       streams.one("LiveTicket").refuse("SUBSCRIPTION_LIMIT_EXCEEDED")
-      expect(client.liveTypeHealth("Ticket")).toMatchObject({ state: "refused", reason: "over-cap" })
+      expect(client.liveTypeHealth("Ticket")).toMatchObject({ state: "connecting", reason: "over-cap" })
       client.dispose()
     })
   })
@@ -143,9 +143,9 @@ describe("client.liveHealth", () => {
     await open("t1")
     await open("t2")
     expect(streams.find("LiveTicket")).toHaveLength(2)
-    streams.find("LiveTicket")[0]!.refuse("SUBSCRIPTION_LIMIT_EXCEEDED")
+    streams.find("LiveTicket")[0]!.refuse("INVALID_INPUT")
     streams.find("LiveTicket")[0]!.unavailable()
-    expect(client.liveTypeHealth("Ticket")).toMatchObject({ state: "refused", reason: "over-cap", code: "SUBSCRIPTION_LIMIT_EXCEEDED" })
+    expect(client.liveTypeHealth("Ticket")).toMatchObject({ state: "refused", reason: "selection-refused", code: "INVALID_INPUT" })
     await clock.tick(5000)
     expect(streams.find("LiveTicket")).toHaveLength(2)
     expect(client.liveTypeHealth("Ticket")).toMatchObject({ state: "unconfirmed", reason: null, code: null })

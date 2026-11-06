@@ -99,6 +99,24 @@ Masking still applies at the adapter boundary: a query that spreads the fragment
 fields without `readFragment`. Per-component fragments remain the default for screens that
 render records one component at a time.
 
+## Schema snapshots
+
+`graphql-orm-client schema pull --url <router>` uses only introspection and writes the configured
+`schema` path as lexicographically sorted SDL. A SHA-256 of its exact bytes lives beside it in
+`<schema>.sha256`; a sidecar keeps the SDL usable by ordinary GraphQL tools. Commit both files.
+`schema pull --check` compares both without writing and names differing paths. Unreachable servers
+are unknown, never a match. Credentials use `--token-env NAME` or repeated
+`--header-env name=NAME`; literal `--token`, `--header` and `--password` are refused.
+
+Exit codes: 0 success, 1 drift or stale output, 2 bad usage (as in doctor), 3 unreachable,
+4 authentication refused (HTTP 401/403 or GraphQL 401/403/4401), 5 introspection unavailable or disabled.
+Server error text is suppressed by schema pull to avoid echoing credentials.
+
+Once the sidecar exists, generated modules include the snapshot hash. `generate --check` verifies
+both snapshot integrity and generated provenance, even for schema changes that leave artifact types
+unchanged. Fix snapshot integrity with `schema pull --url <router>`, then run `generate`.
+Projects without a sidecar retain the existing generation and check behavior.
+
 ## Compiler
 
 `graphql-orm-client generate` reads every `graphql(...)` document in the application. It uses
@@ -113,7 +131,7 @@ artifact per root:
 - **Fragment readers.** One per fragment: the fields to read from the store and the child
   fragment references to hand down.
 - **Live subscription document.** For roots that contain `@live` fragments, a subscription
-  whose selection is the union of those fragments for each type.
+  with full and keys-only projections for each type; legacy generation can retain fragment spreading.
 - **Types.** TypeScript result, variable and fragment-reference types.
 
 The compiler validates the documents against the router's schema snapshot. A fragment on a
@@ -194,16 +212,42 @@ variables within the same hold scope (a new search term on the same vendor), as
 
 ## Live layer
 
+Streams in `keys` mode keep each key in its chunk until released. Replacing a stream starts
+its successor first and retains the baseline for a bounded overlap (`live.settleMs`, default
+250 ms; 250 ms when confirming reads are disabled). Only one candidate generation per type
+is open at a time. A failed candidate leaves the baseline open; genuine refusals still back off.
+`SUBSCRIPTION_LIMIT_EXCEEDED` uses ordinary restart back-off, never the five-minute refusal window.
+The router counts both old and new operations against its connection limit (default 32 in router
+0.8.1 at graphql-orm-v0.90.1). At a full connection the old coverage stays, newly uncovered records
+use the polling fallback, and replacement retries until capacity becomes available. Disable that
+fallback only if the application accepts stale uncovered records.
+
+The first load is **read, subscribe, confirming read**, because keys are unknown before the read
+and R3's list streams are not built. Queries whose records gained a stream read once more after
+`live.settleMs` (default 250 ms). These reads also cover newly subscribed keys during replacement,
+coalesce across types, and use `readAgain`: a read in flight is followed by one more. Queries whose
+records already have streams do not receive a confirming read. This adds a request per query on
+first load. Set `live: { settleMs: false }` to disable these reads and restore the previous request
+cost; overlap and reconnect recovery remain enabled.
+
+**This narrows the gap; it does not close it against a real server.** There is no per-subscribe
+acknowledgement, and waiting a bounded time proves nothing about admission. A server started signal
+is still needed (see the contract). Versioned writes reject older snapshots delivered by overlapping
+streams or reads. An identical unversioned snapshot is harmless, but without versions the last write
+to arrive wins, so a stale confirming read can overwrite an event. Disposal cancels overlap and
+confirming timers, closes both generations, and prevents late event writes.
+
 1. **Collect.** After a root's query resolves, the live layer collects the `NodeId`s of
    records read by `@live` fragments that are still retained.
 2. **Subscribe.** It subscribes to each type's generated `<Entity>Changed` subscription for
-   those keys, with the union selection from the compiler (see [Live modes](#live-modes)). That
-   selection is the fragments as written, plus `NodeId` and `RecordVersion`. The server refuses the
-   whole stream if any field in it isn't a persisted, subscribable scalar, so one relation or computed
-   field in one fragment stops updates for every fragment of the type. See R2.
-3. **Write.** It writes each event's entity into the store, ordered by version. A `PROPAGATED`
-   event is written like any other. Proposed: refetching the parent's fields computed from its
-   children.
+   those keys, with a flattened full projection: keys, version and scalars without arguments.
+   Relations, composite fields and `NodeId` are excluded. An `INVALID_INPUT` refusal switches the
+   type to its keys-only thin projection for the lifetime of this client; thin refusal uses the
+   normal refusal window. Health retains reason `selection-refused` while using thin.
+3. **Write and mark stale.** An event writes what it carries, ordered by version. A holder whose
+   fragments select omitted fields re-reads, including when a relation link changes. Every thin
+   event re-reads holders. Without a carried version, writes remain last-arrival-wins.
+
 4. **Recover.** graphql-orm (0.88) ends a `Changed` stream that lost events with one error,
    `SUBSCRIPTION_CONTINUITY_LOST` (the subscriber fell behind the event channel) or
    `SUBSCRIPTION_SOURCE_CLOSED`. After a random delay below `live.resyncJitterMs` (default
@@ -235,6 +279,32 @@ by name. Types with `@live` fragments but no usable subscription are listed in
 `compile(...).liveUnavailable`, and their holders must poll. `client.live.status()` reports
 per-type counts, including overflow beyond the `key`-mode limit. A `DELETED` event removes the
 record, and any query that showed it reads again.
+
+### Stream projections and re-read scheduling
+
+New generation emits `LiveArtifact.operation` (full), `thinOperation` (keys only), and
+`rereadFragments` (fragments selecting fields the full stream omits). Operations also carry
+`liveReread` for omitted fields selected directly in the query. Streams never select
+`NodeId`; the store encodes identity from complete key fields, using shared NodeId vectors.
+Composite keys take their field names from `<Type>KeyInput`, when all of its fields are on the type. The
+order can't come from there: introspection through router 0.8.1 at `graphql-orm-v0.90.1` lists `SlotKeyInput` as
+`Name, Site`, while the service's SDL and its `NodeId` use `Site, Name`. So the client finds the order by exact
+match against a held record's server `NodeId`, without decoding it, before opening a stream.
+
+`liveSelection: "as-written"` in generator config preserves previous subscription text. Generation
+warns, naming each fragment and field the new projection would exclude. Old artifacts without
+`thinOperation` retain their subscription and refusal behavior; no artifact version bump is needed.
+
+Automatic stale, reconnect and R4 confirming reads share one per-query scheduler. It runs a leading
+read and one trailing read when more marks arrive, no faster than `live.minRereadMs` (default 2000).
+A mark during a read follows it with one more, respecting the interval. While `polling.isActive()`
+is false it waits, checking every 100 ms, then runs once on return. Closing the query cancels pending
+work. Manual refetch and interval polls retain their own behavior. R3 list invalidation is proposed.
+
+In graphql-orm 0.90.1 and main `9d1a482`, `validate_subscription_selection` maps generated
+`RecordVersion` to the managed persisted column before validation. Its subscription policy still
+applies. A hand-written computed `RecordVersion` is refused. It is incorrect to say all versions
+are refused: full does not degrade every managed entity to thin. `NodeId` has no such mapping.
 
 ### Ended streams
 
@@ -301,7 +371,7 @@ with no live layer. `client.subscribeLiveHealth(listener)` and `useLiveHealth(ty
 | `unavailable` | No stream, after three restarts in a row or for good, and nothing refreshes the records |
 | `idle` | Nothing is held |
 
-- Each type also has `reason` (`no-live-layer`, `no-stream`, `selection-refused`, `refused`, `over-cap`,
+- Each type also has `reason` (`no-live-layer`, `no-stream`, `selection-refused`, `refused`, `identity-mismatch`, `over-cap`,
   `socket-down`, `stream-ended`, `schema-reload`), the server's `code`, `held`, `pollMs`, `lastEventAt`,
   `lastReadAt`, `retryAt` and the `fragments` held. A null time means it hasn't happened, not that it was
   long ago. `pollMs` is null if any query holding the type has no poll. `worst` is the worst state of any type.
@@ -310,6 +380,7 @@ with no live layer. `client.subscribeLiveHealth(listener)` and `useLiveHealth(ty
   that recovers by itself reads the queries holding live records again, which `graphqlWsSubscribe` leaves to
   the application. A stream on a socket that's down is `connecting`.
 - `selection-refused` means the code was `INVALID_INPUT`, which the server also uses for other invalid input.
+- `identity-mismatch` means a record's server `NodeId` isn't what its key fields encode to in any order. A stream event has only key fields to identify its record, so its events could never reach the record: the type opens no stream and its holders poll. Key order alone doesn't cause it: the served schema doesn't give that order (introspection through router 0.8.1 at `graphql-orm-v0.90.1` lists `SlotKeyInput` as `Name, Site` for a key the server encodes as `Site, Name`), so the client finds it by exact match against a record's `NodeId`, without decoding it.
 - Listeners hear about a change once per tick, and a new `lastEventAt` alone at most once a second.
 - `live.onDiagnostic` is called once per fragment and reason when a `@live` fragment settles into `refused`,
   `unavailable` or `polling`, naming the fragment. It defaults to `console.warn`, except where
@@ -322,7 +393,9 @@ with no live layer. `client.subscribeLiveHealth(listener)` and `useLiveHealth(ty
 each one against the schema the router serves, and opens each stream on one connection for up to `--stream-ms`.
 A `Keys` stream opens with an empty list, which graphql-orm admits and which matches no rows; an optional `Key`
 opens with none, so it can receive events it ignores. A required `Key` can't be opened without naming a record, so
-it reports `unknown`. Only an event earns `admitted`: a quiet stream is `not-refused`. `SUBSCRIPTION_SCHEMA_RELOAD`,
+it reports `unknown`. Only an event earns `admitted`: a quiet stream is `not-refused`. Full refused with `INVALID_INPUT`
+is retried using thin: the verdict is `fallback-admitted` or `fallback-not-refused`. Working fallback
+passes normally; `--strict` also fails `fallback-not-refused`, preserving the uncertainty rule. `SUBSCRIPTION_SCHEMA_RELOAD`,
 `SERVICE_UNAVAILABLE` and `SUBSCRIPTION_LIMIT_EXCEEDED` report `unknown`, not `refused`. One function (`assertReadOnly`)
 guards everything it sends. Credentials come only from named environment variables and aren't in its output.
 
@@ -614,3 +687,66 @@ fragments.
   cannot be verified right now). The store keeps what it has and does not treat the failure as the
   record being absent: only a null result without errors means the record is denied or missing
   (`refetchFragment`). Proposed: marking such a record stale and refetching it later.
+
+## Several windows (R19) and budgets (R22)
+
+R19 keeps one client, store and graphql-ws socket per window. R22 is built as
+`pnpm budgets`, separate from `pnpm check`, with a separate CI workflow.
+[The budget sources](../budgets/README.md) describe the workloads; every threshold,
+baseline and reason for its margin is in [limits.json](../budgets/limits.json).
+
+**Measurement from one machine, 2026-11-06:** AMD Ryzen 9 9955HX, 16 available logical CPUs,
+64 GiB RAM, Linux 6.17.13-3-pve, Node 24.13.1, Playwright 1.65.0,
+headless Chromium 158.0.8127.18. These are local measurements, not Actions results.
+Five complete runs passed, with no observed flakiness. The table gives the median across
+those runs; each timing in each run is itself the median of five samples.
+
+| Workload | Measured | Limit |
+| --- | ---: | ---: |
+| 10,000-row writes (ms) | 23.158 | 500 |
+| 10,000 fragment reads (ms) | 7.833 | 300 |
+| 10,000-row collection (ms) | 4.14 | 300 |
+| Store retained heap (bytes) | 8,196,336 | 24,000,000 |
+| Heap after collection (bytes) | 14,960 | 4,000,000 |
+| 100-event burst wall time (ms) | 32.552 | 750 |
+| 100-event subscriber notifications | 100 | 100 |
+| 45,000-line schema + 250 documents (ms) | 7,580.862 | 30,000 |
+| Main standalone raw bundle (bytes) | 39,582 | 50,000 |
+| Main standalone gzip bundle (bytes) | 13,077 | 17,000 |
+| React standalone raw bundle (bytes) | 6,969 | 10,000 |
+| React standalone gzip bundle (bytes) | 2,834 | 4,000 |
+
+Bundles come from the actual built ESM entries, bundled and minified with esbuild; raw means
+uncompressed bundle bytes, gzip uses level 9. React and GraphQL peers are external.
+Each standalone entry counts all its reachable package modules once, including shared code;
+a module reachable from both entries counts in both totals. These totals should not be added
+to estimate an application importing both. The React entry does not pull in the entire client.
+The compiler fixture has 125 root queries and 125 live fragments, with 500 neutral entity types.
+The live burst uses the shipped schema-validating test kit and a simulated second (100 steps of
+10 ms), exercising the real live layer and 100 fragment subscribers; it is not a socket throughput
+or React rendering benchmark.
+
+For the window measurement, a page served from loopback opens pop-out tool windows with
+`window.open`. Each window holds an independent 10,000-row query/store and graphql-ws client.
+A **test-owned ws 8.22.1 server**, not a graphql-orm service or router, acknowledges each socket;
+every socket must have started a live subscription before measurement.
+CDP forces garbage collection and measures retained JS heap, counting each distinct V8 isolate
+once. All windows shared one isolate on this machine; summing per-target heap would overcount it.
+
+| Windows open (main + pop-outs) | Rows per window | Total retained JS heap (bytes) | Open sockets |
+| ---: | ---: | ---: | ---: |
+| 1 | 10,000 | 9,048,332 | 1 |
+| 3 | 10,000 | 23,083,224 | 3 |
+| 6 | 10,000 | 43,677,244 | 6 |
+
+The larger marginal cost of the 1→3 and 3→6 steps was **7,017,366 JS bytes
+and one socket per additional window**. This supports keeping the R19 decision for now.
+It includes page/runtime, query snapshots and store allocations; it excludes native renderer
+memory, browser RSS, GPU memory and server cost. It does not establish a bound on a full
+application or on other devices.
+
+The compiler is the largest time cost: local run medians ranged from
+7,542.151 to 8,122.624 ms.
+The 30 s limit allows about four times the local median on shared runners.
+A missing browser fails with "window budget not run"; an explicit `--skip-window` reports
+incomplete and never counts as a pass. CI installs Chromium and does not skip.

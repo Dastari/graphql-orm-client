@@ -17,22 +17,13 @@ can't be noticed, the design isn't done.
 ## Verified gaps in the current code
 
 - `@live` is opt-in per fragment, so it can be forgotten.
-- The compiler spreads a `@live` fragment into the stream unchanged, relations and computed fields
-  included. The build passes and the server can refuse the stream at runtime.
 - `@live` only updates records already held. New rows, removed rows and changed totals need a poll.
 - `@live` on a type with no stream only adds it to `liveUnavailable`, and falls back to polling.
 - Nothing checks where a query is written, and `pollMs` is one option away.
-- The compiler adds `NodeId` to every stream selection on a type that has it, and `RecordVersion`
-  where it exists. graphql-orm 0.91.1 refuses `NodeId` on a `Changed` payload, and a hand-written
-  `RecordVersion` (R2).
 - A stream narrowed by `Keys` or `Key` can't see a new row, or a row moving into a filtered list, so
   R3 needs a stream that isn't narrowed.
 - `DELETED` reaches subscribers only when the host grants `can_read_deleted_preimage`, so a row deleted
   elsewhere usually sends nothing (R3, R16).
-- `key` mode decodes the `NodeId` to build the `Key` argument (`keyValue` in `src/live.ts`), though
-  `AGENTS.md` says clients never parse it.
-- Composite keys on a type with `NodeId` still need `keys` configuration to go live, though the
-  schema's `<Type>KeyInput` names them.
 
 ## 1. Staying live without thinking about it
 
@@ -42,12 +33,16 @@ applications migrate one area at a time, and goes away at 1.0. Accepted by the o
 and R6 hold; check with the owner before turning it on.
 *Acceptance:* a new fragment with no directive updates from a stream.
 
-**R2. The compiler decides what goes in a stream.** Only fields the stream can carry are selected:
-scalars and relation keys. A related record is kept current by its own stream. Computed and
-federated fields are refreshed by a refetch of the record, so they need the server to mark them
-(contract table below).
-*Acceptance:* the natural row fragment, with a relation and a computed field, compiles to a stream
-that the server accepts, and all of its fields stay current.
+**R2. The compiler decides what goes in a stream. Built.** Full projections carry keys,
+version and scalars without arguments; thin projections carry keys only. Relations/composites and
+`NodeId` never enter a new stream. `INVALID_INPUT` switches a type to thin for this client, with
+health reason `selection-refused`. Omitted fields and changed relation links refresh through bounded
+holder re-reads (`live.minRereadMs`, default 2000), including R4 confirmation. Composite key names come
+from `<Type>KeyInput` and their order from a record's `NodeId`; key arguments read stored fields. `liveSelection: "as-written"` and old
+artifacts preserve legacy selection/refusal behavior. A server marker remains proposed, not required.
+*Acceptance:* the natural row fragment with a relation and computed field falls back to an accepted
+thin stream and refreshes all fields. Verified 8/8 runs per `ws` setting (16 total), against generated
+graphql-orm 0.90.1 and router 0.8.1, including actual admission refusal and a changed relation link.
 
 **R3. Lists stay correct.** When a `Changed` event of the type arrives, or a stream resumes, a list
 query re-reads what it has on screen, in the same order. This covers new rows, removed rows,
@@ -57,12 +52,16 @@ expensive on the server. Count-only reads and aggregates follow the same rule (R
 *Acceptance:* a row created elsewhere appears, in the right place, in a filtered and sorted list,
 with no polling and no consumer code. A burst of 100 events causes a small, bounded number of reads.
 
-**R4. No lost events.** Replacing a stream, as when the key set changes, starts the new stream before
-closing the old one and removes duplicates by record version. A first read subscribes first and then
-reads, so no change falls between them. After a gap, what the stream fed is refetched.
-*Acceptance:* a test that writes during a key-set change and during a first read loses nothing.
-*Built in 0.1.0-alpha.7:* any end the client didn't ask for restarts and re-reads, with back-off. Still
-to do: replacing a stream without a gap, and the first-read gap.
+**R4. No lost events.** Replacing a stream starts its successor before closing the old one,
+with bounded overlap and version ordering. Keys stay in stable chunks. Newly streamed records'
+holding queries receive one confirming re-read, including on first load, after `live.settleMs`
+(default 250 ms; `false` restores the previous request cost). Reconnects and unexpected ends
+restart and refetch; a read in flight is followed by one more.
+*Built:* overlap, stable chunks, confirming reads and gap recovery. Mock tests cover writes during
+key-set replacement and between the first snapshot and subscribe. **The first-read gap is narrowed,
+not eliminated against a real server:** no subscribe acknowledgement exists. R3's list streams
+remain proposed. At a full router connection, old coverage stays open while replacements retry;
+newly uncovered records poll meanwhile. True gap closure depends on a server started signal.
 
 **R5. Build failures in place of conventions**, each with a small, named escape:
 
@@ -108,6 +107,7 @@ silently stale data.
 **R23. Schema pull with drift detection.** `graphql-orm-client schema pull` writes the snapshot and
 its hash. `generate --check` fails when generated output doesn't match. Consumers currently write
 their own.
+*Built:* sorted SDL snapshots, SHA-256 sidecars, read-only drift checks and opt-in generation integrity checks.
 
 ## 3. What real applications need beyond records
 
@@ -185,6 +185,10 @@ A conformance failure remains a failure; this does not claim the proposed R2/R3 
 **R22. Budgets.** Checked in CI: 10,000 rows in the store, a burst of 100 events a second, the
 compile time of 250 documents against a 45,000-line schema, the bundle size of the main and react
 entry points, and the cost of one socket and store per window with pop-out tool windows open (R19).
+*Built:* `pnpm budgets` and the separate budgets CI workflow. Thresholds, baselines and margins
+are in `budgets/limits.json`; the method and one-machine window measurement are in
+[the design](design.md#several-windows-r19-and-budgets-r22). A skipped browser measurement is incomplete,
+never a pass.
 
 **R24. Release discipline.** While pre-1.0, every breaking change has migration steps in the changelog
 and a generator error or warning where one is possible. A behaviour change that alters what a working

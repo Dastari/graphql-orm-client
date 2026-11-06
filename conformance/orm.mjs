@@ -182,19 +182,13 @@ try {
  const newer = await update('Newest')
  assert(newer.RecordVersion > old.RecordVersion)
  const compiled = compile(schema,[`fragment Row on Widget @live { Name }`,`query One { Widget(Id: "w1") { ...Row } }`])
- if(/\bNodeId\b/.test(compiled.live.Widget.operation.text)) {
-  const generated=await raw()
-  await writeFile(`${scratch}/generated-live.graphql`,compiled.live.Widget.operation.text)
-  const id=generated.subscribe(compiled.live.Widget.operation.text,{Keys:[]})
-  await until('generated NodeId refusal',()=>generated.frames.some(f=>f.id===id))
-  const frame=generated.frames.find(f=>f.id===id)
-  assert.equal((frame.payload.errors??frame.payload)[0].extensions.code,'INVALID_INPUT')
-  generated.ws.close()
-  console.log('REPRODUCED compiler NodeId stream bug; original document saved in runtime scratch')
- }
- // Isolate transport recovery from the documented compiler NodeId selection bug.
- // The actual server has already refused that selection above.
- compiled.live.Widget.operation.text = compiled.live.Widget.operation.text.replace(/\bNodeId\b/g,'')
+ // A generated stream is admitted as it stands, and doesn't select what the server refuses.
+ assert(!/\bNodeId\b/.test(compiled.live.Widget.operation.text))
+ const generated=await raw(), generatedId=generated.subscribe(compiled.live.Widget.operation.text,{Keys:[]})
+ await sleep(300)
+ assert.equal(generated.frames.filter(f=>f.id===generatedId).length,0)
+ generated.ws.close()
+ pass('generated stream selection is admitted on an entity with NodeId and a managed version')
  const query = compiled.operations.One
  // Deliver older server data after the newer snapshot through the network.
  const sequence=[newer,old]
@@ -204,6 +198,26 @@ try {
  assert.equal(ordered.store.get(encodeNodeId('Widget',['w1']))?.fields.get('Name'),'Newest')
  ordered.dispose()
  pass('managed server versions advance; client rejects delayed older server snapshot')
+ // The served schema doesn't give a composite key's order; the client takes it from the record's NodeId.
+ const composite=compile(schema,[`fragment SlotRow on Slot @live { Label }`,`query OneSlot { Slot(Site: "north", Name: "a") { ...SlotRow } }`])
+ assert.deepEqual(composite.live.Slot.keyFields,['Name','Site'])
+ {
+  const socket=createWs({url:routerUrl.replace('http','ws'),webSocketImpl:WebSocket,connectionParams:{authorization:`Bearer ${token}`}})
+  const transport=graphqlWsTransport(socket)
+  const client=createClient({network:createHttpNetwork({url:routerUrl,headers}),live:{artifacts:composite.live,...transport,onDiagnostic:null}})
+  const slotQuery=client.watchQuery(composite.operations.OneSlot,{})
+  slotQuery.open()
+  await until('composite stream',()=>client.live.status().Slot?.subscriptions===1)
+  await sleep(500) // past the confirming read, so what follows can only be the event
+  const before=client.live.status().Slot.lastEventAt
+  assert.equal(before,null)
+  await fetch(`${serviceUrl}/slot`,{method:'POST',body:'Updated by event'})
+  await until('composite event reaches the record',()=>client.store.get(encodeNodeId('Slot',['north','a']))?.fields.get('Label')==='Updated by event')
+  assert.notEqual(client.live.status().Slot.lastEventAt,null)
+  assert.equal(client.liveTypeHealth('Slot').reason,null)
+  slotQuery.close();client.dispose();await socket.dispose()
+ }
+ pass('a composite-key event reaches its record though the served schema lists the key in another order')
  const list=(await post('{ Widgets(Where: {Name: {InList: ["Newest", "Beta"]}}, OrderBy: [{Name: DESC}], Page: {Limit: 1, Offset: 1}) { Edges { Node { Id Name } } PageInfo { TotalCount HasNextPage } } }')).data.Widgets
  assert.equal(list.PageInfo.TotalCount,2);assert.equal(list.Edges[0].Node.Name,'Beta')
  const first=(await post('{ WidgetsKeyset(Page: {limit: 1, includeTotalCount: true}) { Edges { Node { Id } } PageInfo { EndCursor TotalCount HasNextPage } } }')).data.WidgetsKeyset

@@ -1,3 +1,4 @@
+import { seedManualHolds } from "./fixtures.js"
 import { describe, expect, it } from "vitest"
 import { createClient, readFragment } from "../src/client.js"
 import { encodeNodeId } from "../src/node-id.js"
@@ -14,7 +15,9 @@ function setup(
   const client = createClient({
     network,
     live: {
-      artifacts: compiled.live,
+      minRereadMs: 1,
+    artifacts: compiled.live,
+      settleMs: false,
       subscribe: subscriptions.subscribe,
       debounceMs: 0,
       setTimeout: () => 0,
@@ -167,7 +170,9 @@ describe("live layer", () => {
     const client = createClient({
       network,
       live: {
-        artifacts: compiled.live,
+        minRereadMs: 1,
+    artifacts: compiled.live,
+        settleMs: false,
         subscribe: (request, sink) => {
           order.push(request.name)
           return subscriptions.subscribe(request, sink)
@@ -209,13 +214,16 @@ describe("live layer", () => {
     const client = createClient({
       network,
       live: {
-        artifacts: compiled.live,
+        minRereadMs: 1,
+    artifacts: compiled.live,
+        settleMs: false,
         subscribe: subscriptions.subscribe,
         debounceMs: 0,
         setTimeout: (callback) => timers.push(callback),
         clearTimeout: () => {},
       },
     })
+    seedManualHolds(client)
     const live = client.live!
     live.hold("q", new Map([["Widget", new Set([encodeNodeId("Widget", ["d1"])])]]))
     live.flush()

@@ -271,6 +271,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     )
     .await?;
+    let slot_writes = db.clone();
     let schema = schema_builder(db)
         .enable_subscription_in_federation()
         .finish();
@@ -325,6 +326,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             post(|| async {
                 PREIMAGE.store(true, std::sync::atomic::Ordering::SeqCst);
                 "ok"
+            }),
+        )
+        // A composite-key entity has no generated GraphQL mutation, so this is how an event of its type starts.
+        .route(
+            "/slot",
+            post(move |label: String| {
+                let db = slot_writes.clone();
+                async move {
+                    let key = SlotKey {
+                        site: "north".into(),
+                        name: "a".into(),
+                    };
+                    let input = UpdateSlotInput {
+                        label: Some(label),
+                        ..Default::default()
+                    };
+                    Slot::update_by_key(&db, &key, input).await.unwrap();
+                    "ok"
+                }
             }),
         )
         .route("/sdl", get(move || async move { sdl }))

@@ -33,7 +33,8 @@
     "test": "vitest run",
     "check": "pnpm typecheck && pnpm test && node bin/graphql-orm-client.mjs skills list > /dev/null",
     "prepack": "pnpm build",
-    "conformance": "node conformance/run.mjs"
+    "conformance": "node conformance/run.mjs",
+    "budgets": "pnpm build && node --expose-gc budgets/run.mjs"
   },
   "sideEffects": false,
   "exports": {
@@ -72,6 +73,7 @@
     "graphql": "^16.14.2",
     "graphql-ws": "^6.4.1",
     "jsdom": "^30.1.3",
+    "playwright": "^1.65.0",
     "playwright-core": "^1.65.0",
     "react": "19.3.0",
     "react-dom": "19.3.0",

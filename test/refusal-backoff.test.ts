@@ -1,3 +1,4 @@
+import { seedManualHolds } from "./fixtures.js"
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest"
 import { createClient, type Client } from "../src/client.js"
 import type { LiveOptions } from "../src/live.js"
@@ -59,7 +60,9 @@ function setup(live: Partial<LiveOptions> = {}) {
   }
   const { network } = mockNetwork(() => ({ data: { Widgets: { __typename: "WidgetConnection", Edges: [], PageInfo: null } } }))
   const options: LiveOptions = {
+    minRereadMs: 1,
     artifacts: compiled.live,
+    settleMs: false,
     subscribe,
     debounceMs: 0,
     setTimeout: time.setTimeout,
@@ -68,11 +71,14 @@ function setup(live: Partial<LiveOptions> = {}) {
     ...live,
   }
   const client = createClient({ network, live: options })
+  seedManualHolds(client)
   return { client, live: client.live!, subscriptions, time, sent: () => sent, subscribe, network }
 }
 
-const hold = (client: Client, ids: readonly string[], holder = "q") =>
+const hold = (client: Client, ids: readonly string[], holder = "q") => {
+  seedManualHolds(client)
   client.live!.hold(holder, new Map([["Widget", new Set(ids.map(widgetId))]]))
+}
 
 /** Hold records, apply it, and refuse the streams that start. */
 function refuseAll(subscriptions: ReturnType<typeof mockSubscriptions>, name = "LiveWidget") {
@@ -359,7 +365,9 @@ describe("refused-stream back-off", () => {
       const client = createClient({
         network,
         live: {
+          minRereadMs: 1,
           artifacts: compiled.live,
+          settleMs: false,
           subscribe: (request, sink) => (sent++, subscriptions.subscribe(request, sink)),
           debounceMs: 0,
           refusalBackoff: true,
@@ -397,7 +405,9 @@ describe("refused-stream back-off", () => {
       const next = createClient({
         network,
         live: {
+          minRereadMs: 1,
           artifacts: compiled.live,
+          settleMs: false,
           subscribe: (request, sink) => (sent++, subscribe(request, sink)),
           debounceMs: 0,
           setTimeout: time.setTimeout,
