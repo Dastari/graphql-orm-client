@@ -1,6 +1,6 @@
 ---
 name: graphql-orm-client-data
-description: Write components with graphql-orm-client fragments and route roots, page through tables by number (@paged, usePagedQuery), load more (@connection), refetch, run mutations (including one-time secrets with `no-store`) and plain subscriptions, and port Apollo queries without request waterfalls or over-fetching.
+description: Write components with graphql-orm-client fragments and route roots, page through tables by number (@paged, usePagedQuery), load more (@connection), refetch, run mutations (including one-time secrets with `no-store`) and plain subscriptions, and port Apollo queries without request waterfalls or over-fetching, and test components against a mock network, scripted streams and a controllable clock (graphql-orm-client/test).
 ---
 
 # Fragments, roots, pagination and mutations
@@ -92,3 +92,38 @@ Status: early alpha. Check the installed `docs/design.md` for the current API.
   there is no updater: pass `refetchQueries` for lists a mutation adds to or removes from.
 - Use the generated mutations (`Create…`, `Update…`, `Delete…`). Do not ask the backend for
   hand-written resolvers.
+
+## Testing
+
+`graphql-orm-client/test` has what a test needs, with no test runner dependency. Don't write your own mock
+transport: scripted frames only prove something if they match what the router sends.
+
+```tsx
+import { createMockNetwork, createMockStreams, createTestClock } from "graphql-orm-client/test"
+
+const clock = createTestClock()
+// With `schema`, a document or variables that no longer fit fail the request.
+const network = createMockNetwork({ schema, operations: { TicketPage: { data: { Ticket: ticket } } } })
+const streams = createMockStreams({ schema })
+const client = createClient({
+  network,
+  store: clock.store,
+  polling: clock.polling,
+  live: { artifacts: live, subscribe: streams.subscribe, ...clock.live },
+})
+
+// Then render with ClientProvider and drive it, inside act() when React renders it.
+await clock.tick(100)                                // pass time, let requests settle
+streams.one("LiveTicket").emit({ ...ticket, Title: "new" })
+streams.reload()                                     // the router retired its graph
+await clock.tick(1000)                               // the stream restarts and the query reads again
+expect(client.live.status().Ticket.subscriptions).toBe(1)
+```
+
+- An operation with no answer fails, and so does a request that doesn't fit `schema`. A query keeps a
+  rejection in its state, so check `network.failures` where a test could miss it.
+- On one stream: `emit`, `next`, `refuse(code, { frame })`, `loseContinuity`, `reload`, `unavailable`,
+  `fail`, `end`. `streams.reload()` and `streams.fail()` act on all of them. `streams.reconnect()` is a
+  socket drop the transport recovers from by itself, where nothing ends: use it with `onReconnect`.
+- `clock.advance(ms)` fires timers without letting promises settle; use `clock.tick(ms)` when a request is
+  involved.

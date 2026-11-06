@@ -50,6 +50,9 @@ Status: early alpha. Check the installed `docs/design.md` and `docs/graphql-orm-
 - Paged tables (`usePagedQuery`) keep only the visible page live; changing page moves the
   subscription to the new page's rows.
 
+- Test what happens when streams fail with `graphql-orm-client/test`: see the Testing section of the
+  graphql-orm-client-data skill.
+
 ## Cache policy
 
 - `store.retainMs` is the only store option: how long released records stay.

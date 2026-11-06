@@ -1,7 +1,7 @@
 import { buildSchema } from "graphql"
 import { compile } from "../src/compiler/index.js"
-import type { GraphQLResponse, Network, OperationRequest } from "../src/client.js"
-import type { SubscriptionSink } from "../src/live.js"
+import type { GraphQLResponse, OperationRequest } from "../src/client.js"
+import { createMockNetwork, createMockStreams, type MockNetwork, type MockStreams } from "../src/test/index.js"
 
 /** A schema in graphql-orm's shape: PascalCase fields, Id keys, keyset connections, Where inputs. */
 export const schema = buildSchema(`
@@ -197,34 +197,14 @@ export const catalog = (
   },
 })
 
-/** A network whose responses the test supplies per operation name. */
+/** A network whose responses the test supplies per operation name. Built on the shipped test kit. */
 export function mockNetwork(responder: (request: OperationRequest) => GraphQLResponse | Promise<GraphQLResponse>) {
-  const requests: OperationRequest[] = []
-  const network: Network = {
-    async execute(request, { signal }) {
-      requests.push(request)
-      const response = await responder(request)
-      if (signal?.aborted) throw new DOMException("aborted", "AbortError")
-      return response
-    },
-  }
-  return { network, requests }
+  const network: MockNetwork = createMockNetwork({ respond: responder })
+  return { network, requests: network.requests }
 }
 
-/** A subscription transport the test drives by hand. */
-export function mockSubscriptions() {
-  const open = new Map<number, { request: OperationRequest; sink: SubscriptionSink }>()
-  let next = 0
-  const subscribe = (request: OperationRequest, sink: SubscriptionSink) => {
-    const id = ++next
-    open.set(id, { request, sink })
-    return () => {
-      open.delete(id)
-    }
-  }
-  const find = (name: string) => [...open.values()].filter((entry) => entry.request.name === name)
-  return { subscribe, open, find }
-}
+/** A subscription transport the test drives by hand. Built on the shipped test kit. */
+export const mockSubscriptions = (): MockStreams => createMockStreams()
 
 export const ticket = (id: string, overrides: Record<string, unknown> = {}) => ({
   __typename: "Ticket",

@@ -123,6 +123,11 @@ A fragment marked `@refetchable` can read its record again on its own, through t
 
 The schema may be router or subgraph SDL; federation directives are accepted.
 
+`graphql-orm-client/test` has a mock network keyed by operation name, scripted streams with the router's
+real frames (refusal, lost events, schema reload, socket failure) and a clock the test drives, so an
+application can test its own freshness with no server. See the
+[data skill](skills/graphql-orm-client-data/SKILL.md#testing).
+
 ## For agents
 
 Start with [`AGENTS.md`](AGENTS.md) and [`llms.txt`](llms.txt). Install the bundled skills into a

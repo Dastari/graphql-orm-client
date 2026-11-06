@@ -171,6 +171,8 @@ windows.
 **R20. A test kit.** `graphql-orm-client/test`: a mock transport keyed by operation name that validates
 against the schema, and scripted streams including refusal, continuity loss and reconnect, on a
 controllable clock. Consumers currently write these mocks themselves, and so can't test freshness.
+*Built, unreleased:* `createMockNetwork`, `createMockStreams`, `createTestClock`. The client's own tests run
+on it.
 
 **R21. Conformance against the real server.** CI runs an example graphql-orm service behind the router
 and proves stream admission, keyed streams, continuity codes, node lookup, version ordering and list

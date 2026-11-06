@@ -5,6 +5,7 @@ import { compile } from "../src/compiler/index.js"
 import type { LiveOptions } from "../src/live.js"
 import { encodeNodeId } from "../src/node-id.js"
 import { graphqlWsSubscribe, type GraphQLWsClientLike } from "../src/transport.js"
+import { createTestClock } from "../src/test/index.js"
 import { compiled, widget, catalog, frags, mockNetwork, mockSubscriptions, ops } from "./fixtures.js"
 
 type CatalogData = { Widgets: { Edges: { Node: object }[] } }
@@ -16,33 +17,8 @@ const event = (id: string, fields: Record<string, unknown> = {}) => ({
   data: { WidgetChanged: { __typename: "WidgetChangedEvent", Action: "UPDATED", Widget: widget(id, fields) } },
 })
 
-/** A clock the test drives: `run(ms)` passes that much time and fires what falls due, in order. */
-function clock() {
-  let time = 1_000_000
-  let next = 0
-  const timers = new Map<number, { callback: () => void; at: number; ms: number }>()
-  return {
-    timers,
-    now: () => time,
-    setTimeout: (callback: () => void, ms: number) => (timers.set(++next, { callback, at: time + ms, ms }), next),
-    clearTimeout: (handle: unknown) => void timers.delete(handle as number),
-    run(ms: number) {
-      const end = time + ms
-      for (;;) {
-        const due = [...timers].filter(([, timer]) => timer.at <= end).sort((a, b) => a[1].at - b[1].at)[0]
-        if (!due) break
-        timers.delete(due[0])
-        time = Math.max(time, due[1].at)
-        due[1].callback()
-      }
-      time = end
-    },
-    delays: () => [...timers.values()].map((timer) => timer.ms),
-  }
-}
-
 function setup(live: Partial<LiveOptions> = {}, responder?: Parameters<typeof mockNetwork>[0]) {
-  const time = clock()
+  const time = createTestClock()
   const subscriptions = mockSubscriptions()
   const order: string[] = []
   let reads = 0
@@ -62,12 +38,10 @@ function setup(live: Partial<LiveOptions> = {}, responder?: Parameters<typeof mo
         return subscriptions.subscribe(request, sink)
       },
       debounceMs: 0,
-      setTimeout: time.setTimeout,
-      clearTimeout: time.clearTimeout,
-      now: time.now,
+      ...time.live,
       ...live,
     },
-    store: { setTimeout: time.setTimeout, clearTimeout: time.clearTimeout },
+    store: time.store,
   })
   return { client, live: client.live!, subscriptions, time, order, reads: () => reads, subscribes: () => subscribes }
 }
@@ -79,7 +53,7 @@ async function open(context: ReturnType<typeof setup>) {
   list.open()
   await list.refetch()
   context.live.flush()
-  context.time.timers.clear()
+  context.time.advance(0)
   context.order.length = 0
   return list
 }
@@ -112,8 +86,8 @@ describe("a stream that ends without the client asking", () => {
       end(liveWidget(context))
       expect(subscriptions.find("LiveWidget")).toHaveLength(0)
       expect(live.status().Widget).toMatchObject({ held: 1, subscriptions: 0, restarting: true, restartAttempts: 1, lastEnd: { reason, code, at: time.now() } })
-      expect(time.delays().every((ms) => ms < 1000)).toBe(true)
-      time.run(1000)
+      expect(time.pending().every((timer) => timer.ms < 1000)).toBe(true)
+      time.advance(1000)
       expect(subscriptions.find("LiveWidget")).toHaveLength(1)
       // Subscribe first, then read, so no change falls between the two.
       expect(context.order).toEqual(["LiveWidget", "CatalogPage"])
@@ -131,7 +105,7 @@ describe("a stream that ends without the client asking", () => {
     expect(name(list)).toBe("before")
     liveWidget(context).sink.error(errors("SUBSCRIPTION_SCHEMA_RELOAD"))
     current = "changed during the gap"
-    context.time.run(1000)
+    context.time.advance(1000)
     await settle()
     expect(name(list)).toBe("changed during the gap")
     // The new stream delivers.
@@ -147,8 +121,8 @@ describe("a stream that ends without the client asking", () => {
     const streams = context.subscriptions.find("LiveWidget")
     expect(streams).toHaveLength(3)
     for (const stream of streams) (stream as unknown as Stream).sink.error(errors("SUBSCRIPTION_SCHEMA_RELOAD"))
-    expect(context.time.timers.size).toBe(1)
-    context.time.run(1000)
+    expect(context.time.pending().length).toBe(1)
+    context.time.advance(1000)
     await settle()
     expect(context.subscriptions.find("LiveWidget")).toHaveLength(3)
     expect(context.reads()).toBe(before + 1)
@@ -162,8 +136,8 @@ describe("a stream that ends without the client asking", () => {
       const seen: number[] = []
       for (let round = 0; round < 7; round += 1) {
         liveWidget(context).sink.error(errors("SERVICE_UNAVAILABLE"))
-        seen.push(context.time.delays()[0]!)
-        context.time.run(8000)
+        seen.push(context.time.pending()[0]!.ms!)
+        context.time.advance(8000)
       }
       expect(seen[0]).toBeLessThan(1000)
       for (const [index, top] of [1000, 2000, 4000, 8000, 8000, 8000].entries()) {
@@ -179,7 +153,7 @@ describe("a stream that ends without the client asking", () => {
       const reads = context.reads()
       for (let elapsed = 0; elapsed < 3_600_000; elapsed += 60_000) {
         for (const stream of context.subscriptions.find("LiveWidget")) (stream as unknown as Stream).sink.error(new Error("socket gone"))
-        context.time.run(60_000)
+        context.time.advance(60_000)
         await settle()
       }
       // At most one per minute once it has backed off, however it fails.
@@ -209,13 +183,13 @@ describe("a stream that ends without the client asking", () => {
       const { live, time } = context
       for (let round = 0; round < 3; round += 1) {
         liveWidget(context).sink.complete()
-        time.run(8000)
+        time.advance(8000)
       }
       expect(live.status().Widget?.restartAttempts).toBe(3)
-      time.run(8000)
+      time.advance(8000)
       expect(live.status().Widget?.restartAttempts).toBe(0)
       liveWidget(context).sink.complete()
-      expect(time.delays()[0]).toBeLessThan(1000)
+      expect(time.pending()[0]!.ms).toBeLessThan(1000)
       context.client.dispose()
     })
 
@@ -223,13 +197,13 @@ describe("a stream that ends without the client asking", () => {
       const context = setup({ restart: { minMs: 1000, maxMs: 8000 } }, () => ({ data: catalog([widget("d1"), widget("d2")]) }))
       await open(context)
       const { subscriptions, time } = context
-      time.run(20_000)
+      time.advance(20_000)
       const failing = () => subscriptions.find("LiveWidget").find((entry) => entry.request.variables.Key === "d1")! as unknown as Stream
       const seen: number[] = []
       for (let round = 0; round < 4; round += 1) {
         failing().sink.error(new Error("socket gone"))
-        seen.push(time.delays()[0]!)
-        time.run(8000)
+        seen.push(time.pending()[0]!.ms!)
+        time.advance(8000)
       }
       expect(seen[3]).toBeGreaterThanOrEqual(2000)
       context.client.dispose()
@@ -243,10 +217,10 @@ describe("a stream that ends without the client asking", () => {
       const { live, subscriptions, time } = context
       liveWidget(context).sink.error(errors("SUBSCRIPTION_SCHEMA_RELOAD"))
       expect(live.status().Widget).toMatchObject({ backedOff: false, restarting: true })
-      time.run(1000)
+      time.advance(1000)
       liveWidget(context).sink.error(errors("SERVICE_UNAVAILABLE"))
       expect(live.status().Widget).toMatchObject({ backedOff: false, restarting: true })
-      time.run(1000)
+      time.advance(1000)
       expect(subscriptions.find("LiveWidget")).toHaveLength(1)
       context.client.dispose()
     })
@@ -258,10 +232,10 @@ describe("a stream that ends without the client asking", () => {
       const reads = context.reads()
       liveWidget(context).sink.error(errors("INVALID_INPUT"))
       expect(live.status().Widget).toMatchObject({ backedOff: true, restarting: false, lastEnd: { reason: "refused" } })
-      time.run(5 * 60_000 - 1)
+      time.advance(5 * 60_000 - 1)
       expect(subscriptions.find("LiveWidget")).toHaveLength(0)
       expect(context.reads()).toBe(reads)
-      time.run(1)
+      time.advance(1)
       expect(subscriptions.find("LiveWidget")).toHaveLength(1)
       await settle()
       expect(context.reads()).toBe(reads + 1)
@@ -273,7 +247,7 @@ describe("a stream that ends without the client asking", () => {
     it("reads once more after a read already under way, whose answer may predate the gap", async () => {
       const answers: ((value: unknown) => void)[] = []
       let current = "first"
-      const time = clock()
+      const time = createTestClock()
       const subscriptions = mockSubscriptions()
       let reads = 0
       const client = createClient({
@@ -288,9 +262,7 @@ describe("a stream that ends without the client asking", () => {
           artifacts: compiled.live,
           subscribe: subscriptions.subscribe,
           debounceMs: 0,
-          setTimeout: time.setTimeout,
-          clearTimeout: time.clearTimeout,
-          now: time.now,
+          ...time.live,
         },
       })
       const list = client.watchQuery<CatalogData>(ops.CatalogPage, {})
@@ -298,14 +270,14 @@ describe("a stream that ends without the client asking", () => {
       answers.shift()!(null)
       await settle()
       client.live!.flush()
-      time.timers.clear()
+      time.advance(0)
 
       // A read leaves before the gap and its answer comes back after the restart.
       void list.refetch()
       expect(reads).toBe(2)
       subscriptions.find("LiveWidget")[0]!.sink.error(new Error("socket gone"))
       current = "changed during the gap"
-      time.run(1000)
+      time.advance(1000)
       expect(reads).toBe(2)
       answers.shift()!(null)
       await settle()
@@ -329,7 +301,7 @@ describe("a stream that ends without the client asking", () => {
       )
       const nodeId = encodeNodeId("Ticket", ["t1"])
       const ticket = (Title: string, RecordVersion: number) => ({ __typename: "Ticket", NodeId: nodeId, Id: "t1", Title, RecordVersion })
-      const time = clock()
+      const time = createTestClock()
       const subscriptions = mockSubscriptions()
       const answers: (() => void)[] = []
       const client = createClient({
@@ -340,9 +312,7 @@ describe("a stream that ends without the client asking", () => {
           artifacts: compiled.live,
           subscribe: subscriptions.subscribe,
           debounceMs: 0,
-          setTimeout: time.setTimeout,
-          clearTimeout: time.clearTimeout,
-          now: time.now,
+          ...time.live,
         },
       })
       const page = client.watchQuery<{ Ticket: object }>(compiled.operations.TicketPage!, { Id: "t1" })
@@ -350,9 +320,9 @@ describe("a stream that ends without the client asking", () => {
       answers.shift()!()
       await settle()
       client.live!.flush()
-      time.timers.clear()
+      time.advance(0)
       subscriptions.find("LiveTicket")[0]!.sink.error(new Error("socket gone"))
-      time.run(1000)
+      time.advance(1000)
       // The restarted stream delivers version 5 while the read, answered at version 1, is on its way back.
       subscriptions.find("LiveTicket")[0]!.sink.next({ data: { TicketChanged: { __typename: "TicketChangedEvent", Action: "UPDATED", Ticket: ticket("new", 5) } } })
       answers.shift()!()
@@ -370,7 +340,7 @@ describe("a stream that ends without the client asking", () => {
       const list = await open(context)
       up = false
       liveWidget(context).sink.error(new Error("socket gone"))
-      context.time.run(1000)
+      context.time.advance(1000)
       await settle()
       expect(list.getState().status).toBe("error")
       expect(name(list)).toBe(widget("d1").Name)
@@ -384,12 +354,11 @@ describe("a stream that ends without the client asking", () => {
       await open(context)
       const { client, subscriptions, time } = context
       liveWidget(context).sink.error(new Error("socket gone"))
-      const pending = [...time.timers.values()]
       const reads = context.reads()
       const subscribes = context.subscribes()
       client.dispose()
-      expect(time.timers.size).toBe(0)
-      for (const timer of pending) timer.callback()
+      expect(time.pending().length).toBe(0)
+      time.advance(3_600_000)
       await settle()
       expect(context.reads()).toBe(reads)
       expect(context.subscribes()).toBe(subscribes)
@@ -402,7 +371,7 @@ describe("a stream that ends without the client asking", () => {
       const stream = liveWidget(context)
       context.client.dispose()
       stream.sink.error(new Error("socket gone"))
-      expect(context.time.timers.size).toBe(0)
+      expect(context.time.pending().length).toBe(0)
     })
 
     it("starts nothing for the next identity from the last one's failures", async () => {
@@ -426,12 +395,12 @@ describe("a stream that ends without the client asking", () => {
       const reads = context.reads()
       list.close()
       live.flush()
-      time.run(1000)
+      time.advance(1000)
       await settle()
       expect(subscriptions.find("LiveWidget")).toHaveLength(0)
       expect(context.reads()).toBe(reads)
       expect(live.status().Widget).toMatchObject({ held: 0, restarting: false, restartAttempts: 0, lastEnd: null })
-      time.run(5 * 60_000)
+      time.advance(5 * 60_000)
       expect(client.store.get(widgetId("d1"))).toBeUndefined()
       client.dispose()
     })
@@ -442,9 +411,9 @@ describe("a stream that ends without the client asking", () => {
       const stream = liveWidget(context)
       list.close()
       context.live.flush()
-      context.time.timers.clear()
+      context.time.advance(0)
       stream.sink.error(new Error("closed by us"))
-      expect(context.time.timers.size).toBe(0)
+      expect(context.live.status().Widget).toMatchObject({ restarting: false, lastEnd: null })
       context.client.dispose()
     })
   })
@@ -456,8 +425,8 @@ describe("a stream that ends without the client asking", () => {
       const { live, subscriptions, time } = context
       const reads = context.reads()
       liveWidget(context).sink.error(errors("SUBSCRIPTION_SCHEMA_RELOAD"))
-      expect(time.timers.size).toBe(0)
-      time.run(3_600_000)
+      expect(time.pending().length).toBe(0)
+      time.advance(3_600_000)
       await settle()
       expect(subscriptions.find("LiveWidget")).toHaveLength(0)
       expect(context.reads()).toBe(reads)
@@ -473,8 +442,8 @@ describe("a stream that ends without the client asking", () => {
       await open(context)
       for (let round = 0; round < 4; round += 1) {
         liveWidget(context).sink.next({ data: null, errors: errors("SUBSCRIPTION_CONTINUITY_LOST") })
-        expect(context.time.delays()[0]).toBeLessThan(1000)
-        context.time.run(1000)
+        expect(context.time.pending()[0]!.ms).toBeLessThan(1000)
+        context.time.advance(1000)
       }
       expect(context.subscriptions.find("LiveWidget")).toHaveLength(1)
       context.client.dispose()

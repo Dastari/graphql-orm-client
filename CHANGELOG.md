@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- A test kit, `graphql-orm-client/test` (R20). `createMockNetwork({ schema, operations })` answers by
+  operation name and fails anything unanswered or not valid for the schema. `createMockStreams({ schema })`
+  is a `live.subscribe` with the router's frames: `emit`, `refuse`, `loseContinuity`, `reload`, `unavailable`,
+  `fail`, `end`, and `reconnect` for a recovery the transport makes by itself. `createTestClock()` fills the
+  `live`, `store` and `polling` timer seams. It needs `graphql`, which is already a peer dependency, and no
+  test runner. Nothing else changes.
+
 ## 0.1.0-alpha.7 (2026-11-06)
 
 Install from the GitHub release archive:
