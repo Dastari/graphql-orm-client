@@ -1,8 +1,11 @@
 # graphql-orm-client contributor guidance
 
-Read README.md, docs/design.md and docs/graphql-orm-contract.md before changing anything.
-The project is at the design stage: keep the documents, skills and code consistent with
-each other, and label anything not yet built as proposed.
+Read README.md, docs/design.md, docs/requirements.md and docs/graphql-orm-contract.md before
+changing anything. The package is in alpha and used by real applications: keep the documents,
+skills and code consistent with each other, and label anything not yet built as proposed.
+
+Keep this repository free of any consuming project's names and domain. Requests from consumers go
+in docs/requirements.md in general terms.
 
 ## Ownership
 
@@ -44,7 +47,7 @@ each other, and label anything not yet built as proposed.
 
 ## Verification
 
-Once code exists: run `pnpm check` (types, lint, tests) and `pnpm build`. Store and live-layer
+Run `pnpm check` (types, lint, tests) and `pnpm build`. Store and live-layer
 changes need tests for ordering, version conflicts, identity disposal, garbage collection and
 reconnect replay. Do not commit node_modules, build output, test output, credentials or
 .handoff notes.
