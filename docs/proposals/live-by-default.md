@@ -56,7 +56,7 @@ A new subpath, not in the main bundle and with no test-runner dependency:
   `reconnect()` on the real frame shapes, including an error delivered as `next` then `complete`;
 - `createTestClock()`, which fills the existing timer seams.
 
-The client's own tests move onto it, so it can't drift from what they exercise.
+The client's own tests run on it, so it can't drift from what they exercise. **Built, unreleased.**
 
 ### R7. Live status
 

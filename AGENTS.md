@@ -19,7 +19,7 @@ general terms.
   process. Record the dependency in docs/graphql-orm-contract.md. Never add a client-side
   workaround that guesses identity, ordering or pagination.
 - Keep the core store and network framework-agnostic. React bindings live under the `react`
-  subpath; the compiler lives under the `compiler` subpath. Application code (routes, domain
+  subpath; the compiler lives under the `compiler` subpath; the test kit under `test`. Application code (routes, domain
   types, branding) never belongs here.
 
 ## Design rules
