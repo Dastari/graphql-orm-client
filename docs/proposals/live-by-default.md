@@ -1,17 +1,11 @@
 # Live by default: design for requirement groups 1 and 2
 
 Status: **proposed; the owner approved the direction on 2026-11-06. Built so far: the restart of ended
-<<<<<<< HEAD
 streams (fact 4), in 0.1.0-alpha.7; R20 and R7, in 0.1.0-alpha.8; R8 and R6, in 0.1.0-alpha.9. R4's client-side overlap and confirming reads are built; true gap closure still needs a server started signal. Group 1, R2 and R3 are built.** Requirement numbers refer to [requirements.md](../requirements.md).
-Unless noted, server facts were read from graphql-orm `main` at `9d1a482` and not run against a live
-router; R21 is what will prove them. The large application's backend is on graphql-orm 0.90.1.
-=======
-streams (fact 4), in 0.1.0-alpha.7; R20 and R7, in 0.1.0-alpha.8; R8 and R6, in 0.1.0-alpha.9. R4's client-side overlap and confirming reads are built; true gap closure still needs a server started signal. Group 1 and R2 are built.** Requirement numbers refer to [requirements.md](../requirements.md).
 R21's `conformance/` fixture now runs the admission, key delivery, delete, node, version,
 list and router-frame facts against `graphql-orm-v0.90.1` (adfa608d), router 0.8.1 and SQLite.
 Other facts remain source-read from `main` at `9d1a482` unless noted. Recovery assertions
 and fixture accommodations are documented in [conformance](../../conformance/README.md).
->>>>>>> origin/main
 
 ## Four facts that shape the design
 
