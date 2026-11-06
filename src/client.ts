@@ -442,6 +442,23 @@ class QueryResource<T> implements WatchedQuery<T> {
     return this.inflight
   }
 
+  private readAgainAfter = false
+
+  /**
+   * Read again after a stream restarted. A read already under way may have been answered before the
+   * gap ended, so its result doesn't count: one more read follows it.
+   */
+  readAgain(): void {
+    if (!this.inflight) return void this.fetch()
+    if (this.readAgainAfter) return
+    this.readAgainAfter = true
+    const finish = () => {
+      this.readAgainAfter = false
+      if (this.users > 0 && !this.client.store.isDisposed) void this.fetch()
+    }
+    void this.inflight.then(finish, finish)
+  }
+
   private watch(snapshot: Snapshot<T>): void {
     this.unsubscribeStore?.()
     this.holdLive()
@@ -619,7 +636,7 @@ export class Client {
     this.live = options.live
       ? new LiveManager(this.store, options.live, (holders) => {
           for (const resource of this.resources.values()) {
-            if (resource.users > 0 && holders.has(resource.key)) void resource.fetch()
+            if (resource.users > 0 && holders.has(resource.key)) void resource.readAgain()
           }
         })
       : null

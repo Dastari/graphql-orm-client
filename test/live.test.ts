@@ -202,7 +202,7 @@ describe("live layer", () => {
     client.dispose()
   })
 
-  it("recovers from SUBSCRIPTION_SOURCE_CLOSED too; any other end waits for the next change", () => {
+  it("recovers from SUBSCRIPTION_SOURCE_CLOSED and a transport failure the same way", () => {
     const subscriptions = mockSubscriptions()
     const timers: (() => void)[] = []
     const { network } = mockNetwork(() => ({ data: catalog([widget("d1")]) }))
@@ -221,11 +221,10 @@ describe("live layer", () => {
     live.flush()
     timers.length = 0
 
-    // A transport error ends the stream without a resync, so a failing server isn't retried in a loop.
     subscriptions.find("LiveWidget")[0]!.sink.error(new Error("socket gone"))
     expect(subscriptions.find("LiveWidget")).toHaveLength(0)
-    expect(timers).toHaveLength(0)
-    live.flush()
+    expect(timers).toHaveLength(1)
+    timers.shift()!()
     expect(subscriptions.find("LiveWidget")).toHaveLength(1)
 
     subscriptions.find("LiveWidget")[0]!.sink.next({
@@ -234,7 +233,7 @@ describe("live layer", () => {
     })
     expect(subscriptions.find("LiveWidget")).toHaveLength(0)
     expect(timers).toHaveLength(1)
-    timers[0]!()
+    timers.shift()!()
     expect(subscriptions.find("LiveWidget")).toHaveLength(1)
     client.dispose()
   })

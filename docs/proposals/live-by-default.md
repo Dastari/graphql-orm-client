@@ -1,8 +1,9 @@
 # Live by default: design for requirement groups 1 and 2
 
-Status: **proposed. Nothing here is built.** Requirement numbers refer to
-[requirements.md](../requirements.md). Server facts were read from graphql-orm `main` at `9d1a482`
-and not run against a live router; R21 is what will prove them.
+Status: **proposed; the owner approved the direction on 2026-11-06. Built so far: the restart of ended
+streams, in 0.1.0-alpha.7 (fact 4).** Requirement numbers refer to [requirements.md](../requirements.md).
+Unless noted, server facts were read from graphql-orm `main` at `9d1a482` and not run against a live
+router; R21 is what will prove them. The large application's backend is on graphql-orm 0.90.1.
 
 ## Four facts that shape the design
 
@@ -16,11 +17,11 @@ and not run against a live router; R21 is what will prove them.
 3. **Narrowed streams can't see list changes.** A stream with `Keys` drops events for other keys, so
    it can't report a new row or one moving into a filter. `DELETED` needs a preimage grant, which
    is off by default.
-4. **Streams die quietly today.** After a schema reload, an exhausted socket or a plain `complete`,
-   nothing resubscribes or reads until the held records change, and they can't change without a stream.
-   A test held a query open for an hour after each: no subscribe, no read. A reload of a quiet stream
-   also counts as a refusal when `refusalBackoff` is on. The router's default of 32 operations per
-   connection is also below the client's default of 50 per-record streams in `key` mode.
+4. **Streams used to die quietly, up to 0.1.0-alpha.6.** After a schema reload, an exhausted socket or a
+   plain `complete`, nothing resubscribed or read until the held records changed. Fixed in 0.1.0-alpha.7,
+   and reproduced and tested against a real router 0.8.1 (built from the `graphql-orm-v0.90.1` tag). The
+   router's default of 32 operations per connection is still below the client's default of 50 per-record
+   streams in `key` mode.
 
 ## The model
 
@@ -42,8 +43,8 @@ does not block on graphql-orm**, although it gets better with its help.
 ## Group 1: failures become visible and testable
 
 Order: R20, R7, R8, R6. The test kit comes first because every later test uses it. The silent stream
-death (fact 4) is fixed in the same release as R7, ahead of the rest of R4, because it affects
-applications on released versions.
+death (fact 4) shipped first, in 0.1.0-alpha.7, ahead of the rest of R4, because it affects applications on
+released versions.
 
 ### R20. Test kit (`graphql-orm-client/test`)
 
@@ -200,7 +201,7 @@ alpha.5 archive until it chooses to move.
 
 | Change | Setting | Restores the old behaviour | Comes with |
 | --- | --- | --- | --- |
-| Ended streams restart and re-read | `live.restartEndedStreams` | `false` | Client upgrade |
+| Ended streams restart and re-read (built) | `live.restart` | `false` | Client upgrade |
 | Back-off by default | `live.refusalBackoff` | `false` | Client upgrade |
 | Refused types poll | `polling.liveFallbackMs` | `null` | Client upgrade |
 | Compiled stream selection | `liveSelection` in the generator | `"as-written"` | Regeneration |
@@ -242,12 +243,13 @@ In order. All opt-in, through its normal process.
 5. **A key-only delete signal** that needs no preimage (see #217), and #290 for child deletes.
 6. Already listed in the contract: effective page size, and one time format.
 
-## Decisions for the owner
+## Decisions from the owner (2026-11-06)
 
-- **R1:** live by default with an opt-out, behind `live`, once R2, R3, R4 and R6 hold. Recommended.
-- **R5:** build errors by default for `@live` on a type with no stream and for polls with no reason, with
-  query ownership as per-project globs. Recommended.
-- **R19:** accept one socket and store per window for now, and document the cost. Recommended. Sharing means
-  a worker or leader election plus identity disposal across windows, which is the rule we can least afford
-  to get wrong, and no consumer has measured the cost yet. R22 should measure it first.
-- **Two status states more than R7 lists** (`unconfirmed`, `idle`). Recommended, for the reason above.
+- **R1:** accepted: live by default with an opt-out, behind `live`, once R2, R3, R4 and R6 hold. Check with
+  the owner before turning it on.
+- **R5:** accepted: build errors by default for `@live` on a type with no stream and for polls with no
+  reason, with query ownership as per-project globs.
+- **R19:** one socket and store per window for now. R22 measures the cost, including pop-out tool windows.
+- **R7:** `unconfirmed` and `idle` are added.
+- **`Snapshot`** is a request to graphql-orm and blocks nothing here.
+- **graphql-orm PR #312** is the owner's decision; the client doesn't wait for it.

@@ -207,14 +207,12 @@ variables within the same hold scope (a new search term on the same vendor), as
 4. **Recover.** graphql-orm (0.88) ends a `Changed` stream that lost events with one error,
    `SUBSCRIPTION_CONTINUITY_LOST` (the subscriber fell behind the event channel) or
    `SUBSCRIPTION_SOURCE_CLOSED`. After a random delay below `live.resyncJitterMs` (default
-   1 s), the live layer subscribes again, then refetches the roots that show that type. Any
-   other end of a stream (a transport error, a plain `complete`, the router's
-   `SUBSCRIPTION_SCHEMA_RELOAD`) releases it without a retry or a refetch; only the next change to the
-   held records starts it again. **This is a known gap:** if nothing changes those records, the type
-   stays without a stream, and `client.live.status()` shows it only as `held` above zero with no
-   `subscriptions` (R4, R7). A stream the server refuses can be held back for a window instead (see
-   [Refused streams](#refused-streams)). After a socket reconnect the application calls
-   `client.refetchActive()`, until the server supports replay from a sequence number.
+   1 s), the live layer subscribes again, then refetches the roots that show that type. See
+   [Ended streams](#ended-streams): every other end the client didn't ask for takes the same path. A
+   stream the server refuses can be held back for a window instead (see
+   [Refused streams](#refused-streams)). When graphql-ws reconnects by itself, without ending the
+   stream, the application still calls `client.refetchActive()` from its `connected` event, until the
+   server supports replay from a sequence number.
 5. **Release.** When records are released, it narrows or ends the subscriptions.
 
 Polling remains for state that emits no events (in-memory server state) and when the number
@@ -237,11 +235,52 @@ by name. Types with `@live` fragments but no usable subscription are listed in
 per-type counts, including overflow beyond the `key`-mode limit. A `DELETED` event removes the
 record, and any query that showed it reads again.
 
+### Ended streams
+
+A stream the client didn't stop can end for many reasons. Each one restarts the type's streams and then
+reads the queries that show the type, because events were missed. `client.live.status()` reports it per
+type: `restarting`, `restartAttempts`, and `lastEnd` with its `reason`, `code` and time.
+
+| `lastEnd.reason` | What ended it |
+| --- | --- |
+| `reload` | `SUBSCRIPTION_SCHEMA_RELOAD`: the router retired the graph the connection selected |
+| `lost` | `SUBSCRIPTION_CONTINUITY_LOST` or `SUBSCRIPTION_SOURCE_CLOSED` |
+| `unavailable` | `SERVICE_UNAVAILABLE`, which a connection on a retired graph answers to every subscribe |
+| `refused` | GraphQL errors answered the subscribe and no event ever arrived |
+| `errored` | GraphQL errors ended a stream that had delivered events |
+| `transport` | The socket failed or ran out of reconnect attempts: not GraphQL errors |
+| `completed` | The server ended the stream with no error |
+
+- **Back-off.** The first restart waits a random delay below `live.resyncJitterMs` (1 s), which spreads
+  clients that lost their streams together. Each further end in a row waits longer: `live.restart.minMs`
+  (1 s) doubling to `maxMs` (60 s), each delay reduced by up to half at random. So a router that keeps
+  failing sees about one subscribe and one read per query a minute, however often the held records
+  change. A stream that stays open for `maxMs` has recovered, and the next end starts from the shortest
+  delay again. Streams of one type restart together, so a reload that ends fifty costs one read.
+- **Order.** Subscribe, then read. Nothing confirms a subscribe (see the proposal), so a change that lands
+  between the two can still be missed until the next event for that record; R4 closes this. A read
+  already under way when the restart fires doesn't count, because it may have been answered before the
+  gap ended: one more read follows it.
+- **While waiting.** The stream isn't started early, however the held records change, and the page keeps
+  what it has. A re-read that fails sets the query's `status` to `error` and keeps its `data`.
+- **A retired connection.** The router pins a connection to its graph, so a stream can only come back on a
+  fresh connection. `graphqlWsSubscribe` closes the socket through `ws.terminate()` once the last operation
+  has ended after one of these codes. A custom `live.subscribe` has to do the same, or its restarts go on
+  answering `unavailable`. Relying on graphql-ws's idle close doesn't work: the router sends `complete`
+  after `error`, graphql-ws counts both as releases when they arrive together, and with its default `lazy`
+  option the socket then stays open (router 0.8.1, graphql-ws 6.4.1).
+- **`live.restart: false`** is the 0.1.0-alpha.6 behaviour, for migration: only lost events restart a
+  stream, and any other end waits for the next change to the held records, with nothing read. Data can
+  stay stale indefinitely with it. `lastEnd` is still reported.
+
+This was exercised against a real `graphql-orm-router` 0.8.1 with a test-owned subgraph; see the changelog
+entry for 0.1.0-alpha.7 for what ran. A stream started with `client.subscribe` is the application's own
+and doesn't restart.
+
 ### Refused streams
 
-By default, a stream that ended for any reason except lost events starts again on the next change to
-the records it holds, so a router that refuses a stream sees another doomed subscribe on every list
-refresh. `live: { refusalBackoff }` (off by default) remembers the refusal instead:
+By default, a refused stream restarts like any other end, with the back-off above. `live: {
+refusalBackoff }` (off by default) waits a longer window instead:
 
 ```ts
 createClient({
@@ -249,8 +288,8 @@ createClient({
   live: {
     artifacts: live,
     subscribe,
-    // Five minutes for every type, except Ticket, which has no poll behind it and stays on
-    // immediate retry:
+    // Five minutes for every type, except Ticket, which has no poll behind it and stays on the
+    // ordinary restart back-off:
     refusalBackoff: { ms: DEFAULT_REFUSAL_BACKOFF_MS, types: { Ticket: false } },
     // or: refusalBackoff: true            every type, five minutes
     //     refusalBackoff: { types: { Widget: 60_000 } }   Widget only, one minute
@@ -263,13 +302,10 @@ createClient({
   sink's `error`, as an `error` message), or it sends frames with errors and no data and then
   completes. Both mean the router said no to this subscribe, whatever the code; the client has no list
   of refusal codes and does not guess one.
-- **What does not.** Lost events: a frame carrying `SUBSCRIPTION_CONTINUITY_LOST` or
-  `SUBSCRIPTION_SOURCE_CLOSED` still restarts after the jitter and refetches, whatever the option, and
-  is never remembered (a continuity code on the `error` channel is also left alone, as before). A
-  transport failure (an `Error`, a socket close event) says nothing about the stream: graphql-ws owns
-  reconnection, and the stream starts again on the next change. A `complete` with no frames is a
-  clean end, because a healthy stream with nothing to report can end that way. A stream that
-  delivered an event and then fails is not a refusal.
+- **What does not.** Lost events, `SUBSCRIPTION_SCHEMA_RELOAD` and `SERVICE_UNAVAILABLE`, on either
+  channel: these are about the connection or the moment, not the subscribe. A transport failure (an
+  `Error`, a socket close event). A `complete` with no frames. A stream that delivered an event and then
+  fails. All of these restart with the back-off above and are never remembered.
 - **Identity of a stream.** The type's `<Type>Changed` operation; in `key` mode, that operation for one
   record (a refusal of one record's stream doesn't hold back another's, as when the router caps the
   streams per connection). The chunk of keys in `keys` mode is not part of it: it changes whenever a
@@ -279,9 +315,9 @@ createClient({
   records are still held. A refusal then starts another window; an admitted stream stays open. The
   window is a timer (`live.setTimeout`, `live.clearTimeout`), so tests drive it without waiting.
   `client.live.status()` reports `backedOff` per type.
-- **What the client does not do.** It doesn't refetch when a window ends: events during the window
-  were missed, so keep a poll (`pollMs`, or the live polling fallback) behind every type that backs
-  off, and leave a type on immediate retry (`false`) when nothing else refreshes it.
+- **When a window ends,** the queries that show the type read again, because events during the window
+  were missed. During the window nothing refreshes them, so keep a poll (`pollMs`, or the live polling
+  fallback) behind a type with a long window, or give it `false` for the ordinary back-off.
 - **Disposal.** The memory and its timers belong to the client's live layer and go with the client when
   the identity changes. A refusal recorded for one identity cannot hold back the next identity's
   client, and one that arrives after disposal is ignored.

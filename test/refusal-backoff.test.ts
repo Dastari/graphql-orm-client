@@ -14,9 +14,15 @@ function clock() {
   const timers = new Map<number, { callback: () => void; ms: number }>()
   const cleared: number[] = []
   let next = 0
+  let time = 1_000_000
   return {
     timers,
     cleared,
+    now: () => time,
+    /** Let this much time pass without firing anything. */
+    advance(ms: number) {
+      time += ms
+    },
     setTimeout: (callback: () => void, ms: number) => (timers.set(++next, { callback, ms }), next),
     clearTimeout: (handle: unknown) => {
       cleared.push(handle as number)
@@ -58,6 +64,7 @@ function setup(live: Partial<LiveOptions> = {}) {
     debounceMs: 0,
     setTimeout: time.setTimeout,
     clearTimeout: time.clearTimeout,
+    now: time.now,
     ...live,
   }
   const client = createClient({ network, live: options })
@@ -145,7 +152,7 @@ describe("refused-stream back-off", () => {
     client.dispose()
   })
 
-  it("restarts at once after a continuity-lost close, with the option on, and never remembers it", () => {
+  it("restarts within the jitter after a continuity-lost close, with the option on, and never remembers it", () => {
     const { client, live, subscriptions, time, sent } = setup({ refusalBackoff: true })
     hold(client, ["d1"])
     live.flush()
@@ -157,6 +164,8 @@ describe("refused-stream back-off", () => {
       expect(time.windows()).toHaveLength(0)
       time.fireResync()
       expect(subscriptions.find("LiveWidget")).toHaveLength(1)
+      // The stream stays open long enough to count as recovered.
+      time.advance(60_000)
     }
     expect(sent()).toBe(4)
     // SUBSCRIPTION_SOURCE_CLOSED is the same.
@@ -169,8 +178,23 @@ describe("refused-stream back-off", () => {
     client.dispose()
   })
 
-  it("is off by default: a refused stream starts again on every change", () => {
+  it("is off by default: a refused stream restarts with the ordinary back-off", () => {
     const { client, live, subscriptions, time, sent } = setup()
+    hold(client, ["d1"])
+    live.flush()
+    refuseAll(subscriptions)
+    // No window, and no change to the held records shortens the wait.
+    hold(client, ["d1"], "other")
+    live.flush()
+    expect(sent()).toBe(1)
+    expect(live.status().Widget).toMatchObject({ backedOff: false, restarting: true, lastEnd: { reason: "refused" } })
+    time.fireResync()
+    expect(sent()).toBe(2)
+    client.dispose()
+  })
+
+  it("with restart off, a refused stream starts again on every change, as in 0.1.0-alpha.6", () => {
+    const { client, live, subscriptions, time, sent } = setup({ restart: false })
     hold(client, ["d1"])
     live.flush()
     for (let round = 0; round < 4; round += 1) {
@@ -179,21 +203,20 @@ describe("refused-stream back-off", () => {
       live.flush()
     }
     expect(sent()).toBe(5)
-    expect(time.windows()).toHaveLength(0)
+    expect(time.timers.size).toBe(0)
     expect(live.status().Widget?.backedOff).toBe(false)
     client.dispose()
   })
 
-  it("keeps immediate retry for a type opted out, while others back off", () => {
+  it("leaves a type opted out on the ordinary back-off, while others wait out a window", () => {
     const { client, live, subscriptions, time, sent } = setup({ refusalBackoff: { ms: WINDOW, types: { Widget: false } } })
     live.hold("q", new Map([["Widget", new Set([widgetId("d1")])], ["Vendor", new Set([encodeNodeId("Vendor", ["acme"])])]]))
     live.flush()
     expect(sent()).toBe(2)
     refuseAll(subscriptions, "LiveWidget")
     refuseAll(subscriptions, "LiveVendor")
-    live.hold("q", new Map([["Widget", new Set([widgetId("d1")])], ["Vendor", new Set([encodeNodeId("Vendor", ["acme"])])]]))
-    live.flush()
-    // Widget started again at once; Vendor waits.
+    time.fireResync()
+    // Widget started again within the jitter; Vendor waits.
     expect(subscriptions.find("LiveWidget")).toHaveLength(1)
     expect(subscriptions.find("LiveVendor")).toHaveLength(0)
     expect(sent()).toBe(3)
@@ -210,7 +233,7 @@ describe("refused-stream back-off", () => {
     refuseAll(subscriptions, "LiveWidget")
     refuseAll(subscriptions, "LiveVendor")
     expect(time.windows().map((timer) => timer.ms)).toEqual([1234_000])
-    live.flush()
+    time.fireResync()
     expect(subscriptions.find("LiveVendor")).toHaveLength(1)
     client.dispose()
   })
@@ -288,18 +311,34 @@ describe("refused-stream back-off", () => {
         },
       ],
       ["a continuity code on the error channel", (stream) => stream.sink.error([{ message: "lost", extensions: { code: "SUBSCRIPTION_CONTINUITY_LOST" } }])],
+      ["a schema reload on the error channel", (stream) => stream.sink.error([{ message: "reload", extensions: { code: "SUBSCRIPTION_SCHEMA_RELOAD" } }])],
+      [
+        "a schema reload in a frame, then the end of the stream",
+        (stream) => {
+          stream.sink.next({ data: null, errors: [{ message: "reload", extensions: { code: "SUBSCRIPTION_SCHEMA_RELOAD" } }] })
+          stream.sink.complete()
+        },
+      ],
+      ["a retired connection answering the subscribe", (stream) => stream.sink.error([{ message: "retired", extensions: { code: "SERVICE_UNAVAILABLE" } }])],
+      [
+        "an unavailable answer in a frame, then the end of the stream",
+        (stream) => {
+          stream.sink.next({ data: null, errors: [{ message: "retired", extensions: { code: "SERVICE_UNAVAILABLE" } }] })
+          stream.sink.complete()
+        },
+      ],
     ]
     for (const [name, end] of others) {
-      it(`does not count ${name}: the stream starts again on the next change`, () => {
+      it(`does not count ${name}: the stream restarts`, () => {
         const { client, live, subscriptions, time, sent } = setup({ refusalBackoff: true })
         hold(client, ["d1"])
         live.flush()
         end(subscriptions.find("LiveWidget")[0]! as never)
         expect(time.windows()).toHaveLength(0)
-        hold(client, ["d1"], "again")
-        live.flush()
+        expect(live.status().Widget?.restarting).toBe(true)
+        time.fireResync()
         expect(sent()).toBe(2)
-        expect(live.status().Widget?.backedOff).toBe(false)
+        expect(live.status().Widget).toMatchObject({ backedOff: false, restarting: false })
         client.dispose()
       })
     }
