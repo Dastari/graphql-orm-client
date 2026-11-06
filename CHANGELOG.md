@@ -4,6 +4,12 @@
 
 - Add `pnpm budgets` and a separate CI job for R22: store, live-event notifications, large-schema
   compilation, built entry sizes and real Chromium pop-out windows. No runtime API change.
+- Add `schema pull --url <router>` and read-only `schema pull --check`, using doctor's
+  introspection path and environment credentials. Sorted SDL has a SHA-256 sidecar.
+- Opt in to snapshot integrity and generated provenance checks by running `schema pull`, then
+  `generate`, and committing the SDL, its `.sha256` sidecar and generated output.
+  Projects without a sidecar keep their previous behavior. See the design for exit codes.
+
 
 ## 0.1.0-alpha.9 (2026-11-06)
 

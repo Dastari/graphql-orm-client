@@ -95,19 +95,24 @@ export function assertReadOnly(text: string): void {
   }
 }
 
-async function readServedSchema(options: DoctorOptions): Promise<GraphQLSchema> {
+/** Read only introspection, shared by doctor and schema pull. */
+export async function readServedSchema(options: Pick<DoctorOptions, "url" | "headers" | "fetch">): Promise<GraphQLSchema> {
   const query = getIntrospectionQuery()
   assertReadOnly(query)
   const send = options.fetch ?? globalThis.fetch
-  const response = await send(options.url, {
+  let response: Response
+  try { response = await send(options.url, {
     method: "POST",
     headers: { "content-type": "application/json", accept: "application/graphql-response+json, application/json;q=0.9", ...options.headers },
     body: JSON.stringify({ query }),
-  })
+    signal: AbortSignal.timeout(10000),
+  }) } catch { throw Object.assign(new Error("Introspection failed: server unreachable"), { schemaCode: "server unreachable", exitCode: 3 }) }
   const body = (await response.json().catch(() => null)) as { data?: IntrospectionQuery; errors?: { message: string }[] } | null
+  if ([401, 403, 4401].includes(response.status) || body?.errors?.some((error) => ["401", "403", "4401", "UNAUTHENTICATED", "UNAUTHORIZED", "FORBIDDEN"].includes(String((error as { extensions?: { code?: unknown } }).extensions?.code))))
+    throw Object.assign(new Error("Introspection failed: authentication refused"), { schemaCode: "authentication refused", exitCode: 4 })
   if (body?.data?.__schema) return buildClientSchema(body.data)
   const reason = body?.errors?.map((error) => error.message).join("; ") ?? `the endpoint answered ${response.status}`
-  throw new Error(`Introspection failed: ${reason}`)
+  throw Object.assign(new Error(`Introspection failed: ${reason}`), { schemaCode: "introspection unavailable or disabled", exitCode: 5 })
 }
 
 function fragmentsByType(compiled: CompileResult): Map<string, string[]> {

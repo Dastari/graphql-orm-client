@@ -99,6 +99,24 @@ Masking still applies at the adapter boundary: a query that spreads the fragment
 fields without `readFragment`. Per-component fragments remain the default for screens that
 render records one component at a time.
 
+## Schema snapshots
+
+`graphql-orm-client schema pull --url <router>` uses only introspection and writes the configured
+`schema` path as lexicographically sorted SDL. A SHA-256 of its exact bytes lives beside it in
+`<schema>.sha256`; a sidecar keeps the SDL usable by ordinary GraphQL tools. Commit both files.
+`schema pull --check` compares both without writing and names differing paths. Unreachable servers
+are unknown, never a match. Credentials use `--token-env NAME` or repeated
+`--header-env name=NAME`; literal `--token`, `--header` and `--password` are refused.
+
+Exit codes: 0 success, 1 drift or stale output, 2 bad usage (as in doctor), 3 unreachable,
+4 authentication refused (HTTP 401/403 or GraphQL 401/403/4401), 5 introspection unavailable or disabled.
+Server error text is suppressed by schema pull to avoid echoing credentials.
+
+Once the sidecar exists, generated modules include the snapshot hash. `generate --check` verifies
+both snapshot integrity and generated provenance, even for schema changes that leave artifact types
+unchanged. Fix snapshot integrity with `schema pull --url <router>`, then run `generate`.
+Projects without a sidecar retain the existing generation and check behavior.
+
 ## Compiler
 
 `graphql-orm-client generate` reads every `graphql(...)` document in the application. It uses
