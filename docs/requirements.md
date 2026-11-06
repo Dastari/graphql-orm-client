@@ -22,8 +22,8 @@ can't be noticed, the design isn't done.
 - `@live` only updates records already held. New rows, removed rows and changed totals need a poll.
 - `@live` on a type with no stream only adds it to `liveUnavailable`, and falls back to polling.
 - Nothing checks where a query is written, and `pollMs` is one option away.
-- A refused stream restarts on the next change to the records it holds, so every list refetch can
-  send another failing subscribe. Consumers have to write their own back-off.
+- Back-off for a refused stream exists (`live.refusalBackoff`, 0.1.0-alpha.6) but is off by default.
+- `client.live.status()` reports per type, but nothing lets a component draw it, and nothing warns.
 
 ## 1. Staying live without thinking about it
 
@@ -69,17 +69,17 @@ poll, because some state has no event and polling is the honest answer there.
 
 Without this section, R1 makes failures quieter, so it comes first.
 
-**R6. A refused stream backs off and recovers.** The server's refusal is a `next` with `data: null`
-and errors, then `complete`. Distinguish it from lost events (`SUBSCRIPTION_CONTINUITY_LOST`,
-`SUBSCRIPTION_SOURCE_CLOSED`), which restart at once. A refused stream is never removed: it retries
-slowly, with jitter, and recovers by itself on the day the server allows it. Its records fall back to
-the polling path meanwhile.
-*Acceptance:* a refused stream sends a bounded number of subscribes per hour however often its lists
-refetch, and starts working with no reload once the server accepts it.
+**R6. A refused stream backs off and recovers, by default.** Built in 0.1.0-alpha.6 as
+`live.refusalBackoff`, opt-in. What remains: turn it on by default before R1, add jitter, and make
+sure a refused stream's records fall back to the polling path while it waits, so turning it on can't
+leave a type with no updates.
+*Acceptance:* with no configuration, a refused stream sends a bounded number of subscribes per hour
+however often its lists refetch, its records still refresh, and it starts working with no reload once
+the server accepts it.
 
-**R7. Live status is visible.** `client.liveStatus(type)` and a hook report `live`, `connecting`,
-`refused`, `unavailable` or `polling`, with reason codes and the last update time, per type and for
-the socket. An application can draw "updated 5 min ago, live updates unavailable". A development
+**R7. Live status is visible.** Build on `client.live.status()`: a subscribable status and a hook
+report `live`, `connecting`, `refused`, `unavailable` or `polling`, with reason codes and the last
+update time, per type and for the socket. An application can draw "updated 5 min ago, live updates unavailable". A development
 warning names a fragment whose data can't stay live.
 *Acceptance:* the refused and unavailable states can be drawn with no consumer bookkeeping.
 
@@ -96,10 +96,11 @@ their own.
 
 ## 3. What real applications need beyond records
 
-**R9. Sensitive results.** An operation or field marked sensitive (one-time credentials, connection
-tokens) is never normalised, never persisted, and never shown by an inspector or a log. It goes only
-to the caller that asked for it.
-*Acceptance:* after such a mutation, the value is nowhere in the store, and a test proves it.
+**R9. Sensitive results.** Mutations have `policy: "no-store"` (0.1.0-alpha.6). What remains: a way to
+declare this in the document so it can't be forgotten at a call site, the same for query results, and
+keeping such values out of persistence (R17) and any inspector.
+*Acceptance:* an operation declared sensitive leaves its values nowhere in the store, with no call-site
+option, and a test proves it.
 
 **R10. Honest write outcomes.** A mutation is sent once and never retried automatically. The result
 separates **refused** (it didn't happen), **failed**, and **unconfirmed** (the connection was lost
@@ -171,7 +172,7 @@ An agent following them, with no other knowledge, passes the acceptance test at 
 
 ## Suggested order
 
-1. **R6, R7, R8, R20.** Failures become visible and testable.
+1. **R7, R8, R20, and R6's default.** Failures become visible and testable.
 2. **R4, then R2, then R3, then R1.** Live by default turns on last, after what makes it safe.
 3. **R5, R11.** Strictness arrives once the default path works, and the exception exists.
 4. **R9, R10, R12.** These are safety fixes: pull them forward if a consumer needs them.
