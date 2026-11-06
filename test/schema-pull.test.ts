@@ -1,6 +1,7 @@
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, beforeAll, describe, expect, it } from "vitest"
 import { createServer, type Server } from "node:http"
-import { execFile } from "node:child_process"
+import type { AddressInfo } from "node:net"
+import { execFile, execFileSync } from "node:child_process"
 import { promisify } from "node:util"
 import { mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -12,6 +13,10 @@ const exec = promisify(execFile)
 const bin = resolve("bin/graphql-orm-client.mjs")
 const dirs: string[] = []
 const servers: Server[] = []
+// The command imports dist, which a clean checkout doesn't have and a working tree can hold a stale copy of.
+beforeAll(() => {
+  execFileSync(process.execPath, [resolve("node_modules/typescript/bin/tsc"), "-p", "tsconfig.build.json"])
+}, 120_000)
 afterEach(async () => {
   await Promise.all(servers.splice(0).map((s) => new Promise<void>((r) => s.close(() => r()))))
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
@@ -41,15 +46,8 @@ async function server(reply: (req: any) => object, status = 200) {
     })
   })
   servers.push(s)
-  for (let port = 44000; port <= 44099; port++) {
-    const ok = await new Promise<boolean>((r) => {
-      const failed = () => r(false)
-      s.once("error", failed)
-      s.listen(port, "127.0.0.1", () => { s.removeListener("error", failed); r(true) })
-    })
-    if (ok) return "http://127.0.0.1:" + port
-  }
-  throw new Error("No test port available")
+  await new Promise<void>((r) => s.listen(0, "127.0.0.1", r))
+  return "http://127.0.0.1:" + (s.address() as AddressInfo).port
 }
 const data = () => introspectionFromSchema(buildSchema("type Query { hello: String } type Widget { z: String a: Int }"))
 
