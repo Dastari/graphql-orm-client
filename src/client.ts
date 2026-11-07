@@ -1389,9 +1389,9 @@ export function fragmentSelector(fragment: FragmentArtifact<any, any>, ref: unkn
 
 /**
  * Read a fragment's own fields through a reference. A plain function, so adapters and mappers
- * can call it; components that should re-render use `useFragment` instead.
+ * can call it; components that should re-render use `useFragment` instead. `{ deleted: "null" }` types a
+ * deleted or missing record as null; a live record's data is unchanged.
  */
-/** Opt in to a nullable deleted/missing state; live records retain their existing shape. */
 export function readFragment<D = Record<string, unknown>, N extends string = string>(
   fragment: FragmentArtifact<D, N>, ref: FragmentRefFor<N> | null | undefined,
   options: { deleted: "null" }

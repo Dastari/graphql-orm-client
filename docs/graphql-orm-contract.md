@@ -89,68 +89,13 @@ state. A repeatable snapshot across pages is not guaranteed by 0.90.1: writes du
 can change ordering. Proposed server support: a snapshot/revision token for consistent multi-page
 reads. Subscribe acknowledgement and key-only delete notification remain server gaps above.
 
-## Bounded read-all (R14)
+## Aggregates and deletes (R15, R16)
 
-`client.readAll(Query, variables, { limit, pageSize?, signal? })` returns `{ rows, total, truncated }`.
-Use exactly one root `@connection`, a variable page input and select `Edges { Node { ...Row } }`
-and `PageInfo { TotalCount }`. The positive integer limit is required; optional positive `pageSize` caps each request. Missing metadata or
-an absent/null total throws; totals are never inferred. Rows are normalised and deduplicated
-by opaque identity. Offset traversal advances by returned edge count; keyset traversal follows
-`PageInfo.EndCursor` while `HasNextPage` is true. Empty continuing pages or repeated cursors
-fail rather than loop. Pages have no shared snapshot: concurrent movement may omit rows.
-`total` is the exact total returned by the last page, not a snapshot-wide guarantee.
-Abort and identity disposal cancel traversal. This is a one-time read; watch a root for freshness.
+Read from tags 0.90.1 and 0.93.0, and run on both with router 0.8.1 and SQLite:
 
-## Generated aggregates and counts (R15)
-
-Aliased count-only connections and multiple counts in one document use the same R3 list
-refresh path. Generated aggregates return arrays of `GraphqlAggregateResultRow`, with
-`Groups` and `Metrics` containing nullable `Field`, `Operator`, `Value` strings and a
-non-null `Kind` enum. Values stay exact strings; the generator preserves aliases and nullability.
-Read from graphql-orm tags 0.90.1 and 0.93.0: aggregate roots are opt-in (`aggregate = true`),
-accept generated Where, GroupBy, Metrics and GroupLimit inputs, and read their declared entity.
-The compiler matches the aggregate's input object types to connection-root inputs and derives
-the entity from `Edges.Node`. Exactly one candidate is required, and only project-live types
-enter `OperationArtifact.lists`. Shared result type or operation naming alone cannot establish
-entity ownership. With no matching connection, missing filter inputs, or several candidate
-entities, SDL is insufficient: no aggregate stream coverage is claimed. Poll explicitly.
-Proposed server contract: publish aggregate source entity metadata in the served schema.
-
-## Deleted records (R16)
-
-A direct `DELETED` removes the held store record and triggers its owning roots to re-read.
-Confirmed in React: a still-mounted row's `useFragment` returns null during the reread and
-after the response excludes it. `readFragment` also returns null. Legacy non-null signatures
-do not describe this state safely. Migrate by passing `{ deleted: "null" }` as the third
-argument to both functions: the return type becomes `D | null`; render a placeholder or
-return null before reading fields. Live-record fields and fragment masking stay unchanged.
-Null means unavailable (deleted, collected, disposed, or a missing record), not proof of a
-delete or permission to infer an empty result.
-
-Opt in to `createClient({ ..., store: { deletedRecords: "omit" } })` and regenerate.
-Readers omit missing direct list members and compiled connection edges with missing nodes
-while the owning root refreshes. The record is removed from storage immediately; stale
-connection references are replaced by the next read and collected normally. Totals still
-come from the server, so they may lag until the reread. Without this setting legacy list
-shape remains unchanged. Components holding old references must still handle null.
-`DELETED` with `PROPAGATED` retains the parent and re-reads its roots (graphql-orm 0.93.0).
-On both server tags read (0.90.1 and 0.93.0), without a preimage grant direct deletes send
-nothing: lists correct on their next delivered event or poll. A stream alone cannot promise
-instant delete visibility. Pages have no shared snapshot. Deletes carry no retained version tombstone: a late
-response can restore a removed row, even when that response carries a record version,
-because the deleted record no longer supplies a version to compare. Re-reading after
-reconnect remains necessary. Without a version, ordinary writes use last-arrival-wins.
-
-## R14–R16 validation
-
-Run against graphql-orm tags **0.90.1** (`adfa608d`) and **0.93.0** (`f0722a09`),
-with their real router 0.8.1 and SQLite fixture: `pnpm conformance` passed 19 groups
-on each version, including Node and Chromium recovery. R14 traversed real offset pages
-with `pageSize: 1`, checking bounded and complete results. R15 refreshed two aliased
-counts and a generated aggregate after creation through a separate request. R16 removed
-a preimage-enabled direct delete from a held record and list; its old fragment reference
-read null. Mock React tests separately held a row mounted while the owning root's reread
-was blocked, then completed, with version ordering, disposal, collection and reconnect checks.
-Early local runs failed on a missing connection key, fixture cleanup, and Chromium shared
-libraries; these were corrected before the passing full runs. No burst-delivery guarantee
-is inferred from these scenarios (graphql-orm#359).
+- **Aggregates:** generated aggregate roots return `GraphqlAggregateResultRow`, which is shared across entities and doesn't name its source. The compiler
+  matches the aggregate's input types to a connection root's and takes the entity from `Edges.Node`. It needs exactly one candidate; otherwise it claims
+  no stream coverage and the query must poll. Proposed: publish the aggregate's source entity in the served schema.
+- **Direct deletes without a preimage grant** send nothing, so a list corrects on its next delivered event or poll.
+- **No tombstone:** a late response can restore a removed row, because the deleted record no longer has a version to compare. The read that follows the
+  event corrects it.
