@@ -89,6 +89,18 @@ const CLIENT_DIRECTIVES = parse(`
   directive @paged(paging: String) on FIELD
 `)
 
+// Each live type compiles nested documents, so without this a large schema is extended hundreds of times.
+const clientSchemas = new WeakMap<GraphQLSchema, GraphQLSchema>()
+
+function clientSchemaOf(schema: GraphQLSchema): GraphQLSchema {
+  let extended = clientSchemas.get(schema)
+  if (!extended) {
+    extended = extendSchema(schema, CLIENT_DIRECTIVES)
+    clientSchemas.set(schema, extended)
+  }
+  return extended
+}
+
 const CLIENT_DIRECTIVE_NAMES = new Set(["live", "connection", "refetchable", "paged", "sensitive"])
 
 /** graphql-orm's connection and keyset field names. */
@@ -199,7 +211,7 @@ function compileDocuments(
   options: CompileOptions,
   nested: boolean
 ): CompileResult {
-  const clientSchema = extendSchema(schema, CLIENT_DIRECTIVES)
+  const clientSchema = clientSchemaOf(schema)
   const documents = sources.map((source) => (typeof source === "string" ? parse(source) : source))
   const fragmentNodes = new Map<string, FragmentDefinitionNode>()
   const operationNodes: OperationDefinitionNode[] = []
@@ -277,11 +289,12 @@ function compileDocuments(
     const text = [augmented, ...[...used].sort().map((fragment) => augmentedFragments.get(fragment)!)]
       .map((definition) => print(stripClientDirectives(definition)))
       .join("\n\n")
-    const reachable = reachableTypes(convert(schema, augmented.selectionSet, rootType, augmentedFragments, true, options))
+    const normalization = convert(schema, augmented.selectionSet, rootType, augmentedFragments, true, options)
+    const reachable = reachableTypes(normalization)
     const paged = pagedSpecOf(schema, node, rootType, options)
     operations[name] = {
       kind: node.operation,
-      lists: listTypes(schema, convert(schema, augmented.selectionSet, rootType, augmentedFragments, true, options), rootType, options),
+      lists: listTypes(schema, normalization, rootType, options),
       ...(sensitive ? { sensitive: true } : {}),
       keys: pick(metadata.keys, reachable),
       versions: pick(metadata.versions, reachable),
@@ -290,7 +303,7 @@ function compileDocuments(
       hash: createHash("sha256").update(text).digest("hex"),
       rootType: rootType.name,
       selections: convert(schema, augmented.selectionSet, rootType, sensitive ? augmentedFragments : fragmentNodes, sensitive, options),
-      normalization: convert(schema, augmented.selectionSet, rootType, augmentedFragments, true, options),
+      normalization,
       fragments: Object.fromEntries([...used].sort().map((fragment) => [fragment, fragments[fragment]!])),
       ...(paged ? { paged } : {}),
     }
