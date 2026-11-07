@@ -97,12 +97,25 @@ export class CompileError extends Error {
 const CLIENT_DIRECTIVES = parse(`
   directive @live(enabled: Boolean = true) on FRAGMENT_DEFINITION
   directive @poll(reason: String!) on QUERY | FRAGMENT_DEFINITION
+  directive @sensitive on QUERY | MUTATION
   directive @connection(key: String!, paging: [String!]) on FIELD
   directive @refetchable(queryName: String) on FRAGMENT_DEFINITION
   directive @paged(paging: String) on FIELD
 `)
 
-const CLIENT_DIRECTIVE_NAMES = new Set(["live", "poll", "connection", "refetchable", "paged"])
+// Each live type compiles nested documents, so without this a large schema is extended hundreds of times.
+const clientSchemas = new WeakMap<GraphQLSchema, GraphQLSchema>()
+
+function clientSchemaOf(schema: GraphQLSchema): GraphQLSchema {
+  let extended = clientSchemas.get(schema)
+  if (!extended) {
+    extended = extendSchema(schema, CLIENT_DIRECTIVES)
+    clientSchemas.set(schema, extended)
+  }
+  return extended
+}
+
+const CLIENT_DIRECTIVE_NAMES = new Set(["live", "poll", "connection", "refetchable", "paged", "sensitive"])
 
 /** graphql-orm's connection and keyset field names. */
 const DEFAULT_CONNECTION = {
@@ -212,7 +225,7 @@ function compileDocuments(
   options: CompileOptions,
   nested: boolean
 ): CompileResult {
-  const clientSchema = extendSchema(schema, CLIENT_DIRECTIVES)
+  const clientSchema = clientSchemaOf(schema)
   const documents = sources.map((source) => (typeof source === "string" ? parse(source) : source))
   const paths = new Map<FragmentDefinitionNode | OperationDefinitionNode, readonly string[]>()
   documents.forEach((document, index) => {
@@ -324,23 +337,28 @@ function compileDocuments(
       selectionSet: augmentSelectionSet(schema, node.selectionSet, rootType, options, false),
     }
     const used = usedFragments(augmented.selectionSet, fragmentNodes)
+    const sensitive = node.directives?.some(d => d.name.value === "sensitive") === true
+    if (sensitive && [...used].some(name => fragments[name]?.live))
+      throw new CompileError([`${name}: @sensitive cannot spread a live fragment; mark it @live(enabled: false) or use a fragment of its own`])
     const text = [augmented, ...[...used].sort().map((fragment) => augmentedFragments.get(fragment)!)]
       .map((definition) => print(stripClientDirectives(definition)))
       .join("\n\n")
-    const reachable = reachableTypes(convert(schema, augmented.selectionSet, rootType, augmentedFragments, true, options))
+    const normalization = convert(schema, augmented.selectionSet, rootType, augmentedFragments, true, options)
+    const reachable = reachableTypes(normalization)
     const paged = pagedSpecOf(schema, node, rootType, options)
     operations[name] = {
       kind: node.operation,
       ...(pollReason(node) ? { pollReason: pollReason(node) } : {}),
-      lists: listTypes(schema, convert(schema, augmented.selectionSet, rootType, augmentedFragments, true, options), rootType, options),
+      lists: listTypes(schema, normalization, rootType, options),
+      ...(sensitive ? { sensitive: true } : {}),
       keys: pick(metadata.keys, reachable),
       versions: pick(metadata.versions, reachable),
       name,
       text,
       hash: createHash("sha256").update(text).digest("hex"),
       rootType: rootType.name,
-      selections: convert(schema, augmented.selectionSet, rootType, fragmentNodes, false, options),
-      normalization: convert(schema, augmented.selectionSet, rootType, augmentedFragments, true, options),
+      selections: convert(schema, augmented.selectionSet, rootType, sensitive ? augmentedFragments : fragmentNodes, sensitive, options),
+      normalization,
       fragments: Object.fromEntries([...used].sort().map((fragment) => [fragment, fragments[fragment]!])),
       ...(paged ? { paged } : {}),
     }

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Compile a large schema far faster. After 0.1.0-alpha.10's stream selections, each live type re-extended the whole schema: 250 documents on a
+  45,000-line schema took about 24 s and now take under a second.
 - R1: opt-in `live: "default"` and `live: { "default": ["src/area/**"] }` generation;
   the package default stays `"explicit"`. Migration: opt in by area, regenerate and inspect health
   and socket capacity before widening. `@live(enabled: false)` opts out. Implicit streamless
@@ -23,6 +25,22 @@
   confirming reads narrow the subscribe gap without eliminating it.
 - Regenerated `@connection` queries refresh the loaded range and serialize load-more with refresh.
   Bounded refresh retains the tail and reports `listRefreshTruncated` and degraded health.
+- R12: add `errorsAtPath` and opt-in `partialResults: "preserve-errors"`. Migration: enable the setting and render path errors alongside retained (potentially stale) values. Legacy null overwrite remains the default.
+
+- R10: additive write outcome API and explicit retry hook method; no automatic replay. Opt into independent HTTP `writes` and `reads` limits; omitted limits preserve existing behaviour. Supply a reconciliation read for known affected records.
+
+- R9: query and mutation `@sensitive` returns plain expanded data without storing it. Live combinations and watched sensitive queries reject. Existing `no-store` behaviour is unchanged.
+- Add R11 ephemeral streams: `client.stream` and React `useEphemeralStream`, with explicit
+  sequence/resume contracts, bounded volatile buffers, coalesced notifications, reconnect replay
+  and visible gaps/evictions. Additive; no migration. Existing plain subscriptions are unchanged.
+
+- Generate flattened full/thin live projections. Unsupported full selections fall back to keys only;
+  events re-read holders for omitted fields and changed relation links. Health retains
+  `selection-refused`, and doctor distinguishes admitted/quiet fallback. Quiet fallback fails strict
+  mode; working fallback otherwise passes.
+- Automatic stale, restart and R4 confirming reads share `live.minRereadMs` (default 2000). Repeated
+  confirmations from changing query membership are bounded, and inactive queries catch up on return.
+- Infer composite keys from `<Type>KeyInput` and build key arguments from stored fields.
 
 R3 migration: regenerate to turn list behavior on; previously generated modules without `lists`
 keep today's keyed behavior. A list opens a stream only for a type with a `@live` fragment somewhere in

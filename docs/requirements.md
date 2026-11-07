@@ -118,13 +118,17 @@ their own.
 
 ## 3. What real applications need beyond records
 
-**R9. Sensitive results.** Mutations have `policy: "no-store"` (0.1.0-alpha.6). What remains: a way to
+**R9. Sensitive results.** *Built:* operation-level `@sensitive`, plain results without fragment references; queries use `client.query`, live combinations fail compilation. R17 must exclude these results.
+
+ Mutations have `policy: "no-store"` (0.1.0-alpha.6). What remains: a way to
 declare this in the document so it can't be forgotten at a call site, the same for query results, and
 keeping such values out of persistence (R17) and any inspector.
 *Acceptance:* an operation declared sensitive leaves its values nowhere in the store, with no call-site
 option, and a test proves it.
 
-**R10. Honest write outcomes.** A mutation is sent once and never retried automatically. The result
+**R10. Honest write outcomes.** *Built:* opt-in `mutateOutcome` / `commitOutcome`, explicit reconciliation reads and independent HTTP write bounds. Refused/failed server evidence is a proposed contract addition; absent evidence remains unconfirmed.
+
+ A mutation is sent once and never retried automatically. The result
 separates **refused** (it didn't happen), **failed**, and **unconfirmed** (the connection was lost
 after sending, or the server committed and then refused the read-back, so it may have happened).
 Writes have their own deadline and response limit, apart from reads. A hook supports an explicit
@@ -135,10 +139,15 @@ retry after step-up authentication, with no queued replay and no credential held
 the store: progress, AI text deltas, terminal output, search results. It has a resume cursor, sequence
 de-duplication, replay after reconnect, a bounded buffer and render coalescing. This replaces the
 consumer-written versions and is the one sanctioned exception in R5.
+*Built:* `client.stream` and React `useEphemeralStream`: explicit sequence/cursor/resume declarations,
+bounded volatile buffers, coalesced snapshots, socket reconnect replay and visible gaps/evictions.
+Replay requires a service-provided custom subscription; no sequence means continuity is unprovable.
 *Acceptance:* a high-frequency stream reconnects with no duplicate or missing items and without
 re-rendering per event.
 
-**R12. Partial results.** One refused root or alias must not blank the rest of a response. Errors are
+**R12. Partial results.** *Built:* existing per-path errors and partial alias data are tested. Opt-in `partialResults: "preserve-errors"` protects good cached values from error-associated nulls; `errorsAtPath` selects alias state. Real router 0.8.1 / graphql-orm 0.90.1 preserved a good alias beside a failing nullable root.
+
+ One refused root or alias must not blank the rest of a response. Errors are
 reported per path, so several aliased counts or dashboard reads can show their own state. Confirm what
 happens today, and document it.
 

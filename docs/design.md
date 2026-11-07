@@ -715,11 +715,11 @@ those runs; each timing in each run is itself the median of five samples.
 | Heap after collection (bytes) | 14,960 | 4,000,000 |
 | 100-event burst wall time (ms) | 32.552 | 750 |
 | 100-event subscriber notifications | 100 | 100 |
-| 45,000-line schema + 250 documents (ms) | 7,580.862 | 30,000 |
-| Main standalone raw bundle (bytes) | 39,582 | 50,000 |
-| Main standalone gzip bundle (bytes) | 13,077 | 17,000 |
+| 45,000-line schema + 250 documents (ms) | 694 | 5,000 |
+| Main standalone raw bundle (bytes) | 49,423 | 60,000 |
+| Main standalone gzip bundle (bytes) | 15,889 | 20,000 |
 | React standalone raw bundle (bytes) | 6,969 | 10,000 |
-| React standalone gzip bundle (bytes) | 2,834 | 4,000 |
+| React standalone gzip bundle (bytes) | 2,836 | 4,000 |
 
 Bundles come from the actual built ESM entries, bundled and minified with esbuild; raw means
 uncompressed bundle bytes, gzip uses level 9. React and GraphQL peers are external.
@@ -750,9 +750,12 @@ It includes page/runtime, query snapshots and store allocations; it excludes nat
 memory, browser RSS, GPU memory and server cost. It does not establish a bound on a full
 application or on other devices.
 
-The compiler is the largest time cost: local run medians ranged from
-7,542.151 to 8,122.624 ms.
-The 30 s limit allows about four times the local median on shared runners.
+The compile, main and react rows were measured again on 2026-11-07 after R2, R3 and R4; the rest are from the first run. Those three
+changes took the main bundle from 39,582 to 49,423 bytes. They also took the marginal JS heap per window on a CI runner from about 7.0 MB to
+about 11.5 MB, with 10,000 rows per window. That is within its limit and not yet explained.
+
+A nested compile for each live type used to re-extend the whole schema, which took the compile from 7.6 s to about 24 s while staying under
+the then limit of 30 s. The extended schema is now cached per schema, and the 5 s limit is what guards it.
 A missing browser fails with "window budget not run"; an explicit `--skip-window` reports
 incomplete and never counts as a pass. CI installs Chromium and does not skip.
 
@@ -809,6 +812,158 @@ list used 1 stream with 0 capacity refusals; a legacy artifact hit 32 streams wi
 SUBSCRIPTION_LIMIT_EXCEEDED refusals. Mocks cover bursts, inactive reads, version conflicts,
 identity disposal, collection, overlap, reconnect recovery and a load-more race. No browser or
 server-main run was performed for R3.
+### Sensitive operations (R9)
+
+Declare `@sensitive` on a query or mutation. Generation records `sensitive: true` and strips
+the directive from the wire document. Results are plain values with fragment selections expanded;
+they carry no fragment references and cannot be opened by `readFragment`. No store (including
+a private store), retention or inspector receives the result. Existing matching entities remain
+unchanged, just as with mutation `policy: "no-store"`. That older option still supports private
+fragment reads. Sensitive queries use imperative `client.query`; watched queries and preload
+reject them because those retain results. Sensitive mutations reject optimistic responses.
+Live fragments anywhere in a sensitive operation, and operation-level `@live`, fail the build.
+Persistence is proposed (R17); it must exclude these results. Callers own the returned values
+and must avoid logging or retaining secrets themselves. No server change is required.
+
+### Write certainty (R10)
+
+`client.mutateOutcome` and React `useMutation(...).commitOutcome` return an outcome even
+when legacy `mutate` / `commit` would throw; those existing APIs still return or throw as before.
+Statuses are `confirmed`, `refused`, `failed`, `unconfirmed`. No write is retried.
+After step-up authentication call `commitOutcome` again explicitly with fresh variables;
+the hook queues no replay and holds no credential. Supply `reconcile: () => client.refetchFragment(F, ref)`
+(or an explicit network-only query) for known affected records. Unconfirmed writes await that read
+and report `reread`, `failed`, or `unavailable` when no record/read is known.
+A re-read observes current state; it does not prove this write committed.
+
+The classifier requires evidence: all selected root results with `Success: true` and no errors
+confirm a write. Explicit server `extensions.outcome: "refused"` / `"failed"` distinguish those
+outcomes; these two signals are proposed server contract additions and tested with mocks.
+A transport can mark an error as coming before the send with `markNotSent`, as `createHttpNetwork` does for a failed `headers()`; that, or cancellation before sending, is failed. The thrown error is unchanged. A response with no `data` key is refused: per GraphQL over HTTP, execution never started.
+Connection loss, cancellation after send, HTTP errors, partial errors and GraphQL `data: null`
+are unconfirmed. Neither HTTP status nor error message text proves a refusal. Missing Success,
+`Success: false`, and mixed multi-root outcomes are conservatively unconfirmed.
+
+Source checked: graphql-orm tag `graphql-orm-v0.90.1`, router 0.8.1:
+runtime/mutation.rs marks post-commit payload denial/failure/timeout with
+`extensions.outcome: "committed", retryable: false`; outcome unknown also forbids automatic retry.
+Generated operations.rs uses boolean Success and free-form Error; these are insufficient for
+uniform refusal classification. No client inference from error text is used.
+
+HTTP limits are opt-in to preserve existing applications: configure
+`createHttpNetwork({ url, writes: { deadlineMs: 15000, maxResponseBytes: 1048576 } })`.
+`reads` has independent bounds; omitted bounds retain unlimited behaviour.
+Limits cover response streaming and are not mutation retries. Custom networks must implement
+their own bounds and must not automatically retry mutations.
+
+### Partial responses (R12)
+
+Already supported: an HTTP GraphQL response with both data and errors is returned; successful
+aliases normalise and render. `QueryState.errors` and `useQuery().errors` preserve every original
+error path (including aliases and list indices). Query state is ready with partial data; React
+also exposes an `OperationError` in `error`. No-data responses still throw. `readFragment` and
+`useFragment` return only masked data, not operation errors. The query owner must pass error
+state to fragment components; use `errorsAtPath(query.errors, ["alias", ...])` to select it.
+Pathless errors apply to every path. Do not render missing data as empty or zero.
+
+Previously (and by default), error-associated nulls overwrite good cached fields. Opt into
+`createClient({ network, partialResults: "preserve-errors" })` to omit null writes at error paths
+or their null-bubbled ancestors. Other aliases still write, and genuine nulls without errors
+still clear values. A refused array position preserves the whole list rather than shifting
+positions or guessing identity. Pathless errors cannot identify refused fields, so their nulls
+retain legacy handling. Missing fields remain missing. Existing values may therefore be stale;
+always render the path error alongside retained data. Fragment readers see retained values;
+they do not independently know whether a root was refused. Version ordering, identity disposal
+and collection still use the existing store rules. Live recovery continues to re-read holders.
+
+Migration: enable `partialResults: "preserve-errors"`, then audit partial views to check
+`errorsAtPath` before displaying retained values. The default remains `"legacy"` so existing
+applications keep their null-clearing behaviour.
+
+Real run: generated conformance service from graphql-orm 0.90.1, router 0.8.1, with a failing
+remote root and a successful entity alias in one document returned
+`data: { bad: null, good: { Id: "w1", Name: "First" } }` and
+`errors: [{ message: "Unexpected error", path: ["bad"], extensions: {
+code: "DOWNSTREAM_SERVICE_ERROR", service: "remote" } }]` (also source locations).
+This confirms the router preserves the good alias for this nullable failing root. A non-null
+root can still bubble to data:null; the client cannot recover data the server did not return.
+The same real run dropped the HTTP socket after a write committed: outcome was unconfirmed,
+reconciliation reread, and a network-only read observed the updated name and version 2.
+No real refused-write signal or committed read-back denial was produced; those classifier
+cases use mocks. The fixture's public mutation succeeded without an authorization header.
+## Ephemeral streams (R11)
+
+`client.stream(subscription, variables, options)` creates a framework-agnostic handle for progress,
+AI text deltas, terminal output and search results. It uses `live.subscribe`, as plain subscriptions
+do, but bypasses normalization entirely. Nothing enters the store or persistence. Call `open()`
+to start and `dispose()` to stop and synchronously erase the buffer and cursor. The client owns
+all handles, including unopened ones, and disposes them on `client.dispose()`. Identity changes
+must dispose the old client before creating the next one, as with query data.
+
+```ts
+const output = client.stream(OutputSubscription, {}, {
+  select: data => data.output,
+  bufferSize: 2000,
+  sequence: {
+    value: item => item.seq,
+    after: 0,
+    cursor: item => item.cursor,
+    resume: (variables, cursor) => ({ ...variables, after: cursor }),
+  },
+})
+output.open()
+// React: useEphemeralStream(output), imported from graphql-orm-client/react.
+// The owner opens and disposes the handle; the hook only reads it.
+```
+
+The application's subscription must select the sequence and cursor fields and declare the resume
+variable. `sequence.value` declares contiguous increasing safe integers; values at or below the
+last accepted sequence are discarded. This assumes ordered delivery within that declared sequence,
+not arbitrary out-of-order events. `after` establishes the initial expected sequence; without it,
+observation starts at the first item and says nothing about earlier items. `cursor` and `resume`
+are a pair, omitted when the service cannot replay. Cursors remain opaque to the client.
+
+State has `connecting`, `open` (an item arrived), `reconnecting`, `ended` (normal completion or
+disposal) and `failed`. `continuity: observed` means only that observed sequences were contiguous;
+it does not prove admission of a quiet stream or delivery of an unseen final item. During reconnect
+continuity is `unprovable` until replay delivers another contiguous sequence. Without replay it
+stays unprovable after an interruption. A forward jump records the first `gap` with `expected` and
+`received`; it remains visible. Without `sequence`, continuity is always `unprovable`, duplicates
+are kept, and gaps cannot be detected. `status: open` alone is never a continuity guarantee.
+
+`bufferSize` is required. Oldest items are evicted and `dropped` counts them; eviction is separate
+from a transport gap. Notifications and immutable snapshots coalesce over 16 ms using the live timer
+seam, so `useSyncExternalStore` does not render for every event. `getState()` returns the last
+published snapshot. Disposal publishes an empty snapshot synchronously and cancels all timers.
+No browser global is accessed at module import time.
+
+Use `graphqlWsTransport(ws)` so socket recovery signals through `live.connection`; the handle cancels
+the transport's stale-variable resubscription and subscribes with the last cursor. Transport errors,
+continuity errors, schema reload and capacity/unavailability errors retry using `live.restart`'s
+minimum and maximum delays, with jitter and a minimum positive delay. `maxRetries` counts retries in a row, since the last item, including socket recoveries, and defaults to eight.
+`live.restart: false` disables automatic retries. Refusals and other GraphQL errors fail immediately;
+normal completion ends without retry. Create a new handle explicitly after a failure. Plain
+`client.subscribe` and `useSubscription` retain their existing store-writing behavior.
+
+The server must implement replay for the application's custom subscription. Neither graphql-orm
+0.90.1 nor 0.91.1 with router 0.8.1 supplies a generic custom-subscription replay protocol.
+
+R11 verification: the test kit drives 1,000 items with overlapping replay across reconnect and fewer
+than ten React renders, plus gaps, unprovable continuity, overflow, disposal and refusal/retry cases.
+A loopback run used the conformance router binary (graphql-orm-router 0.8.1 built from the 0.90.1
+source) with a test-owned Node subgraph declaring `output(after: Int)` and explicit integer replay:
+1,000 items, socket dropped after 500, resume at 500, no missing/duplicate items, 278 notifications.
+The source sent one item every 5 ms. An unpaced burst through the router loses items, and the stream reports the gap. That loss
+is the router's, not the client's: a bare socket with no client received 274 of 1000 frames from the same source, with no error frame
+(router 0.8.1 at `graphql-orm-v0.90.1`, graphql-orm#359). So for a source that bursts, declare a sequence so the loss shows, and don't
+rely on the router delivering every frame.
+
+R11 budget run (`pnpm budgets --skip-window`): main 48,554 raw / 15,767 gzip bytes and React
+7,096 / 2,875, within checked-in limits. Comparing minified source closures with the branch's parent
+adds 3,613 raw / 1,151 gzip bytes to main and 127 / 37 to React (source and built closures differ
+slightly). The command failed the unrelated compiler timing budget: median 41,678.8 ms exceeded
+30,000 ms. Window measurements were explicitly skipped, so that portion is incomplete. No limits
+were raised and this is not a full budget pass.
 
 ## Project build policies (R5)
 
