@@ -1,7 +1,6 @@
 # Live by default: design for requirement groups 1 and 2
 
-Status: **proposed; the owner approved the direction on 2026-11-06. Built so far: the restart of ended
-streams (fact 4), in 0.1.0-alpha.7; R20 and R7, in 0.1.0-alpha.8; R8 and R6, in 0.1.0-alpha.9. R4's client-side overlap and confirming reads are built; true gap closure still needs a server started signal. Group 1, R2, R3, R5 and the opt-in R1 setting are built. The package live default remains explicit.** Requirement numbers refer to [requirements.md](../requirements.md).
+Status: **built, in 0.1.0-alpha.7 to 0.1.0-alpha.11, except that R1's default stays `explicit` until the owner decides.** The design below is kept as the reasoning; the [design](../design.md) describes what shipped. True gap closure on a first read still needs a server started signal. Requirement numbers refer to [requirements.md](../requirements.md).
 R21's `conformance/` fixture now runs the admission, key delivery, delete, node, version,
 list and router-frame facts against `graphql-orm-v0.90.1` (adfa608d), router 0.8.1 and SQLite.
 Other facts remain source-read from `main` at `9d1a482` unless noted. Recovery assertions

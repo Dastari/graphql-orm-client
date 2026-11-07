@@ -228,11 +228,11 @@ are in `budgets/limits.json`; the method and one-machine window measurement are 
 [the design](design.md#several-windows-r19-and-budgets-r22). A skipped browser measurement is incomplete,
 never a pass.
 
-**R24. Release discipline.** While pre-1.0, every breaking change has migration steps in the changelog
+**R24. Release discipline.** *Built:* the rules are in `AGENTS.md`, and `test/release.test.ts` checks the version, changelog and shipped skills agree. While pre-1.0, every breaking change has migration steps in the changelog
 and a generator error or warning where one is possible. A behaviour change that alters what a working
 application does has a setting. Consumers pin exact versions.
 
-**R25. Agent-ready documentation.** Skills, `llms.txt` and the README describe the default path first.
+**R25. Agent-ready documentation.** *Built, and tested below.* Skills, `llms.txt` and the README describe the default path first.
 An agent following them, with no other knowledge, passes the acceptance test at the top.
 
 ## Suggested order
@@ -254,6 +254,26 @@ The design for groups 1 and 2, with its direction approved and labelled proposed
   ownership per project, by globs.
 - **R7:** `unconfirmed` and `idle` are added to the states.
 - **R19:** one socket and store per window for now; R22 measures it.
+
+## Decisions from the owner and a large application (2026-11-07)
+
+- **R1:** the default stays `explicit` until a large application reports a trial of `live: { default: [...] }` on one area: stream count, refusals, reads per minute and peak operations per connection, before and after. It already holds about 20 of the router's 32 operations per connection, so headroom is the question.
+- **Burst read:** on by default with a setting to turn it off, coalesced per query across types, respecting a read in flight and a hidden page, and visible in health.
+- **`pollMs`:** no static scan. A heuristic that can flag the wrong call is worse than development and tests catching it.
+- **`@batch` reads during render:** accepted on conditions, each with a test: no request during server rendering, no store notification during render, a discarded render leaves only a read, and no double sends under StrictMode.
+
+## The acceptance test at the top: results
+
+Run on 2026-11-07 with fresh agents given only the installed package and an ordinary feature request that didn't mention freshness, then running what they wrote against a real router (graphql-orm 0.90.1, router 0.8.1).
+
+| Run | Used `@live`? | Row created elsewhere | Row renamed elsewhere | Health |
+| --- | --- | --- | --- | --- |
+| First agent, under `explicit` | No | Never appeared | Never updated | `idle` |
+| The same documents, under `default` | Not needed | Appeared | Updated | `live` |
+| Second agent, with the generator warning, under `explicit` | Yes | Appeared | Failed, which found a bug in list re-reads | `live` |
+| The second agent's documents, after the fix | Yes | Appeared | Updated | `live` |
+
+So under `explicit` this test depends on the reader acting on a warning, and the second agent left the warning on an existing fragment it didn't write. Neither agent used `useLiveHealth` by itself. One run each is evidence and not a proof. This is the case for R1, subject to the trial above.
 
 ## What the server needs
 
