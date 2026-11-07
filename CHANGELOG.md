@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- R18: add cancellable `client.loadQuery` handles and non-Suspense `useLoadedQuery`, sharing a read
+  across loader, mount and StrictMode replay. Migration is opt-in: replace `preload`/`useQuery` as a
+  pair, forward the router abort signal and dispose abandoned navigation. Unmounted loads expire
+  after 30 seconds (`timeoutMs`). List streams open before reading and close with the handle.
+- Conditional `@skip`/`@include` selections now fail builds by default: previous readers treated
+  omitted fields as missing and generated types required them; live projections lost conditions.
+  Migration: set generator `conditionalDirectives: "legacy"` temporarily, split conditional route
+  roots, then remove the setting and regenerate. Fragment arguments remain unsupported with a
+  clearer error. Whole-operation hook `skip` is unchanged.
+- Server-shell `useQuery` renders idle without registering a watch or starting I/O. Hydration uses
+  the same idle snapshot. Migration: render an idle placeholder, or temporarily pass
+  `{ serverSnapshot: "legacy" }` to restore the prior snapshot. Server data rendering, result streaming
+  and store handoff remain non-goals.
+
 - Compile a large schema far faster. After 0.1.0-alpha.10's stream selections, each live type re-extended the whole schema: 250 documents on a
   45,000-line schema took about 24 s and now take under a second.
 - R1: opt-in `live: "default"` and `live: { "default": ["src/area/**"] }` generation;

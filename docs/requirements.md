@@ -189,6 +189,11 @@ a stale keyset cursor can be accepted at the wrong place.
 loader can avoid a waterfall. Suspense is optional. Decide on fragment arguments
 (`@argumentDefinitions`) and support for `@skip`/`@include`. Server rendering stays a non-goal, but
 document how the client behaves inside a framework that renders a shell on the server.
+*Built:* `client.loadQuery` and `useLoadedQuery` share a retained read across loader and mount,
+with abort, unused-load timeout and StrictMode replay cleanup. Non-Suspense. Conditional selections
+are rejected by default (`conditionalDirectives: "legacy"` is migration only); fragment arguments
+are rejected. Node server shells return idle without starting queries; no data streaming or store
+handoff. See [route loading](design.md#route-loading-r18) for lifecycle and migration.
 
 **R19. Several windows.** An application with pop-out windows or several tabs opens one socket and
 store per window. The owner decided to keep that for now; R22 measures the cost, including pop-out tool

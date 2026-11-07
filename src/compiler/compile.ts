@@ -52,6 +52,9 @@ export interface CompileOptions {
   readonly subscriptionPaths?: readonly string[]
   /** Source text to all declaring files, relative to the config directory. CLI supplies this. */
   readonly documentPaths?: Readonly<Record<string, readonly string[]>>
+  /** Reject unsupported conditional selections. legacy preserves the previous unsafe behaviour for migration only. */
+  readonly conditionalDirectives?: "reject" | "legacy"
+
   /** Stream projection; as-written preserves legacy fragment spreading. */
   readonly liveSelection?: "full" | "as-written"
   /** Reports fields omitted from generated stream projections. */
@@ -265,6 +268,15 @@ function compileDocuments(
     kind: Kind.DOCUMENT,
     definitions: [...operationNodes, ...fragmentNodes.values()],
   }
+  visit(combined, {
+    Directive(node) {
+      const name = node.name.value
+      if ((name === "skip" || name === "include") && options.conditionalDirectives !== "legacy")
+        problems.push(`@${name} is unsupported: conditional reads, generated optional types and live projections are not implemented. Split the route query; conditionalDirectives: "legacy" temporarily restores unsafe previous compilation.`)
+      if (name === "argumentDefinitions" || name === "arguments")
+        problems.push(`@${name}: fragment arguments are unsupported; declare variables on the route operation instead`)
+    },
+  })
   // Fragments may be compiled without an operation that uses them.
   const rules = specifiedRules.filter((rule) => rule.name !== "NoUnusedFragmentsRule")
   for (const error of validate(clientSchema, combined, rules)) problems.push(error.message)

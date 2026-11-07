@@ -36,6 +36,8 @@ is deliberately a small Node federation extension, owning Widget.RemoteName thro
 the NodeId key and Vendor.RemoteName through the persisted Id key. The latter is
 admitted and resolved per event; the NodeId-key variant follows NodeId's admission (see below). The source of entity events and all database writes is the Rust ORM.
 
+R18 also preloads a query and mounts its handle later, asserting one HTTP read through the real router.
+
 Assertions cover empty Keys, keys/key/unkeyed streams, creation outside the held
 keys, scalar admission, NodeId and computed/relation refusals, federation fetch
 admission, delete preimage grants, managed versions, delayed server snapshots,
