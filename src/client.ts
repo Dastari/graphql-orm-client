@@ -86,7 +86,11 @@ export interface QueryState<T> {
   readonly hasMore: boolean
   /** A next page is being fetched; the loaded rows stay in `data`. */
   readonly loadingMore: boolean
-  /** Loaded tail was retained because automatic refresh reached its configured bound. */
+  /**
+   * The last refresh stopped at its bound (`live.maxRereadRows`, and `live.maxRereadPages` for keyset), so the rows past it are kept
+   * as they were and may be stale or out of order. Show it, for example as a notice at the end of the list, and offer a way back to
+   * fewer rows. Health reports `list-refresh-truncated` too.
+   */
   readonly listRefreshTruncated?: boolean
 }
 
@@ -121,8 +125,10 @@ export interface ClientOptions {
 
 export interface PollingOptions {
   /**
-   * `pollMs` on a query with no `@poll(reason)`. `error`, the default, throws outside production on a regenerated module, and otherwise
-   * warns and still polls. `warn` always warns, and `off` says nothing.
+   * `pollMs` on a query with no `@poll(reason)`. Left unset, it throws on a regenerated module where `process.env.NODE_ENV` is set to
+   * something other than `production`, as in development and tests. Elsewhere, including a bundle that doesn't define
+   * `process.env.NODE_ENV`, it warns and still polls. `error` always throws on a regenerated module, `warn` always warns, and `off`
+   * says nothing. A module generated before `@poll` only warns.
    */
   readonly undeclared?: "error" | "warn" | "off"
   /**
@@ -1095,7 +1101,9 @@ export class Client {
           while (found && (found.data[edgesKey] as unknown[]).length < target && count < refresh.pages) {
             const info = found.data[infoKey] as Record<string, unknown>
             if (info[spec.hasNextPage] !== true || typeof info[spec.endCursor] !== "string") break
-            const next = { ...variables, [arg.variable]: { ...page, [spec.after]: info[spec.endCursor] } }
+            // Only the rows still missing, so the last request doesn't read a whole page past what's loaded.
+            const size = Math.min(target - (found.data[edgesKey] as unknown[]).length, Math.max(refresh.rows, Number(page[spec.limit]) || 0))
+            const next = { ...variables, [arg.variable]: { ...page, [spec.after]: info[spec.endCursor], [spec.limit]: size } }
             this.countRead(cause)
             const extra = await this.network.execute({ kind: artifact.kind, name: artifact.name, text: artifact.text, hash: artifact.hash, variables: next }, { signal })
             if (extra.errors?.length || !extra.data) throw new OperationError(artifact.name, extra.errors ?? [])
@@ -1163,9 +1171,15 @@ export class Client {
       const refreshSelection = options.refreshConnection && firstConnection(artifact.normalization)
       const refreshSpec = refreshSelection && refreshSelection.connection
       const refreshArg = refreshSelection && refreshSelection.args.find(arg => arg.name === refreshSpec?.paging[0])
-      // At least the page the query asks for: asking only for what's loaded would let a new row push one out of a page with room.
-      if (options.refreshConnection && refreshSpec?.offset && refreshSpec.limit && refreshArg?.kind === "variable" && options.refreshConnection.loaded > 0) {
-        networkVariables = { ...variables, [refreshArg.variable]: { ...(variables[refreshArg.variable] as object), [refreshSpec.offset]: (variables[refreshArg.variable] as Record<string, unknown> | undefined)?.[refreshSpec.offset] ?? 0, [refreshSpec.limit]: Math.max(Math.min(options.refreshConnection.loaded, options.refreshConnection.rows), Number((variables[refreshArg.variable] as Record<string, unknown> | undefined)?.[refreshSpec.limit]) || 0) } }
+      // The loaded rows in one request where the bound allows, for offset and keyset lists alike. At least the page the query asks
+      // for: asking only for what's loaded would let a new row push one out of a page with room.
+      if (options.refreshConnection && refreshSpec?.limit && refreshArg?.kind === "variable" && options.refreshConnection.loaded > 0) {
+        const page = (variables[refreshArg.variable] as Record<string, unknown> | undefined) ?? {}
+        networkVariables = { ...variables, [refreshArg.variable]: {
+          ...page,
+          ...(refreshSpec.offset ? { [refreshSpec.offset]: page[refreshSpec.offset] ?? 0 } : {}),
+          [refreshSpec.limit]: Math.max(Math.min(options.refreshConnection.loaded, options.refreshConnection.rows), Number(page[refreshSpec.limit]) || 0),
+        } }
       }
       options.beforeSend?.()
       if (artifact.kind === "query") this.countRead(options.readCause ?? "manual")
@@ -1214,10 +1228,10 @@ export class Client {
     const { policy = "store-and-network", pollMs } = typeof options === "string" ? { policy: options } : options
     if (pollMs !== undefined && !artifact.pollReason?.trim()) {
       const message = `Operation ${artifact.name}: pollMs needs @poll(reason: "why polling is needed") on the query. Add it and regenerate, or set polling.undeclared.`
-      const setting = this.polling.undeclared ?? "error"
-      // A build can't see a runtime option, so this is what finds it. It stays out of production and modules generated before the
-      // rule existed (no `lists`), because a working page mustn't crash on upgrade.
-      if (setting === "error" && artifact.lists !== undefined && !isProduction()) throw new Error(message)
+      const setting = this.polling.undeclared
+      // A build can't see a runtime option, so this is what finds it. Left unset, it throws only where the environment says it's
+      // development or tests. Never on a module generated before the rule existed (no `lists`): a working page mustn't crash on upgrade.
+      if ((setting === "error" || (setting === undefined && isDevelopment())) && artifact.lists !== undefined) throw new Error(message)
       if (setting !== "off") console.warn(message)
     }
     const key = `${queryKey(artifact, variables)}:${policy}`
@@ -1499,8 +1513,27 @@ export class Client {
   }
 }
 
+/**
+ * The bundle's `process.env.NODE_ENV`, or undefined where nothing defines it, as in a browser bundle that doesn't replace it.
+ * Written out in full, with no guard or optional chaining, because bundlers replace only that exact expression.
+ */
+function nodeEnv(): string | undefined {
+  try {
+    const value = process.env.NODE_ENV
+    return typeof value === "string" ? value : undefined
+  } catch {
+    return undefined
+  }
+}
+
 function isProduction(): boolean {
-  return typeof process !== "undefined" && process.env?.NODE_ENV === "production"
+  return nodeEnv() === "production"
+}
+
+/** Development or tests, said so by the bundle or runtime. An unknown environment isn't, so it never throws in a built page. */
+function isDevelopment(): boolean {
+  const value = nodeEnv()
+  return value !== undefined && value !== "production"
 }
 
 function defaultDiagnostic(diagnostic: LiveDiagnostic): void {

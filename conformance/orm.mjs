@@ -309,6 +309,33 @@ try {
   await post('mutation { DeleteWidget(Id: "roomy-first") { Success } }')
   pass('a page with room keeps its rows when one is created above them, and a rename elsewhere reaches a row')
  }
+ // A keyset list loaded in three pages, the last partly filled, refreshes in one real request, and a row created inside it appears.
+ {
+  for (const id of ['ks-a','ks-b','ks-c']) await post(`mutation { CreateWidget(Input: {Id: "${id}", Name: "${id}"}) { Success } }`)
+  const keyset=compile(schema,[`fragment KeysetRow on Widget @live { Name }`,`query Keyset($Page: KeysetPageInput) { WidgetsKeyset(Page: $Page) @connection(key: "keyset") { Edges { Node { Id ...KeysetRow } } PageInfo { EndCursor HasNextPage } } }`])
+  const socket=createWs({url:routerUrl.replace('http','ws'),webSocketImpl:WebSocket,connectionParams:{authorization:`Bearer ${token}`}})
+  const http=createHttpNetwork({url:routerUrl,headers}), pages=[]
+  const client=createClient({network:{execute:(r,o)=>{ if (r.name==='Keyset') pages.push(r.variables.Page); return http.execute(r,o) }},live:{artifacts:keyset.live,...graphqlWsTransport(socket),minRereadMs:0,debounceMs:0,settleMs:false,onDiagnostic:null}})
+  const list=client.watchQuery(keyset.operations.Keyset,{Page:{limit:2}})
+  list.open()
+  await until('keyset read',()=>list.getState().status==='ready')
+  await list.loadMore(); await list.loadMore()
+  const ids=()=>list.getState().data.WidgetsKeyset.Edges.map(edge=>edge.Node.Id)
+  assert.deepEqual(ids(),['ks-a','ks-b','ks-c','w1','w2']); assert.equal(list.getState().hasMore,false)
+  await sleep(500); pages.length=0
+  await list.refetch()
+  assert.deepEqual(pages,[{limit:6}],`refetch sent ${JSON.stringify(pages)}`)
+  pages.length=0
+  await post('mutation { CreateWidget(Input: {Id: "ks-d", Name: "ks-d"}) { Success } }')
+  await until('created keyset row appears',()=>ids().includes('ks-d'))
+  await sleep(500)
+  assert.deepEqual(ids(),['ks-a','ks-b','ks-c','ks-d','w1','w2'])
+  assert(pages.length>=1&&pages.every(page=>JSON.stringify(page)==='{"limit":6}'),`live re-reads sent ${JSON.stringify(pages)}`)
+  assert.equal(list.getState().listRefreshTruncated,false)
+  list.close();client.dispose();await socket.dispose()
+  for (const id of ['ks-a','ks-b','ks-c','ks-d']) await post(`mutation { DeleteWidget(Id: "${id}") { Success } }`)
+  pass('a keyset list loaded in three pages refreshes in one request, and a row created inside it appears')
+ }
  const readAllArtifact = compile(schema, [`query Bounded($Page: PageInput) {
    Widgets(Page: $Page) @connection(key: "bounded") { Edges { Node { Id Name } } PageInfo { TotalCount } }
  }`]).operations.Bounded

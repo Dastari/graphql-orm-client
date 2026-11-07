@@ -85,9 +85,12 @@ export interface LiveOptions {
 
   /** Use one un-narrowed stream per open list type. Default true; false makes lists poll. */
   readonly listStreams?: boolean
-  /** Maximum keyset pages refreshed automatically. Default 10. */
+  /** Maximum requests in one automatic keyset refresh. Default 10. */
   readonly maxRereadPages?: number
-  /** Server maximum offset page size. Default 100; set to the service maximum. */
+  /**
+   * The service's maximum page size, which the schema doesn't give. Default 100, the generated default. A refresh asks for up to this
+   * many rows per request: an offset list in one request, a keyset list in up to `maxRereadPages`. Set it to the service maximum.
+   */
   readonly maxRereadRows?: number
   /** Minimum interval between automatic re-reads of a query. Default 2000 ms. */
   readonly minRereadMs?: number

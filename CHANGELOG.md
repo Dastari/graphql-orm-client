@@ -11,6 +11,29 @@
 
 Applications that don't use `graphql-orm-client/persistence` aren't affected.
 
+### Fixed: an undeclared `pollMs` threw in a production browser bundle
+
+The check for production read `typeof process` first, which is `"undefined"` in a browser, and `process.env?.NODE_ENV`, which bundlers don't replace. So in a built page an undeclared `pollMs` threw and could blank the page. Now it reads `process.env.NODE_ENV` as bundlers write it:
+
+- Where it's `production`, it warns and still polls, as documented.
+- Where it's set to anything else, as in development and tests, it throws.
+- Where the bundle doesn't define it, it warns: with nothing saying which environment it is, it doesn't crash the page. This used to throw. To get the error there, set `polling.undeclared: "error"`.
+- **Changed:** `polling.undeclared: "error"` now throws in every environment, including production. It used to warn in production like the default. If you set it, set `"warn"` in production builds, or leave it unset.
+
+`live.onDiagnostic`'s default, which stays quiet in production, now reads the same way, so a production browser bundle no longer logs live diagnostics to the console. Pass `live: { onDiagnostic: (d) => console.warn(d.message) }` to keep them.
+
+### Changed: refreshing a keyset list costs one request, not one per loaded page
+
+`refetch()`, polls and live re-reads of a regenerated keyset `@connection` used to read the loaded range a page at a time, so three loaded pages cost three requests on every poll. Now the first request asks for every loaded row, up to `live.maxRereadRows` (100), and later requests ask only for the rows still missing. Offset lists already did this. The rows read are the same: the loaded rows, plus the room on a partly filled last page, so a row created there still appears.
+
+- `live.maxRereadPages` (10) now counts requests, not pages. A keyset list loaded past ten pages, which used to keep a possibly stale tail and set `QueryState.listRefreshTruncated`, now refreshes up to 1,000 rows. Set `maxRereadPages` lower to bound it.
+- `live.maxRereadRows` now applies to keyset lists too. Set it to your service's maximum page size, as alpha.11 asked. A larger value isn't an error: graphql-orm's generated keyset roots clamp the page to their maximum and the client reads the rest.
+- To keep one request per page, set `live.maxRereadRows` to your page size. It also bounds offset refresh.
+
+### Added: a warning for a `live.default` pattern that matches no fragment
+
+A pattern in `live: { default: [...] }` matches the file a fragment is written in, not the files that spread it. A page whose rows come from fragments in a shared folder needs that folder in the pattern. `generate` now warns about a pattern that matches no file defining a fragment, since it makes nothing live.
+
 ## 0.1.0-alpha.11 (2026-11-07)
 
 Install from the GitHub release archive:

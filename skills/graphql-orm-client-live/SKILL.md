@@ -30,8 +30,9 @@ same order and with loaded pages kept. A count or generated aggregate of a live 
   it, ask the backend for a managed version (`#[graphql_orm(version = "managed")]`). The client then needs no configuration.
 - **Lists:** a list of a live type opens one stream for the type before its first read, even when empty. It needs a regenerated module, and it
   costs the server a row-policy check per event per subscriber. `live.listStreams: false` makes lists poll instead.
-  - `@paged` keeps its page. `@connection` reads what's loaded, up to `live.maxRereadPages` (10) keyset pages or `live.maxRereadRows` (100)
-    offset rows. Past that it keeps the loaded tail and sets `QueryState.listRefreshTruncated`, so say so on screen.
+  - `@paged` keeps its page. `@connection` reads what's loaded, `live.maxRereadRows` (100) rows per request: offset in one request, keyset
+    in up to `live.maxRereadPages` (10). Set `maxRereadRows` to the service's maximum page size. Past the bound it keeps the loaded tail
+    and sets `QueryState.listRefreshTruncated`: show that on screen, because those rows may be stale.
 - **Rate limit:** automatic reads are limited per query by `live.minRereadMs` (2000): one at the start of a burst and one at the end, a read
   already running is followed by one more, and they wait while the page is hidden.
 - **After a burst:** the router can drop frames under a burst with no signal (graphql-orm#359), so after at least 32 events on a type settle,
@@ -117,7 +118,7 @@ Each of these changes a default on purpose. Reach for them when you have a reaso
 
 | Setting | Effect |
 | --- | --- |
-| `live: "default"` (generator) | Fragments on keyed object types are live with no directive. `@live(enabled: false)` opts one out. Opt-in, and `{ default: ["src/area/**"] }` limits it to files matching those globs. Each newly live type costs one operation on a connection |
+| `live: "default"` (generator) | Fragments on keyed object types are live with no directive. `@live(enabled: false)` opts one out. Opt-in, and `{ default: ["src/area/**"] }` limits it to fragments written in files matching those globs, not the files that spread them. The generator warns about a pattern that matches no fragment's file. Each newly live type costs one operation on a connection |
 | `liveSelection: "as-written"` (generator) | Keeps the older stream text. On graphql-orm before 0.92.0 the server refuses it on an entity with `NodeId` |
 | `strict` (generator) | `liveWithoutStream`, `pollWithoutReason`, `rawSubscriptions`, `queryOwnership` and `fragmentNotLive`, each `"error"`, `"warn"` or `"off"`. All default to `"error"` except `fragmentNotLive`, which warns |
 | `queryOwners`, `subscriptionPaths` (generator) | Globs for where queries and raw subscriptions may be written. Off unless set |
@@ -125,5 +126,6 @@ Each of these changes a default on purpose. Reach for them when you have a reaso
 | `versions: { Type: null }` (generator) | Stops selecting a version field some users can't read |
 | `live.restart: false`, `live.refusalBackoff: false` | Older behaviour, for migration. `restart: false` can leave data stale |
 
-`pollMs` needs `query Name @poll(reason: "...") { ... }`. An undeclared one throws outside production on a regenerated module, and warns and
-still polls otherwise. `polling.undeclared` relaxes this. Fallback polling needs no declaration.
+`pollMs` needs `query Name @poll(reason: "...") { ... }`. On a regenerated module an undeclared one throws where `process.env.NODE_ENV`
+is set and isn't `production`, as in development and tests. Elsewhere, including a bundle that doesn't define it, it warns and still
+polls. `polling.undeclared: "error"` throws everywhere, and `"warn"` or `"off"` relax it. Fallback polling needs no declaration.

@@ -183,10 +183,59 @@ describe("R3 list streams", () => {
     c.client.dispose()
   })
   it("reports a bounded keyset refresh and preserves its loaded tail", async () => {
-    const c = setup("Keyset", { maxRereadPages: 1 }); c.rows(["a", "b", "c", "d", "e", "f"]); await c.open(); await c.query.loadMore(); await c.query.loadMore()
+    const c = setup("Keyset", { maxRereadPages: 1, maxRereadRows: 2 }); c.rows(["a", "b", "c", "d", "e", "f"]); await c.open(); await c.query.loadMore(); await c.query.loadMore()
     c.emit(); await c.clock.tick(); expect(c.query.getState().listRefreshTruncated).toBe(true)
     expect(c.client.liveTypeHealth("Widget").reason).toBe("list-refresh-truncated")
     expect(c.query.getState().data.Scroll.Edges).toHaveLength(6); c.client.dispose()
+  })
+  it("refreshes three loaded keyset pages in one request", async () => {
+    const c = setup("Keyset"); c.rows(["a", "b", "c", "d", "e", "f", "g"]); await c.open(); await c.query.loadMore(); await c.query.loadMore()
+    const before = c.network.requests.length; c.emit(); await c.clock.tick()
+    expect(c.network.requests.slice(before).map(r => r.variables.Page)).toEqual([{ limit: 6 }])
+    expect(c.query.getState().listRefreshTruncated).toBe(false)
+    expect(c.ids()).toHaveLength(6); expect(c.query.getState().data.Scroll.Edges.map((e: any) => readFragment<{ Name: string }>(frags.Row!, e.Node).Name)).toEqual(["a", "b", "c", "d", "e", "f"])
+    // Load more continues after the refreshed range with the query's own page size.
+    await c.query.loadMore(); expect(c.network.requests.at(-1)!.variables.Page).toEqual({ limit: 2, after: "f" }); expect(c.ids()).toHaveLength(7)
+    c.client.dispose()
+  })
+  it("a partly filled last keyset page costs one request, and a new row fills its room", async () => {
+    const c = setup("Keyset"); c.rows(["a", "b", "c", "d", "e"]); await c.open(); await c.query.loadMore(); await c.query.loadMore()
+    expect(c.query.getState().hasMore).toBe(false)
+    c.rows(["a", "b", "c", "d", "e", "f"])
+    for (let poll = 0; poll < 3; poll++) {
+      const before = c.network.requests.length; c.emit(); await c.clock.tick(2000)
+      expect(c.network.requests.length - before).toBe(1)
+    }
+    expect(c.ids()).toHaveLength(6); expect(c.query.getState().listRefreshTruncated).toBe(false); c.client.dispose()
+  })
+  it("reads the rest of a keyset range in requests of maxRereadRows, asking only for what's missing", async () => {
+    const c = setup("Keyset", { maxRereadRows: 4 }); c.rows(["a", "b", "c", "d", "e", "f", "g"]); await c.open(); await c.query.loadMore(); await c.query.loadMore()
+    const before = c.network.requests.length; c.emit(); await c.clock.tick()
+    expect(c.network.requests.slice(before).map(r => r.variables.Page)).toEqual([{ limit: 4 }, { limit: 2, after: "d" }])
+    expect(c.ids()).toHaveLength(6); expect(c.query.getState().listRefreshTruncated).toBe(false); c.client.dispose()
+  })
+  it("a keyset refresh after a reconnect reads the loaded range once, with newer versions kept", async () => {
+    const c = setup("Keyset"); c.rows(["a", "b", "c", "d"]); await c.open(); await c.query.loadMore()
+    c.emit("a", "UPDATED", 5)
+    expect(c.client.store.get(encodeNodeId("Widget", ["a"]))?.fields.get("RecordVersion")).toBe(5)
+    const before = c.network.requests.length; c.streams.reconnect(); await c.clock.tick(2000)
+    expect(c.network.requests.slice(before).filter(r => r.name === "Keyset").map(r => r.variables.Page)).toEqual([{ limit: 4 }])
+    // The server's copy is version 1; the event's version 5 stays.
+    expect(c.client.store.get(encodeNodeId("Widget", ["a"]))?.fields.get("RecordVersion")).toBe(5)
+    expect(c.ids()).toHaveLength(4); c.client.dispose()
+  })
+  it("drops a keyset continuation in flight when the identity is disposed, and collects its rows on release", async () => {
+    const c = setup("Keyset", { maxRereadRows: 2 }); c.rows(["a", "b", "c", "d"]); await c.open(); await c.query.loadMore()
+    let done!: () => void; c.wait(new Promise<void>(r => { done = r }))
+    const before = c.network.requests.length; c.emit(); await c.clock.tick(0)
+    expect(c.network.requests.slice(before).map(r => r.variables.Page)).toEqual([{ limit: 2 }])
+    c.client.dispose(); c.wait(undefined); done(); await c.clock.tick(3000)
+    // The first page's answer arrives after disposal: no continuation is sent and nothing is written.
+    expect(c.network.requests.length - before).toBe(1)
+    expect(c.client.store.get(encodeNodeId("Widget", ["a"]))).toBeUndefined()
+    const d = setup("Keyset"); d.rows(["a", "b", "c", "d"]); await d.open(); await d.query.loadMore(); d.emit(); await d.clock.tick()
+    d.query.close(); await d.clock.tick(20)
+    expect(d.client.store.get(encodeNodeId("Widget", ["c"]))).toBeUndefined(); d.client.dispose()
   })
   it.each(["list-streams-disabled", "list-key-required"])("polls and names the operation for %s", async reason => {
     const c = setup("Count", reason === "list-streams-disabled" ? { listStreams: false } : { required: true }); await c.open()

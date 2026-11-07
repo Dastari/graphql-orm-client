@@ -68,8 +68,14 @@ describe('build policies', () => {
     process.env.NODE_ENV = 'production'
     try {
       expect(() => createClient({ network }).watchQuery(artifact, {}, { pollMs: 100 })).not.toThrow()
+      // An explicit error is an error everywhere, so a host can ask for it whatever its bundler defines.
+      expect(() => createClient({ network, polling: { undeclared: 'error' } }).watchQuery(artifact, {}, { pollMs: 100 })).toThrow('@poll')
+      // Nothing says which environment this is, as in a browser bundle that doesn't replace NODE_ENV: warn, don't crash the page.
+      delete process.env.NODE_ENV
+      expect(() => createClient({ network }).watchQuery(artifact, {}, { pollMs: 100 })).not.toThrow()
+      expect(() => createClient({ network, polling: { undeclared: 'error' } }).watchQuery(earlier, {}, { pollMs: 100 })).not.toThrow()
     } finally { process.env.NODE_ENV = environment }
-    expect(warn).toHaveBeenCalledTimes(2)
+    expect(warn).toHaveBeenCalledTimes(4)
     warn.mockRestore()
   })
 })
