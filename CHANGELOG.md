@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- `live.maxKeyedSubscriptions: 0` now uses one un-narrowed stream in optional `Keys` mode,
+  retaining it while held sets change. Required Keys stays narrowed, reported by `keyRequired`.
+  Migration: the server now checks row policy per event per subscriber, including unheld rows.
+  Remove the zero setting to keep narrowing. Other values in keys mode remain ignored;
+  no regeneration is required. Optional Key and unkeyed streams also retain stable whole-type coverage.
+
+
 - Live health adds cumulative sent-query counts by cause (`reads`), open managed `streams`
   and cumulative `refusedStreams`. They are absent without a live layer. Sample health for
   rates; count changes alone do not trigger health notifications. No regeneration required.

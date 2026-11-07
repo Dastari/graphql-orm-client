@@ -270,3 +270,7 @@ See [burst repair](design.md#burst-repair-reads) for cost and opt-out.
 Read measurement is built: live-layer health exposes cumulative request counts by explicit
 cause, open managed stream count and cumulative refused/failed operations. Without a live
 layer these counts are absent. Counter changes alone do not notify health subscribers.
+
+A zero keyed cap now requests one whole-type stream for optional `Keys` as well as optional
+`Key`. Required `Keys` remains narrowed and health reports `keyRequired`; other values in
+keys mode remain ignored. Held-set changes do not replace whole-type streams.

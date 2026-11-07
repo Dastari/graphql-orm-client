@@ -104,6 +104,8 @@ export interface LiveOptions {
   /**
    * Per-record subscriptions allowed per type in `key` mode. Past it, a field whose key is
    * optional uses one stream of the type; otherwise the rest overflow. Default 50.
+   * In `keys` mode only 0 has an effect: use one un-narrowed stream when Keys is optional;
+   * required Keys stays narrowed. Other values are ignored in keys mode.
    */
   readonly maxKeyedSubscriptions?: number
   /** Largest `Keys` list per subscription in `keys` mode. Default 500. */
@@ -159,6 +161,9 @@ export interface LiveOptions {
 }
 
 export interface LiveTypeStatus {
+  /** Zero requested whole-type delivery but the schema requires Keys, so it stays narrowed. */
+  readonly keyRequired: boolean
+
   /** Requests sent to repair bursts for this type. */
   readonly burstReads: number
   /** Last burst repair request time; null means never. */
@@ -391,6 +396,7 @@ export class LiveManager {
         return [
           artifact.typename,
           {
+            keyRequired: this.options.maxKeyedSubscriptions === 0 && artifact.mode === "keys" && !artifact.keyOptional,
             burstReads: this.burstTotals.get(artifact.typename)?.count ?? 0,
             lastBurstReadAt: this.burstTotals.get(artifact.typename)?.at ?? null,
             selectionRefused: this.thin.has(artifact.typename),
@@ -478,7 +484,7 @@ export class LiveManager {
       const list = this.listHolders(artifact.typename).length > 0 && this.listReason(artifact.typename) === null
       if (list) wanted.set("all", {})
       else if (ids.length > 0) {
-        if (artifact.mode === "unkeyed") {
+        if (artifact.mode === "unkeyed" || artifact.mode === "keys" && this.options.maxKeyedSubscriptions === 0 && artifact.keyOptional) {
           wanted.set("all", {})
         } else if (artifact.mode === "key") {
           const max = this.options.maxKeyedSubscriptions ?? 50

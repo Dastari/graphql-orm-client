@@ -1114,3 +1114,18 @@ count as subscribe failures. `hasLiveLayer` explicitly reports configuration. Th
 measured and none. Take two health samples and divide count differences by elapsed minutes.
 Counter and read-time changes alone do not notify health listeners. Event timing follows
 the existing at-most-once-per-second notification path; state changes still notify promptly.
+
+## Zero keyed subscription cap
+
+`live.maxKeyedSubscriptions: 0` requests one whole-type stream in `key` and `keys`
+modes when the narrowing argument is optional. `unkeyed` already uses one. Changes to
+held sets keep the same stream, even if the old and new sets have no rows in common;
+events for unheld rows are dropped. List invalidation still sees them. With required
+`Keys`, delivery remains narrowed and status and type health expose `keyRequired: true`.
+Other cap values are ignored in `keys` mode as before; `maxKeys` still sizes chunks.
+Required `Key` retains its existing zero-cap overflow and polling behavior.
+This applies equally to explicit and opt-in default live generation, including old artifacts.
+
+Migration for optional `Keys` schemas already setting zero: streams stop narrowing.
+The server performs a row-policy check per event per subscriber, including unheld rows.
+Remove `maxKeyedSubscriptions: 0` to keep narrowing. No regeneration is needed.

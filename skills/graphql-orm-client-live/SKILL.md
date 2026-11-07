@@ -212,3 +212,8 @@ For read rates, sample `liveHealth().reads` twice and divide differences by elap
 `streams` counts managed operations now; `refusedStreams` counts failed/refused operations
 cumulatively. These fields are absent without a live layer. Counts alone do not notify
 health subscribers; sample on the application's reporting interval. See design for causes.
+
+`live.maxKeyedSubscriptions: 0` uses one whole-type stream with optional Key or Keys,
+keeping it when held rows change. Required Keys stays narrowed (`keyRequired` in health).
+Other values in keys mode are ignored. Server cost is a row-policy check per event per
+subscriber; remove the zero setting to retain narrowing. Applies to both live generation modes.

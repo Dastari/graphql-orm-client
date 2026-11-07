@@ -35,6 +35,9 @@ export type LiveReason = "list-refresh-truncated" | "list-streams-disabled" | "l
 export type LiveSocketState = "connected" | "connecting" | "closed" | "unknown"
 
 export interface LiveTypeHealth {
+  /** Keys stays narrowed despite a zero keyed cap because the schema requires it. Absent without status. */
+  readonly keyRequired?: boolean
+
   /** Burst repair requests; absent without a live layer for this type. */
   readonly burstReads?: number
   /** Last burst repair request; null means never. Absent without a live layer. */
@@ -135,7 +138,7 @@ export function typeHealth(status: LiveTypeStatus | undefined, holdings: readonl
   const reads = holdings.map((holding) => holding.lastReadAt).filter((value): value is number => value !== null)
   const held = status ? status.held : new Set(holdings.flatMap((holding) => holding.held)).size
   const base = {
-    ...(status ? { burstReads: status.burstReads, lastBurstReadAt: status.lastBurstReadAt } : {}),
+    ...(status ? { keyRequired: status.keyRequired, burstReads: status.burstReads, lastBurstReadAt: status.lastBurstReadAt } : {}),
     held,
     pollMs,
     fragments,
