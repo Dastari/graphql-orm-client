@@ -16,6 +16,14 @@
   `{ serverSnapshot: "legacy" }` to restore the prior snapshot. Server data rendering, result streaming
   and store handoff remain non-goals.
 
+- Add `graphql-orm-client/persistence`: async adapters, a thin IndexedDB adapter, identity/release
+  envelopes, bounded coalesced writes and stale restoration. Import `persistClient` explicitly and
+  provide identityKey, schemaHash and serverRelease to adopt. Set generator `persistence: true` and regenerate for the exported schemaHash.
+  Dispose the old client before changing identity; disposal also deletes its persisted snapshot.
+
+- Opt-in generated lifetime field and format policies, expiry notifications and holder re-reads.
+  Regenerate with `lifetimes` to adopt; no configuration preserves existing behaviour.
+
 - Compile a large schema far faster. After 0.1.0-alpha.10's stream selections, each live type re-extended the whole schema: 250 documents on a
   45,000-line schema took about 24 s and now take under a second.
 - R1: opt-in `live: "default"` and `live: { "default": ["src/area/**"] }` generation;

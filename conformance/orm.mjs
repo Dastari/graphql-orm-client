@@ -394,6 +394,15 @@ try {
   }
   if(!failures.some(f=>f.startsWith(`ws synchronous=${synchronous}`)))pass(`8 reload + 8 router-kill + 8 refusal recoveries, ws allowSynchronousEvents=${synchronous}`)
  }
+ const expiry = String(Date.now()/1000 + 3)
+ await update(expiry)
+ const lifetimeQuery=compile(schema,[`query Lifetime { Widget(Id: "w1") { Name } }`],{lifetimes:{Widget:{field:'Name',format:'unix-seconds'}}}).operations.Lifetime
+ const lifetimeNetwork=createHttpNetwork({url:routerUrl,headers});let lifetimeReads=0
+ const lifetimeClient=createClient({network:{execute:(...args)=>{lifetimeReads++;return lifetimeNetwork.execute(...args)}}})
+ const lifetimeWatch=lifetimeClient.watchQuery(lifetimeQuery,{});lifetimeWatch.open();await lifetimeWatch.refetch()
+ assert.equal(lifetimeWatch.getState().lifetime,undefined)
+ await until('lifetime expiry',()=>lifetimeWatch.getState().lifetime==='expired' && lifetimeReads>=2)
+ lifetimeWatch.close();lifetimeClient.dispose();pass('explicit String lifetime expires and holders re-read')
  await liveSettingCheck({schema,scratch,routerUrl,token,post,until,sleep})
  await doctorChecks({schema,scratch,routerUrl,token,post})
  try {await browserRecovery({scratch,compiled,query,routerUrl,frontUrl,token,reload:()=>revision++,stopRouter,startRouter,updateDirect,update,until,sleep})}catch(e){failures.push(`Chromium: ${e.message}`);console.error(e)}

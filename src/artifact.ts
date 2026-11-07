@@ -152,6 +152,8 @@ export interface OperationArtifact<TData = unknown, TVariables = Record<string, 
   /** Key fields per concrete type, in primary-key order. */
   readonly keys: Readonly<Record<string, readonly string[]>>
   /** Record-version field per type, where the type has one. */
+  /** Explicit lifetime policy selected by the generator. */
+  readonly lifetimes?: Readonly<Record<string, import("./store/lifetime.js").LifetimePolicy>>
   readonly versions: Readonly<Record<string, string>>
   /** Fragments referenced anywhere in this operation, by name. */
   readonly fragments: Readonly<Record<string, FragmentArtifact>>

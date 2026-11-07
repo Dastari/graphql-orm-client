@@ -1,6 +1,6 @@
 ---
 name: graphql-orm-client-data
-description: Keep regenerated lists and counts current with list streams and bounded loaded-page refresh; use full/thin stream projections and bounded holder re-reads (minRereadMs); Write components with graphql-orm-client fragments and route roots, page through tables by number (@paged, usePagedQuery), load more (@connection), refetch, run mutations (including one-time secrets with `no-store`) and plain subscriptions, and port Apollo queries without request waterfalls or over-fetching, and test components against a mock network, scripted streams and a controllable clock (graphql-orm-client/test); declare sensitive operations (@sensitive), get honest write outcomes (mutateOutcome) and show partial results per path (errorsAtPath); read everything up to a limit (readAll), keep aliased counts and aggregates current, and handle deleted records; start a route's read before mount (loadQuery).
+description: Keep regenerated lists and counts current with list streams and bounded loaded-page refresh; use full/thin stream projections and bounded holder re-reads (minRereadMs); Write components with graphql-orm-client fragments and route roots, page through tables by number (@paged, usePagedQuery), load more (@connection), refetch, run mutations (including one-time secrets with `no-store`) and plain subscriptions, and port Apollo queries without request waterfalls or over-fetching, and test components against a mock network, scripted streams and a controllable clock (graphql-orm-client/test); declare sensitive operations (@sensitive), get honest write outcomes (mutateOutcome) and show partial results per path (errorsAtPath); read everything up to a limit (readAll), keep aliased counts and aggregates current, and handle deleted records; start a route's read before mount (loadQuery); honour declared lifetime fields and persist data per identity.
 ---
 
 # Fragments, roots, pagination and mutations
@@ -180,3 +180,17 @@ A query passed `pollMs` declares why: `query Name @poll(reason: "...") { ... }`.
 - A record can disappear under a mounted component. `useFragment(Fragment, ref, { deleted: "null" })` types that as `D | null`, so handle null before
   reading fields. `store: { deletedRecords: "omit" }` drops missing rows from lists while the query re-reads. Both are opt-in.
 
+
+### Lifetime
+
+Declare generator `lifetimes` only when the service guarantees the field's meaning and format.
+Regenerate to adopt. Handle `QueryState.lifetime` (`expired` or `unknown`); unknown time values
+are not proved valid. See [lifetime](../../docs/design.md#lifetime-r17) for formats and diagnostics.
+
+### Persistence
+
+Use `persistClient` from `graphql-orm-client/persistence` only with an explicit identity key, generated
+`schemaHash` (enable generator `persistence: true`) and a deployment revision in `serverRelease`. Await `ready` before starting reads; show
+`QueryState.stale` until a network write confirms restored data. Dispose the client before an identity
+change. Sensitive operations and no-store mutation results are excluded automatically.
+See [persistence](../../docs/design.md#persistence-r17) for adapter, budget and failure semantics.

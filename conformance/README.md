@@ -102,3 +102,9 @@ The fixture opts Widget into generated aggregates; its existing row policy decla
 read visibility. R16 enables preimage delivery, holds a fragment reference, deletes its row
 through the router, and checks the store, nullable fragment read and refreshed list.
 React's still-mounted-row case runs in the unit suite; the router case uses the core reader.
+
+R17 adds explicit String lifetime expiry and holder re-reads against the real service. The test
+uses `Widget.Name` as an explicitly configured unix-seconds field for that scenario only; it does
+not infer lifetime from a name or require server lifetime metadata. Chromium also exercises the
+IndexedDB adapter across a page reload, stale restoration, identity separation and sensitive-result
+exclusion. The application supplies the test schema/release envelope identifiers.

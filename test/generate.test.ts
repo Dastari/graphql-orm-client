@@ -1,3 +1,4 @@
+import { buildSchema } from "graphql"
 import { execFileSync } from "node:child_process"
 import { mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
@@ -103,4 +104,10 @@ export async function usage() {
     }
     expect(output).toBe("")
   }, 60_000)
+})
+
+it("emits a schema fingerprint only when persistence is enabled", () => {
+  const s = buildSchema(`type Query { value: String }`)
+  expect(generate(s, [`query One { value }`])).not.toContain('export const schemaHash')
+  expect(generate(s, [`query One { value }`], {persistence:true})).toMatch(/export const schemaHash = "[a-f0-9]{64}"/)
 })

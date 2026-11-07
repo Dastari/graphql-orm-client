@@ -86,11 +86,11 @@ Status: early alpha. Check the installed `docs/design.md` and `docs/graphql-orm-
 
 ## Cache policy
 
-- `store.retainMs` is the only store option: how long released records stay.
-- Per-type policy, `store.scope` and persistence are proposed, not built. Don't pass them.
-- `Changed` fires on writes, not on clock expiry, and the store doesn't read lifetime fields yet.
-  A record with a lifetime stays on screen after it lapses unless the component compares the field
-  with the clock itself.
+- `store.retainMs` controls how long released records stay. Per-type stale age and `store.scope` remain proposed.
+- `Changed` fires on writes, not clock expiry. Declare generator `lifetimes` with the service's explicit
+  field and time format; handle unknown and expired lifetime states. See the data skill for adoption.
+- Restored persistent data reports `QueryState.stale` until confirmed by a network write; restoration
+  does not confirm stream health. Persistence is an opt-in separate entry point, described in the data skill.
 
 ## Diagnosing stale data
 
