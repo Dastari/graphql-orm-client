@@ -69,6 +69,8 @@ export interface LinkSelection {
   /** Concrete types the field can return. */
   readonly types: readonly string[]
   readonly selections: readonly Selection[]
+  /** Selected node response key on schema-derived connection edges, for deleted-node omission. */
+  readonly listNode?: string
   readonly connection?: ConnectionSpec
 }
 

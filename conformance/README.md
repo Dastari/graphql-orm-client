@@ -15,7 +15,7 @@ CONFORMANCE_SCRATCH=/path/outside/checkout pnpm conformance
 Set `CHROME` to an existing Chromium executable. A missing executable prints
 `NOT RUN`, not a pass; CI requires Chromium. A present executable that cannot launch
 fails the run. `PORT_BASE` defaults to 42000 and must reserve five ports within
-42000–42099. Runs are serial. Use a different base for concurrent invocations.
+42000–42099 (or the delegated 41700–41799 range). Runs are serial. Use a different base for concurrent invocations.
 The runner creates its own temporary directory if `CONFORMANCE_SCRATCH` is absent.
 Keep it to reuse Cargo output. Each invocation gets a separate runtime subdirectory. Check free disk first: allow at least 10 GB for a cold
 build. Manifests, binaries, schema snapshots, descriptors, browser bundles and
@@ -87,3 +87,13 @@ all 64 recovery cases and seven doctor verdicts, took 121.8 seconds on the final
 (an earlier complete run took 111 seconds). The workflow's
 20-minute timeout allows for slower runners and downloads. GitHub Actions has not
 been observed; these are local measurements.
+
+## Bounded reads, aggregates and deleted references
+
+R14 checks bounded and complete `readAll` traversal against the generated offset connection.
+R15 holds two aliased count roots (including an aliased total) and a generated aggregate,
+creates a row through a separate request, and waits for all three totals to advance.
+The fixture opts Widget into generated aggregates; its existing row policy declares unrestricted
+read visibility. R16 enables preimage delivery, holds a fragment reference, deletes its row
+through the router, and checks the store, nullable fragment read and refreshed list.
+React's still-mounted-row case runs in the unit suite; the router case uses the core reader.

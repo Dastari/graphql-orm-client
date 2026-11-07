@@ -164,6 +164,11 @@ Ambiguous SDL needs explicit polling; no source is guessed.
 
 **R16. Deleted records.** The live layer removes a deleted record from lists and the store. A
 component holding one gets a defined deleted state and doesn't crash. Confirm today's behaviour.
+*Built:* opt-in `{ deleted: "null" }` gives fragment readers a required nullable result;
+React tests cover a still-mounted row before and after its owning list rereads.
+`store.deletedRecords: "omit"` omits absent list nodes with regenerated artifacts.
+Legacy readers already returned null at runtime; the old signatures remain for migration.
+Without a server preimage grant, correction waits for another event or poll.
 *Built in 0.1.0-alpha.10:* `DELETED` with change kind `PROPAGATED` (a child deleted under a record that still exists,
 graphql-orm 0.93.0) keeps the record and re-reads its holders.
 

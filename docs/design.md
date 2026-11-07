@@ -835,3 +835,28 @@ enter `OperationArtifact.lists`. Shared result type or operation naming alone ca
 entity ownership. With no matching connection, missing filter inputs, or several candidate
 entities, SDL is insufficient: no aggregate stream coverage is claimed. Poll explicitly.
 Proposed server contract: publish aggregate source entity metadata in the served schema.
+
+## Deleted records (R16)
+
+A direct `DELETED` removes the held store record and triggers its owning roots to re-read.
+Confirmed in React: a still-mounted row's `useFragment` returns null during the reread and
+after the response excludes it. `readFragment` also returns null. Legacy non-null signatures
+do not describe this state safely. Migrate by passing `{ deleted: "null" }` as the third
+argument to both functions: the return type becomes `D | null`; render a placeholder or
+return null before reading fields. Live-record fields and fragment masking stay unchanged.
+Null means unavailable (deleted, collected, disposed, or a missing record), not proof of a
+delete or permission to infer an empty result.
+
+Opt in to `createClient({ ..., store: { deletedRecords: "omit" } })` and regenerate.
+Readers omit missing direct list members and compiled connection edges with missing nodes
+while the owning root refreshes. The record is removed from storage immediately; stale
+connection references are replaced by the next read and collected normally. Totals still
+come from the server, so they may lag until the reread. Without this setting legacy list
+shape remains unchanged. Components holding old references must still handle null.
+`DELETED` with `PROPAGATED` retains the parent and re-reads its roots (graphql-orm 0.93.0).
+On both server tags read (0.90.1 and 0.93.0), without a preimage grant direct deletes send
+nothing: lists correct on their next delivered event or poll. A stream alone cannot promise
+instant delete visibility. Pages have no shared snapshot. Deletes carry no retained version tombstone: a late
+response can restore a removed row, even when that response carries a record version,
+because the deleted record no longer supplies a version to compare. Re-reading after
+reconnect remains necessary. Without a version, ordinary writes use last-arrival-wins.

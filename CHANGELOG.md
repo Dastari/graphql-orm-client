@@ -2,11 +2,12 @@
 
 ## Unreleased
 
+- R16: opt in to typed missing/deleted fragments with `readFragment(Fragment, ref, { deleted: "null" })` and the matching `useFragment` option. Handle null before reading fields. Runtime already returned null for removed references; old non-null signatures remain for migration. Set `store: { deletedRecords: "omit" }` and regenerate to omit missing nodes during list refresh. This can remove a row before the network reread completes. Live-record data keeps its existing shape.
+
 - R15: generated aggregate roots with a unique schema-derived entity now join R3 list refresh. Regenerate to enable this for project-live types. Aliased counts preserve their generated types.
 
 - R14: `client.readAll` traverses a compiled root connection with a required limit, exact last-page total, truncation and abort support. Select TotalCount; unknown totals fail. Pages have no shared snapshot.
 
-## Unreleased
 
 - R15: generated aggregate roots with a unique schema-derived entity now join R3 list refresh. Regenerate to enable this for project-live types. Aliased counts preserve their generated types.
 

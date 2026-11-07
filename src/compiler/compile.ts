@@ -837,8 +837,13 @@ function convert(
       const fieldDef = "getFields" in parent ? parent.getFields()[name] : undefined
       if (!fieldDef) throw new CompileError([`${parent.name}.${name} does not exist`])
       const named = getNamedType(fieldDef.type) as GraphQLCompositeType
+      const connectionNames = { ...DEFAULT_CONNECTION, ...options.connection }
+      const edgeNode = name === connectionNames.edges && isObjectType(named) && named.getFields()[connectionNames.node]
+        ? selection.selectionSet.selections.find((s): s is FieldNode => s.kind === Kind.FIELD && s.name.value === connectionNames.node)
+        : undefined
       result.push({
         kind: "link",
+        ...(edgeNode ? { listNode: edgeNode.alias?.value ?? edgeNode.name.value } : {}),
         responseKey,
         fieldName: name,
         args,

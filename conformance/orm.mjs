@@ -11,7 +11,7 @@ import { WebSocket } from 'ws'
 import { createClient as createWs } from 'graphql-ws'
 import { buildSchema, execute, parse, print, buildClientSchema, getIntrospectionQuery } from 'graphql'
 import { compile } from '../dist/compiler/index.js'
-import { createClient, createHttpNetwork, graphqlWsTransport, encodeNodeId } from '../dist/index.js'
+import { createClient, createHttpNetwork, graphqlWsTransport, encodeNodeId, readFragment } from '../dist/index.js'
 
 const scratch = process.env.CONFORMANCE_SCRATCH
 const base = Number(process.env.PORT_BASE ?? 42000)
@@ -335,6 +335,21 @@ try {
   gone.close();client.dispose();await socket.dispose()
   pass('a direct delete of a parent removes the record')
  }
+ const deleteDocs = compile(schema, [`fragment DeletedRow on Widget @live { Name }`, `query DeleteList { Widgets { Edges { Node { ...DeletedRow } } } }`])
+ await create('held-delete', 'Held delete')
+ const deleteWs = createWs({url:routerUrl.replace('http','ws'), webSocketImpl:WebSocket, connectionParams:{authorization:`Bearer ${token}`}})
+ const deleteClient = createClient({ network:createHttpNetwork({url:routerUrl,headers}), store:{deletedRecords:'omit'}, live:{artifacts:deleteDocs.live,...graphqlWsTransport(deleteWs),minRereadMs:0,debounceMs:0,settleMs:false,onDiagnostic:null} })
+ const deleteQuery=deleteClient.watchQuery(deleteDocs.operations.DeleteList,{})
+ deleteQuery.open()
+ await until('held delete loaded',()=>deleteQuery.getState().data?.Widgets.Edges.some(e=>readFragment(deleteDocs.fragments.DeletedRow,e.Node)?.Name==='Held delete'))
+ const deleteRef=deleteQuery.getState().data.Widgets.Edges.find(e=>readFragment(deleteDocs.fragments.DeletedRow,e.Node)?.Name==='Held delete').Node
+ await sleep(300)
+ await post('mutation { DeleteWidget(Id: "held-delete") { Success } }')
+ await until('held delete fragment',()=>readFragment(deleteDocs.fragments.DeletedRow,deleteRef,{deleted:'null'})===null)
+ await until('held delete list',()=>deleteQuery.getState().data.Widgets.Edges.every(e=>readFragment(deleteDocs.fragments.DeletedRow,e.Node)?.Name!=='Held delete'))
+ assert.equal(deleteClient.store.get(encodeNodeId('Widget',['held-delete'])),undefined)
+ deleteQuery.close();deleteClient.dispose();await deleteWs.dispose()
+ pass('R16 real direct delete removes held record and list node; old reference reads null')
  for(const synchronous of [true,false]) {
   for(let repeat=0;repeat<8;repeat++) {
    for(const scenario of ['reload','kill','refuse']) {

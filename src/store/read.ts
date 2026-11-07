@@ -89,9 +89,8 @@ export function readSelections<T>(store: Store, selector: Selector, options: Rea
           } else if (isLink(value)) {
             data[selection.responseKey] = readRecord(value.__ref, selection.selections)
           } else if (isLinks(value)) {
-            data[selection.responseKey] = value.__refs.map((ref) =>
-              ref === null ? null : readRecord(ref, selection.selections)
-            )
+            const values = value.__refs.map((ref) => ref === null ? null : readRecord(ref, selection.selections))
+            data[selection.responseKey] = store.deletedRecords === "omit" ? values.filter((item, index) => (item !== undefined || value.__refs[index] === null) && (!selection.listNode || item?.[selection.listNode] != null)) : values
           } else {
             missing = true
           }

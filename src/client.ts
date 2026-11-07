@@ -1391,6 +1391,11 @@ export function fragmentSelector(fragment: FragmentArtifact<any, any>, ref: unkn
  * Read a fragment's own fields through a reference. A plain function, so adapters and mappers
  * can call it; components that should re-render use `useFragment` instead.
  */
+/** Opt in to a nullable deleted/missing state; live records retain their existing shape. */
+export function readFragment<D = Record<string, unknown>, N extends string = string>(
+  fragment: FragmentArtifact<D, N>, ref: FragmentRefFor<N> | null | undefined,
+  options: { deleted: "null" }
+): D | null
 export function readFragment<D = Record<string, unknown>, N extends string = string>(
   fragment: FragmentArtifact<D, N>,
   ref: FragmentRefFor<N>
@@ -1399,10 +1404,11 @@ export function readFragment<D = Record<string, unknown>, N extends string = str
   fragment: FragmentArtifact<D, N>,
   ref: FragmentRefFor<N> | null | undefined
 ): D | null
-export function readFragment(fragment: FragmentArtifact<any, any>, ref: unknown): unknown {
+export function readFragment(fragment: FragmentArtifact<any, any>, ref: unknown, options?: { deleted: "null" }): unknown {
   if (ref === null || ref === undefined) return null
   const { store, selector } = fragmentSelector(fragment, ref)
-  return store.lookup(selector).data
+  const data = store.lookup(selector).data
+  return options?.deleted === "null" ? data ?? null : data
 }
 
 const defaultActive = () => typeof document === "undefined" || document.visibilityState !== "hidden"
