@@ -16,7 +16,7 @@ import { createClient, createHttpNetwork, graphqlWsTransport, encodeNodeId, read
 
 const scratch = process.env.CONFORMANCE_SCRATCH
 const base = Number(process.env.PORT_BASE ?? 42000)
-assert(base >= 42000 && base + 4 <= 42199)
+assert(base >= 42000 && base + 4 <= 42099)
 const serviceUrl = `http://127.0.0.1:${base+1}`
 const routerUrl = `http://127.0.0.1:${base+2}/graphql`
 const frontUrl = `http://127.0.0.1:${base+3}`

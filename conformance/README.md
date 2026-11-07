@@ -15,7 +15,7 @@ CONFORMANCE_SCRATCH=/path/outside/checkout pnpm conformance
 Set `CHROME` to an existing Chromium executable. A missing executable prints
 `NOT RUN`, not a pass; CI requires Chromium. A present executable that cannot launch
 fails the run. `PORT_BASE` defaults to 42000 and must reserve five ports within
-42000–42199. Runs are serial. Use a different base for concurrent invocations.
+42000–42099. Runs are serial. Use a different base for concurrent invocations.
 The runner creates its own temporary directory if `CONFORMANCE_SCRATCH` is absent.
 Keep it to reuse Cargo output. Each invocation gets a separate runtime subdirectory. Check free disk first: allow at least 10 GB for a cold
 build. Manifests, binaries, schema snapshots, descriptors, browser bundles and
