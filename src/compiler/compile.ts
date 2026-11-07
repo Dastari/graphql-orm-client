@@ -288,7 +288,7 @@ function compileDocuments(
       const allowed = node.operation === "query" ? options.queryOwners : node.operation === "subscription" ? options.subscriptionPaths : undefined
       if (allowed && paths.get(node)?.some((file) => file.startsWith("<document ") || !allowed.some((glob) => matchesPath(file, glob)))) {
         report(node.operation === "query" ? "queryOwnership" : "rawSubscriptions", node,
-          node.operation === "query" ? "query is outside queryOwners; add its file path to queryOwners" : "raw subscription is outside subscriptionPaths; add its path, or use client.stream")
+          node.operation === "query" ? "query is outside queryOwners; add its file path to queryOwners" : "raw subscription is outside subscriptionPaths; add its path, or use createStream from graphql-orm-client/streams")
       }
     }
   }

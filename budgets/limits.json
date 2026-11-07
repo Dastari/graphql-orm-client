@@ -70,14 +70,14 @@
       "margin": "About seven times the local median, for shared CI runners. Was 30000: tightened after a nested compile re-extended the whole schema per live type, which took this from 7.6 s to about 24 s and stayed under the old limit."
     },
     "mainRawBytes": {
-      "max": 60000,
-      "measured": 49423,
-      "margin": "Minified standalone entry closure, external peers. Was 50000, passed with R2, R3, R4 and the alpha.10 fix (39582 to 49423). Reset to leave room for R9-R12 and R11, about 55700 together, and little else: growth past this needs a reason."
+      "max": 65000,
+      "measured": 55626,
+      "margin": "Minified standalone entry closure, external peers. Was 60000. Streams moved to their own entry to stay under it; R18, R17 and R13 still to land bring this to about 61400. Growth past this needs a reason."
     },
     "mainGzipBytes": {
-      "max": 20000,
-      "measured": 15889,
-      "margin": "Gzip of the same closure. Was 17000; reset with the raw limit. R9-R12 and R11 together are about 18000."
+      "max": 21000,
+      "measured": 17910,
+      "margin": "Gzip of the same closure. Was 20000; reset with the raw limit. R18, R17 and R13 bring this to about 19600."
     },
     "reactRawBytes": {
       "max": 10000,

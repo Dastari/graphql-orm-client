@@ -716,8 +716,8 @@ those runs; each timing in each run is itself the median of five samples.
 | 100-event burst wall time (ms) | 32.552 | 750 |
 | 100-event subscriber notifications | 100 | 100 |
 | 45,000-line schema + 250 documents (ms) | 694 | 5,000 |
-| Main standalone raw bundle (bytes) | 49,423 | 60,000 |
-| Main standalone gzip bundle (bytes) | 15,889 | 20,000 |
+| Main standalone raw bundle (bytes) | 55,626 | 65,000 |
+| Main standalone gzip bundle (bytes) | 17,910 | 21,000 |
 | React standalone raw bundle (bytes) | 6,969 | 10,000 |
 | React standalone gzip bundle (bytes) | 2,836 | 4,000 |
 
@@ -893,7 +893,7 @@ No real refused-write signal or committed read-back denial was produced; those c
 cases use mocks. The fixture's public mutation succeeded without an authorization header.
 ## Ephemeral streams (R11)
 
-`client.stream(subscription, variables, options)` creates a framework-agnostic handle for progress,
+`createStream(client, subscription, variables, options)`, from `graphql-orm-client/streams` so it stays out of the main bundle, creates a framework-agnostic handle for progress,
 AI text deltas, terminal output and search results. It uses `live.subscribe`, as plain subscriptions
 do, but bypasses normalization entirely. Nothing enters the store or persistence. Call `open()`
 to start and `dispose()` to stop and synchronously erase the buffer and cursor. The client owns
@@ -901,7 +901,7 @@ all handles, including unopened ones, and disposes them on `client.dispose()`. I
 must dispose the old client before creating the next one, as with query data.
 
 ```ts
-const output = client.stream(OutputSubscription, {}, {
+const output = createStream(client, OutputSubscription, {}, {
   select: data => data.output,
   bufferSize: 2000,
   sequence: {
@@ -986,7 +986,7 @@ is unsupported. All files declaring identical text are checked. Programmatic com
 development and tests find it. In production, and on a module generated before this release, it warns and still polls, because a working
 page mustn't crash on upgrade. `polling.undeclared: "warn" | "off"` on the client relaxes this. `strict.pollWithoutReason` covers an empty
 reason at build time. Fallback polling is reported through health and needs no declaration. The escape for a raw subscription is
-`client.stream` (R11).
+`createStream` from `graphql-orm-client/streams` (R11).
 
 ## Live generation setting (R1)
 

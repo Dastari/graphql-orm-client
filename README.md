@@ -131,7 +131,7 @@ An application coming from Apollo will find `skip`, `refetch(variables)`, fetch 
 abort signals, `client.query`, `client.subscribe`, `useSubscription` and `refetchQueries`; the
 [design](docs/design.md#coming-from-apollo) maps each Apollo option.
 
-For progress, AI text deltas, terminal output and search results, use `client.stream` and React's
+For progress, AI text deltas, terminal output and search results, use `createStream` from `graphql-orm-client/streams` and React's
 `useEphemeralStream`. A required buffer limit bounds memory; sequence and resume declarations enable
 de-duplication and reconnect replay when the service supports it. Gaps, evictions and unprovable
 continuity are explicit. These values never enter the store. See [ephemeral streams](docs/design.md#ephemeral-streams-r11).

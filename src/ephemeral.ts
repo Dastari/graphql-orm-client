@@ -1,5 +1,5 @@
 import type { OperationArtifact } from "./artifact.js"
-import type { GraphQLErrorLike } from "./client.js"
+import type { Client, GraphQLErrorLike } from "./client.js"
 import type { LiveOptions } from "./live.js"
 import type { Variables } from "./store/arguments.js"
 
@@ -52,8 +52,26 @@ export interface EphemeralStream<T, C = unknown> {
 
 const transient = new Set(["SUBSCRIPTION_CONTINUITY_LOST", "SUBSCRIPTION_SOURCE_CLOSED", "SUBSCRIPTION_SCHEMA_RELOAD", "SERVICE_UNAVAILABLE", "SUBGRAPH_UNAVAILABLE", "SUBSCRIPTION_LIMIT_EXCEEDED"])
 
-/** Internal construction seam shared by Client and its React binding. */
-export function ephemeral<D, T, V extends Variables, C>(
+/**
+ * Create a bounded, volatile stream for data that doesn't belong in the store: progress, AI text deltas, terminal output, search
+ * results. Call `open()` to subscribe and `dispose()` to erase it; it also ends with the client's identity. Imported from
+ * `graphql-orm-client/streams`, so an application that doesn't use it doesn't bundle it.
+ */
+export function createStream<D, T, V extends Variables, C = unknown>(
+  client: Client, artifact: OperationArtifact<D, V>, variables: V, options: EphemeralOptions<D, T, V, C>
+): EphemeralStream<T, C> {
+  let stream: EphemeralStream<T, C> | undefined
+  const extension = client.liveExtension(() => stream?.dispose())
+  try {
+    stream = ephemeral(artifact, variables, options, extension.live, extension.remove)
+    return stream
+  } catch (error) {
+    extension.remove()
+    throw error
+  }
+}
+
+function ephemeral<D, T, V extends Variables, C>(
   artifact: OperationArtifact<D, V>, variables: V, options: EphemeralOptions<D, T, V, C>,
   live: LiveOptions, release: () => void
 ): EphemeralStream<T, C> {
