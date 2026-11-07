@@ -170,8 +170,9 @@ component holding one gets a defined deleted state and doesn't crash. Confirm to
 *Built in 0.1.0-alpha.10:* `DELETED` with change kind `PROPAGATED` (a child deleted under a record that still exists,
 graphql-orm 0.93.0) keeps the record and re-reads its holders.
 
-**R17. Lifetime and persistence.** `AGENTS.md` requires honouring lifetime fields, but the source has
-none of this yet. Build it with the roadmap's persistence phase. Persistence is scoped to identity,
+**R17. Lifetime and persistence.** Lifetime is built, opt-in through explicit generated field and format policies. Expired records
+read as missing and holders re-read; ambiguous values report unknown lifetime with a diagnostic.
+Persistence is being implemented with the roadmap's persistence phase. Persistence is scoped to identity,
 excludes R9, and is disposed with the identity. A cursor is never persisted across a server release:
 a stale keyset cursor can be accepted at the wrong place.
 

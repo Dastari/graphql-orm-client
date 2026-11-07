@@ -15,7 +15,7 @@ import { createClient, createHttpNetwork, graphqlWsTransport, encodeNodeId } fro
 
 const scratch = process.env.CONFORMANCE_SCRATCH
 const base = Number(process.env.PORT_BASE ?? 42000)
-assert(base >= 42000 && base + 4 <= 42099)
+assert((base >= 41900 && base + 4 <= 41999) || (base >= 42000 && base + 4 <= 42099))
 const serviceUrl = `http://127.0.0.1:${base+1}`
 const routerUrl = `http://127.0.0.1:${base+2}/graphql`
 const frontUrl = `http://127.0.0.1:${base+3}`
@@ -334,6 +334,14 @@ try {
   }
   if(!failures.some(f=>f.startsWith(`ws synchronous=${synchronous}`)))pass(`8 reload + 8 router-kill + 8 refusal recoveries, ws allowSynchronousEvents=${synchronous}`)
  }
+ const expiry = String(Date.now()/1000 + 1)
+ await update(expiry)
+ const lifetimeQuery=compile(schema,[`query Lifetime { Widget(Id: "w1") { Name } }`],{lifetimes:{Widget:{field:'Name',format:'unix-seconds'}}}).operations.Lifetime
+ const lifetimeClient=createClient({network:createHttpNetwork({url:routerUrl,headers})})
+ const lifetimeWatch=lifetimeClient.watchQuery(lifetimeQuery,{});lifetimeWatch.open();await lifetimeWatch.refetch()
+ assert.equal(lifetimeWatch.getState().lifetime,undefined)
+ await until('lifetime expiry',()=>lifetimeWatch.getState().lifetime==='expired')
+ lifetimeWatch.close();lifetimeClient.dispose();pass('explicit String lifetime expires and holders re-read')
  await doctorChecks({schema,scratch,routerUrl,token,post})
  try {await browserRecovery({scratch,compiled,query,routerUrl,frontUrl,token,reload:()=>revision++,stopRouter,startRouter,updateDirect,update,until,sleep})}catch(e){failures.push(`Chromium: ${e.message}`);console.error(e)}
  if(failures.length)throw Error(`Conformance failures:\n${failures.join('\n')}`)

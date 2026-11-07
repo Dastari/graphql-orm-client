@@ -53,6 +53,8 @@ export interface CompileOptions {
    * stored record. Types not listed use graphql-orm's `RecordVersion` when they have it, and the
    * compiler selects it; `null` turns that off for a type.
    */
+  /** Explicit expiry field and representation; no fields are inferred by name. */
+  readonly lifetimes?: Readonly<Record<string, import("../store/lifetime.js").LifetimePolicy>>
   readonly versions?: Readonly<Record<string, string | null>>
   /** The generated subscription field for a type. Default `${typename}Changed`. */
   readonly liveField?: (typename: string) => string
@@ -298,6 +300,7 @@ function compileDocuments(
       ...(sensitive ? { sensitive: true } : {}),
       keys: pick(metadata.keys, reachable),
       versions: pick(metadata.versions, reachable),
+      ...(options.lifetimes ? { lifetimes: pick(options.lifetimes, reachable) } : {}),
       name,
       text,
       hash: createHash("sha256").update(text).digest("hex"),
@@ -752,6 +755,15 @@ function augmentSelectionSet(
   if (!present.has("__typename")) additions.push(field("__typename"))
   if (!(options as ProjectionOptions).streamProjection && hasNodeId(parent) && !present.has(NODE_ID)) additions.push(field(NODE_ID))
   if (isObjectType(parent)) {
+    const lifetime = options.lifetimes?.[parent.name]
+    if (lifetime) {
+      const definition = parent.getFields()[lifetime.field]
+      if (!definition || definition.args.length || !["String", "Int", "Float"].includes(getNamedType(definition.type).name))
+        throw new CompileError([`Invalid lifetime field ${parent.name}.${lifetime.field}`])
+      if (!["unix-seconds", "rfc3339", "sqlite-utc"].includes(lifetime.format))
+        throw new CompileError([`Invalid lifetime format for ${parent.name}`])
+      if (!present.has(lifetime.field)) additions.push(field(lifetime.field))
+    }
     for (const key of keyFieldsOf(schema, parent.name, options) ?? []) {
       if (!present.has(key)) additions.push(field(key))
     }

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Opt-in generated lifetime field and format policies, expiry notifications and holder re-reads.
+  Regenerate with `lifetimes` to adopt; no configuration preserves existing behaviour.
+
 - Compile a large schema far faster. After 0.1.0-alpha.10's stream selections, each live type re-extended the whole schema: 250 documents on a
   45,000-line schema took about 24 s and now take under a second.
 - R3: generated `OperationArtifact.lists` enables one un-narrowed stream per open list type,

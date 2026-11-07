@@ -21,7 +21,7 @@ Status: partly built. Implemented and tested:
 - `@refetchable` fragments: `client.refetchFragment` and `useRefetchableFragment`.
 
 Proposed, not built: persistence, per-type
-`staleMs`/`expiresField` policy, the `scope` store option, sending operations by persisted hash,
+`staleMs` policy, the `scope` store option, sending operations by persisted hash,
 batching writes per tick, refetching a parent on a `PROPAGATED` event, response size and time limits,
 and marking records stale after a failed lookup. Sections below label these. What the client still
 needs is in [requirements.md](requirements.md).
@@ -963,3 +963,20 @@ adds 3,613 raw / 1,151 gzip bytes to main and 127 / 37 to React (source and buil
 slightly). The command failed the unrelated compiler timing budget: median 41,678.8 ms exceeded
 30,000 ms. Window measurements were explicitly skipped, so that portion is incomplete. No limits
 were raised and this is not a full budget pass.
+
+## Lifetime (R17)
+
+Lifetime is opt-in. Generator `lifetimes: { Widget: { field: "Expires", format: "unix-seconds" } }`
+selects that scalar in reads and carries the policy in artifacts. No field name implies expiry.
+`StoreOptions.lifetimes` accepts the same declaration for direct store writers. Regenerate to adopt;
+projects without a declaration keep their current behaviour. The available representations are
+`unix-seconds` (number or decimal text), `rfc3339` (explicit zone required), and `sqlite-utc`
+(an explicit service guarantee that SQLite's zone-less datetime text means UTC).
+
+Expired records read as missing, with `Snapshot.lifetime` and `QueryState.lifetime` set to `expired`;
+watched holders re-read. Unknown or absent time values remain visible with lifetime `unknown` and
+emit `StoreOptions.onDiagnostic` code `LIFETIME_UNKNOWN`. They are neither expired nor proved valid.
+A null lifetime is unknown, not an infinite lease. Calendar dates are validated before parsing.
+The store uses one expiry timer, rechecking at the nearest deadline, capped at 2,147,483,647 ms.
+Expiry does not delete records or synthesize Changed events; normal version ordering and retention
+still apply. Disposal clears the timer and records. Browser clock correctness is a consumer dependency.

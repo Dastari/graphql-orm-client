@@ -161,3 +161,9 @@ delete visibility when polling is disabled. See docs/design.md, List streams (R3
 - Use `errorsAtPath(errors, ["alias"])` to show one refused root or alias beside the rest of the response. Set
   `partialResults: "preserve-errors"` on the client so a refused field doesn't overwrite a good stored value with null.
 
+
+### Lifetime
+
+Declare generator `lifetimes` only when the service guarantees the field's meaning and format.
+Regenerate to adopt. Handle `QueryState.lifetime` (`expired` or `unknown`); unknown time values
+are not proved valid. See [lifetime](../../docs/design.md#lifetime-r17) for formats and diagnostics.

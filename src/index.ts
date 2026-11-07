@@ -54,3 +54,5 @@ export { markNotSent } from "./outcome.js"
 export type { WriteOutcome, WriteStatus } from "./outcome.js"
 
 export { errorsAtPath } from "./partial.js"
+
+export type { LifetimePolicy, LifetimeState } from "./store/lifetime.js"

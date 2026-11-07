@@ -13,6 +13,7 @@ export interface FragmentRefData {
 }
 
 export interface ReadResult<T = unknown> {
+  readonly lifetime?: "expired" | "unknown"
   readonly data: T
   /** True when a selected field is absent from the store and must be fetched. */
   readonly missing: boolean
@@ -40,6 +41,7 @@ function isLinks(value: unknown): value is StoredLinks {
 export function readSelections<T>(store: Store, selector: Selector, options: ReadOptions = {}): ReadResult<T> {
   const seen = new Set<string>()
   let missing = false
+  let lifetime: "expired" | "unknown" | undefined
 
   const readRecord = (id: string, selections: readonly Selection[]): Record<string | symbol, unknown> | null | undefined => {
     seen.add(id)
@@ -47,6 +49,13 @@ export function readSelections<T>(store: Store, selector: Selector, options: Rea
     if (!record) {
       missing = true
       return undefined
+    }
+    if (!options.inlineSpreads) {
+      const state = store.lifetime(id)
+      if (state === "expired" || state === "unknown") {
+        if (lifetime !== "expired") lifetime = state
+        if (state === "expired") { missing = true; return undefined }
+      }
     }
     const data: Record<string | symbol, unknown> = {}
     readInto(data, record.__id, record.__typename, selections)
@@ -125,5 +134,5 @@ export function readSelections<T>(store: Store, selector: Selector, options: Rea
   }
 
   const data = readRecord(selector.id, selector.selections)
-  return { data: (data ?? null) as T, missing, seen }
+  return { data: (data ?? null) as T, missing, seen, ...(lifetime ? { lifetime } : {}) }
 }

@@ -72,6 +72,8 @@ export type MutationPolicy = "store" | "no-store"
 export type QueryStatus = "idle" | "loading" | "ready" | "refreshing" | "error"
 
 export interface QueryState<T> {
+  /** Configured lifetime cannot be proved valid, or has expired. */
+  readonly lifetime?: "expired" | "unknown"
   readonly status: QueryStatus
   /** The root's own fields, with child fragments as masked references. */
   readonly data: T | undefined
@@ -268,6 +270,7 @@ class QueryResource<T> implements WatchedQuery<T> {
     const snapshot = client.store.lookup<T>(selectorOf(artifact, variables))
     const complete = !snapshot.missing && policy !== "network-only"
     this.state = {
+      lifetime: snapshot.lifetime,
       status: complete ? "ready" : "loading",
       data: complete ? snapshot.data : undefined,
       error: null,
@@ -448,6 +451,7 @@ class QueryResource<T> implements WatchedQuery<T> {
           ...this.state,
           status: "ready",
           data: snapshot.data,
+          lifetime: snapshot.lifetime,
           error: null,
           errors,
           hasMore: this.connection()?.hasMore ?? false,
@@ -518,7 +522,7 @@ class QueryResource<T> implements WatchedQuery<T> {
     this.unsubscribeStore?.()
     this.holdLive()
     this.unsubscribeStore = this.client.store.subscribe(snapshot, (next) => {
-      this.set({ ...this.state, data: next.data as T, hasMore: this.connection()?.hasMore ?? false })
+      this.set({ ...this.state, data: next.data as T, lifetime: next.lifetime, hasMore: this.connection()?.hasMore ?? false })
       this.holdLive()
       // A record this query shows was deleted or collected: read it again from the server.
       if (next.missing && this.users > 0) {

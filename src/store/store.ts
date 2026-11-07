@@ -1,3 +1,4 @@
+import { lifetimeTime, type LifetimePolicy, type LifetimeState } from "./lifetime.js"
 import type { Selection } from "../artifact.js"
 import { readSelections, type ReadResult } from "./read.js"
 import type { Variables } from "./arguments.js"
@@ -35,6 +36,13 @@ export interface OptimisticLayer {
 }
 
 export interface StoreOptions {
+  /** Explicit per-type expiry policies; also carried by generated artifacts. */
+  readonly lifetimes?: Readonly<Record<string, LifetimePolicy>>
+  /** Clock for lifetime evaluation. */
+  readonly now?: () => number
+  /** Reports values with unknown lifetime. */
+  readonly onDiagnostic?: (diagnostic: { code: string; message: string }) => void
+
   /** How long an unretained operation's records stay before collection. Default 5 minutes. */
   readonly retainMs?: number
   /** Timer seam for tests. */
@@ -69,9 +77,54 @@ export class Store {
   private readonly clearTimer: (handle: unknown) => void
 
   constructor(options: StoreOptions = {}) {
+    this.now = options.now ?? Date.now
+    this.diagnostic = options.onDiagnostic
+    this.configureLifetimes(options.lifetimes)
     this.retainMs = options.retainMs ?? 5 * 60_000
     this.setTimer = options.setTimeout ?? ((callback, ms) => setTimeout(callback, ms))
     this.clearTimer = options.clearTimeout ?? ((handle) => clearTimeout(handle as ReturnType<typeof setTimeout>))
+  }
+
+  private readonly policies = new Map<string, LifetimePolicy>()
+  private readonly lifetimeStates = new Map<string, LifetimeState>()
+  private expiryTimer: unknown = null
+  private readonly now: () => number
+  private readonly diagnostic?: StoreOptions["onDiagnostic"]
+
+  /** Register generator-declared policies before normalisation. */
+  configureLifetimes(policies?: Readonly<Record<string, LifetimePolicy>>): void {
+    for (const [type, policy] of Object.entries(policies ?? {})) this.policies.set(type, policy)
+  }
+
+  /** Undefined means the type has no lifetime policy. */
+  lifetime(id: string): LifetimeState | undefined {
+    const record = this.records.get(id)
+    const policy = record && this.policies.get(record.__typename)
+    if (!record || !policy) return undefined
+    const time = lifetimeTime(record.fields.get(policy.field), policy.format)
+    return time === null ? "unknown" : time <= this.now() ? "expired" : "valid"
+  }
+
+  private scheduleExpiry(): void {
+    if (this.expiryTimer !== null) this.clearTimer(this.expiryTimer)
+    this.expiryTimer = null
+    let next = Infinity
+    for (const record of this.records.values()) {
+      const policy = this.policies.get(record.__typename)
+      if (!policy) continue
+      const state = this.lifetime(record.__id)!
+      if (state !== this.lifetimeStates.get(record.__id)) {
+        this.changed.add(record.__id)
+        if (state === "unknown") this.diagnostic?.({ code: "LIFETIME_UNKNOWN", message: `Cannot determine lifetime of ${record.__typename}.${policy.field}` })
+      }
+      this.lifetimeStates.set(record.__id, state)
+      const time = lifetimeTime(record.fields.get(policy.field), policy.format)
+      if (time !== null && time > this.now()) next = Math.min(next, time)
+    }
+    if (next !== Infinity && !this.disposed) this.expiryTimer = this.setTimer(() => {
+      this.expiryTimer = null
+      this.publish()
+    }, Math.min(2147483647, Math.max(1, next - this.now())))
   }
 
   get(id: string): StoredRecord | undefined {
@@ -157,6 +210,7 @@ export class Store {
   }
 
   delete(id: string): void {
+    this.lifetimeStates.delete(id)
     if (this.records.delete(id)) this.changed.add(id)
   }
 
@@ -167,6 +221,8 @@ export class Store {
 
   /** Notify subscribers affected by the writes since the last publish. */
   publish(): void {
+    if (this.disposed) return
+    if (this.policies.size) this.scheduleExpiry()
     if (this.changed.size === 0) return
     const changed = new Set(this.changed)
     this.changed.clear()
@@ -176,7 +232,7 @@ export class Store {
       if (![...previous.seen].some((id) => changed.has(id))) continue
       const next = this.lookup(previous.selector)
       const data = recycle(previous.data, next.data)
-      if (data === previous.data && next.missing === previous.missing) {
+      if (data === previous.data && next.missing === previous.missing && next.lifetime === previous.lifetime) {
         subscription.snapshot = { ...next, data: previous.data }
         continue
       }
@@ -251,6 +307,9 @@ export class Store {
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
+    if (this.expiryTimer !== null) this.clearTimer(this.expiryTimer)
+    this.expiryTimer = null
+    this.lifetimeStates.clear()
     for (const retention of this.retained.values()) {
       if (retention.timer !== null) this.clearTimer(retention.timer)
     }
