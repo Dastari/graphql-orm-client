@@ -21,6 +21,8 @@ jobs:
     env:
       GRAPHQL_ORM_TAG: ${{ matrix.graphql-orm }}
       CARGO_PROFILE_DEV_DEBUG: '0'
+      # Prints the cause of a service INTERNAL_ERROR, which is otherwise masked.
+      GRAPHQL_ORM_LOG_INTERNAL_ERRORS: '1'
     steps:
       # The runner context isn't available in job-level env, which made the whole workflow file invalid.
       - run: |

@@ -793,7 +793,7 @@ changes took the main bundle from 39,582 to 49,423 bytes. The marginal JS heap p
 A nested compile for each live type used to re-extend the whole schema, which took the compile from 7.6 s to about 24 s while staying under
 the then limit of 30 s. The extended schema is now cached per schema, and the 5 s limit is what guards it.
 A missing browser fails with "window budget not run"; an explicit `--skip-window` reports
-incomplete and never counts as a pass. CI installs Chromium, Firefox and WebKit and does not skip.
+incomplete and never counts as a pass. CI installs Chromium and does not skip.
 
 ### List streams (R3)
 

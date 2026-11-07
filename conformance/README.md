@@ -27,7 +27,9 @@ router 0.8.1. `service/Cargo.lock` pins its dependencies. `GRAPHQL_ORM_TAG` cont
 both dependencies and the router; the runner creates a variant manifest and resolves
 a new lock outside the repository for another tag. Adding a workflow matrix entry
 runs that version against the same assertions; changed behaviour fails explicitly.
-CI runs `graphql-orm-v0.90.1`, `v0.91.1`, `v0.93.0` and `v0.94.0`. Do not describe another version as verified before running it.
+CI runs `graphql-orm-v0.90.1`, `v0.91.1`, `v0.93.0` and `v0.94.0`. Do not describe another version as verified before running it. All four use router 0.8.1. 0.91.1 behaves as 0.90.1 where the suite separates them (a stream selecting `NodeId` is refused, and a child delete sends its parent nothing), and 0.94.0 as 0.93.0. 0.92.0 isn't run.
+
+Set `GRAPHQL_ORM_LOG_INTERNAL_ERRORS=1`, as CI does, to see the cause of a service `INTERNAL_ERROR`. One local run on 0.94.0 stopped because the fixture's `UpdateVendor` writes during the doctor check got that error, with this logging off. It involves no client code. It didn't recur in 10 later runs on that version, and its cause isn't known.
 
 The service uses neutral Widget, Vendor, composite-key Slot and Ticket entities. Ticket's relation to Vendor has `propagate_change = "up"`, so from 0.93.0 deleting a Ticket sends its Vendor a `DELETED` event with change kind `PROPAGATED`.
 Widget has a managed version with an explicit SQL default; Ticket has a relation,
