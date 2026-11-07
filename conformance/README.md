@@ -8,12 +8,12 @@ loopback-only test infrastructure; never deploy it.
 ```sh
 pnpm install --frozen-lockfile
 pnpm build
-pnpm exec playwright-core install --with-deps chromium
+pnpm exec playwright-core install --with-deps chromium firefox webkit
 CONFORMANCE_SCRATCH=/path/outside/checkout pnpm conformance
 ```
 
-Set `CHROME` to an existing Chromium executable. A missing executable prints
-`NOT RUN`, not a pass; CI requires Chromium. A present executable that cannot launch
+Set `CHROME`, `FIREFOX` or `WEBKIT` to an existing executable for that browser. A missing executable prints
+`NOT RUN`, not a pass; CI requires all three. A present executable that cannot launch
 fails the run. `PORT_BASE` defaults to 42000 and must reserve five ports within
 42000–42099. Runs are serial. Use a different base for concurrent invocations.
 The runner creates its own temporary directory if `CONFORMANCE_SCRATCH` is absent.
@@ -27,7 +27,7 @@ router 0.8.1. `service/Cargo.lock` pins its dependencies. `GRAPHQL_ORM_TAG` cont
 both dependencies and the router; the runner creates a variant manifest and resolves
 a new lock outside the repository for another tag. Adding a workflow matrix entry
 runs that version against the same assertions; changed behaviour fails explicitly.
-CI runs `graphql-orm-v0.90.1` and `graphql-orm-v0.93.0`. Do not describe another version as verified before running it.
+CI runs `graphql-orm-v0.90.1`, `v0.91.1`, `v0.93.0` and `v0.94.0`. Do not describe another version as verified before running it.
 
 The service uses neutral Widget, Vendor, composite-key Slot and Ticket entities. Ticket's relation to Vendor has `propagate_change = "up"`, so from 0.93.0 deleting a Ticket sends its Vendor a `DELETED` event with change kind `PROPAGATED`.
 Widget has a managed version with an explicit SQL default; Ticket has a relation,
@@ -109,9 +109,13 @@ React's still-mounted-row case runs in the unit suite; the router case uses the 
 
 R17 adds explicit String lifetime expiry and holder re-reads against the real service. The test
 uses `Widget.Name` as an explicitly configured unix-seconds field for that scenario only; it does
-not infer lifetime from a name or require server lifetime metadata. Chromium also exercises the
+not infer lifetime from a name or require server lifetime metadata. Each browser also exercises the
 IndexedDB adapter across a page reload, stale restoration, identity separation and sensitive-result
 exclusion. The application supplies the test schema/release envelope identifiers.
+
+Two windows in one browser context share IndexedDB and BroadcastChannel, as a pop-out does. A `readOnly` window restores and writes nothing, disposing a plain window leaves what's saved, and `clear()` in one window deletes it and stops another saving it again.
+
+The WebKit is Playwright's headless Linux build, which isn't Safari on iOS. A phone suspending a page or dropping its socket when the app goes to the background isn't covered in any browser.
 
 ## Burst repair
 

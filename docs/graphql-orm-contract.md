@@ -98,8 +98,8 @@ The client can only prove a write's outcome from what the server says. Today tha
 - Anything else stays `unconfirmed`, including `Success: false`, because a generated result can report an error from after a
   commit.
 
-A dedicated `extensions.outcome: "refused" | "failed"` is a proposed addition. The client already reads it, but no graphql-orm
-version sends it (read from `graphql-orm-v0.93.0`). Until one does, a refused write that executed shows as `unconfirmed`.
+A dedicated `extensions.outcome: "refused" | "failed"` is a proposed addition, requested in [#371](https://github.com/Dastari/graphql-orm/issues/371). The client already reads it, but no graphql-orm
+version sends it (read from `graphql-orm-v0.94.0`). Until one does, a refused write that executed shows as `unconfirmed`.
 
 
 ## Aggregates and deletes (R15, R16)
@@ -108,7 +108,7 @@ Read from tags 0.90.1 and 0.93.0, and run on both with router 0.8.1 and SQLite:
 
 - **Aggregates:** generated aggregate roots return `GraphqlAggregateResultRow`, which is shared across entities and doesn't name its source. The compiler
   matches the aggregate's input types to a connection root's and takes the entity from `Edges.Node`. It needs exactly one candidate; otherwise it claims
-  no stream coverage and the query must poll. Proposed: publish the aggregate's source entity in the served schema.
+  no stream coverage and the query must poll. Proposed: publish the aggregate's source entity in the served schema. Requested: [#372](https://github.com/Dastari/graphql-orm/issues/372).
 - **Direct deletes without a preimage grant** send nothing, so a list corrects on its next delivered event or poll.
 - **No tombstone:** a late response can restore a removed row, because the deleted record no longer has a version to compare. The read that follows the
   event corrects it.
@@ -145,7 +145,7 @@ the mapping and optional lower limit. No server change is included here.
 R13 conformance ran against both tags and router 0.8.1: 200 Ticket/Vendor pairs,
 two parent-page requests and two 100-key related reads, counted in the HTTP bridge
 forwarding to the router. Related names were read through masked fragments. The real
-R13 scenario runs in Node; the complete suite also runs its Chromium recovery checks.
+R13 scenario runs in Node; the complete suite also runs its browser recovery checks.
 Pending, missing, chunk errors, cross-query deduplication, live foreign-key changes,
 ordering/version conflicts, disposal, collection, polling and reconnect recovery are
 additionally covered by mock tests.

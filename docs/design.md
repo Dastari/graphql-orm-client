@@ -720,8 +720,9 @@ fragments.
   outgoing identity.
 - Proposed: bounding responses by size and time. `createHttpNetwork` sets no limit; pass a wrapped
   `fetch` for one.
-- Opt-in persistence is keyed by an explicit identity and deleted on client disposal. It does not
-  encrypt storage; use a storage adapter appropriate to the data and threat model.
+- Opt-in persistence is keyed by an explicit identity and deleted by `clear()`, which an application calls on
+  sign-out. Disposing a client doesn't delete it. It does not encrypt storage; use a storage adapter appropriate
+  to the data and threat model.
 - The client does not authorise anything. A denied field or record arrives as the server
   decides (null or error), and the client stores exactly that.
 - A record lookup can fail with "not current" or "unavailable" (a stale row, or a source that
@@ -792,7 +793,7 @@ changes took the main bundle from 39,582 to 49,423 bytes. The marginal JS heap p
 A nested compile for each live type used to re-extend the whole schema, which took the compile from 7.6 s to about 24 s while staying under
 the then limit of 30 s. The extended schema is now cached per schema, and the 5 s limit is what guards it.
 A missing browser fails with "window budget not run"; an explicit `--skip-window` reports
-incomplete and never counts as a pass. CI installs Chromium and does not skip.
+incomplete and never counts as a pass. CI installs Chromium, Firefox and WebKit and does not skip.
 
 ### List streams (R3)
 
@@ -1148,7 +1149,18 @@ authorization scope in that key. To change identity, dispose the old client sync
 creating a new client; changing an application variable does not change an existing client's identity.
 Do not attach two persistence controllers to the same client. The adapter must make writes atomic.
 
-Windows of one identity share a key, because each has its own store (R19). The last write wins, which costs only staleness, since restored data is re-read. But disposing a client deletes the key, so a pop-out window calling `dispose()` on close deletes what the main window saved, until its next write. Dispose on an identity change, not on window close.
+**On sign-out, call `clear()`.** Disposing a client doesn't delete what's saved, because the client can't tell a
+window closing from a user leaving, and other windows of the identity may rely on it. Nothing else removes saved
+data, so an application that skips `clear()` leaves it on the device:
+
+```ts
+void persistence.clear() // deletes, and stops this identity's other windows saving it
+client.dispose()
+```
+
+Windows of one identity share a key, because each has its own store (R19). The last write wins, which costs only staleness, since restored data is re-read. It can also replace a large snapshot with a window's smaller one. So give a secondary window, such as a pop-out, `readOnly: true`: it restores and never writes or deletes, whatever it reads and however it closes. Its `clear()` still deletes.
+
+`clear()` tells the identity's other windows through a `BroadcastChannel`, where one exists. Each stops saving, and a window that can write deletes once more after any write it had under way. They keep their data in memory until the application disposes them. `deleteOnDispose: true` restores the earlier behaviour of deleting on disposal. Use it only with one window per identity.
 
 Envelopes contain format version, package version, schema hash, server release and identity.
 Any mismatch is diagnosed and deleted, with no migration. Generator setting `persistence: true` exports `schemaHash`, a
@@ -1175,12 +1187,12 @@ Malformed records, envelope mismatches, storage unavailability and quota failure
 `PERSISTENCE_*` diagnostics and never fail a query. Diagnostic callbacks cannot break persistence.
 The budget bounds accepted payloads, not an adapter's allocation before returning a value.
 
-Disposal erases memory immediately, cancels pending writes and queues deletion after any in-flight
-write. A late restore cannot repopulate disposed memory, and a late write cannot survive the queued
-delete. Adapter failures can prevent physical deletion and are diagnosed; isolation still holds in
-memory. Adapter operations must eventually settle. Abrupt page closure preserves a snapshot for the
-next load; explicit disposal deletes it. Tabs are independent; there is no cross-tab synchronization
-or transaction ordering between different adapter instances.
+Disposal erases memory immediately and cancels pending writes, and a late restore cannot repopulate
+disposed memory. `clear()` also queues deletion after any in-flight write in that window, so a late write
+cannot survive it. Adapter failures can prevent physical deletion and are diagnosed; isolation still holds in
+memory. Adapter operations must eventually settle. Closing a page or disposing a client preserves a snapshot
+for the next load; `clear()` deletes it. Apart from that signal, tabs are independent: there is no cross-tab
+synchronization of data, or transaction ordering between different adapter instances.
 
 R17 bundle measurement (minified standalone ESM closure, external peers, gzip level 9):
 main 59,593 bytes / 19,175 gzip, versus 55,720 / 17,995 before R17 (+3,873 / +1,180).

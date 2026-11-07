@@ -203,7 +203,10 @@ Use `persistClient` from `graphql-orm-client/persistence` only with an explicit 
 `schemaHash` (enable generator `persistence: true`) and a deployment revision in `serverRelease`. Await `ready` before starting reads; show
 `QueryState.stale` until a network write confirms restored data. Dispose the client before an identity
 change. Sensitive operations and no-store mutation results are excluded automatically.
-Adapter, budget and failure behaviour are in the installed design. Disposing a client deletes its saved data, so dispose on an identity change, not on window close.
+Adapter, budget and failure behaviour are in the installed design.
+
+- **On sign-out, call `persistence.clear()`, then dispose.** Disposing alone keeps the saved data, and nothing else removes it. `clear()` also stops the identity's other windows saving it.
+- **In a pop-out or other secondary window, pass `readOnly: true`.** It restores and never writes or deletes. Without it, the window's own smaller snapshot can replace the main window's.
 
 ## Batched relation names
 

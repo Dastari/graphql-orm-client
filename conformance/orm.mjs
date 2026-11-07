@@ -499,7 +499,7 @@ try {
  lifetimeWatch.close();lifetimeClient.dispose();pass('explicit String lifetime expires and holders re-read')
  await liveSettingCheck({schema,scratch,routerUrl,token,post,until,sleep})
  await doctorChecks({schema,scratch,routerUrl,token,post})
- try {await browserRecovery({scratch,compiled,query,routerUrl,frontUrl,token,reload:()=>revision++,stopRouter,startRouter,updateDirect,update,until,sleep})}catch(e){failures.push(`Chromium: ${e.message}`);console.error(e)}
+ try {await browserRecovery({scratch,compiled,query,routerUrl,frontUrl,token,reload:()=>revision++,stopRouter,startRouter,updateDirect,update,until,sleep})}catch(e){failures.push(`Browser: ${e.message}`);console.error(e)}
  if(failures.length)throw Error(`Conformance failures:\n${failures.join('\n')}`)
  console.log(`PASS ${passed} groups against ${process.env.GRAPHQL_ORM_TAG??'graphql-orm-v0.90.1'} / real router`)
 } finally {
