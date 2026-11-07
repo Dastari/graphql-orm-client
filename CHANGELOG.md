@@ -11,9 +11,10 @@
   `queryOwners`/`subscriptionPaths` restrict document ownership. Migration: remove unsupported
   `@live` or add `@poll(reason: "...")`; add legitimate owners to the configured globs.
   Each policy has `strict.<rule>: "warn" | "off"` to stage adoption (see design).
-- Explicit `pollMs` now requires `@poll(reason: "...")` on its query. Regenerate before upgrading
-  runtime callers. Set client `polling.undeclared: "warn"` or `"off"` while migrating old artifacts.
-  Generation validates declarations; it cannot detect runtime interval options at build time.
+- `pollMs` needs `@poll(reason: "...")` on its query. A build can't see a runtime option, so an undeclared one throws from `watchQuery`
+  outside production on a regenerated module. In production, and on a module generated earlier, it warns and still polls.
+  `polling.undeclared: "warn" | "off"` relaxes this.
+- `@live` on an interface or union fragment is now reported rather than silently not live, under `strict.liveWithoutStream`.
 
 
 - R3: generated `OperationArtifact.lists` enables one un-narrowed stream per open list type,
@@ -34,8 +35,8 @@ schemas poll with `list-key-required`; disabling streams reports `list-streams-d
 Without a delete preimage grant no event is sent: correction waits for the next event or poll.
 - Add `pnpm conformance` and a CI version matrix for a SQLite graphql-orm example service
   behind the real router, in this repository only. The suite checks admission, events, NodeIds, versions,
-  pagination, doctor verdicts and repeated Node and Chromium recovery. The default is
-  graphql-orm-v0.90.1 / router 0.8.1. No runtime API or migration change.
+  pagination, doctor verdicts and repeated Node and Chromium recovery, on graphql-orm-v0.90.1 and
+  graphql-orm-v0.93.0. No runtime API or migration change.
 
 ## 0.1.0-alpha.10 (2026-11-06)
 
@@ -97,7 +98,8 @@ the server refuses that selection with `INVALID_INPUT`, the client uses keys onl
 1. Regenerate, then read the generator's warnings. Each names a fragment and field the stream now excludes, which that fragment's
    queries will re-read on an event.
 2. To regenerate without the new stream selection, set `liveSelection: "as-written"` in the generator config. The change-kind
-   fix still applies.
+   fix still applies. An as-written stream selects `NodeId`, which a server before graphql-orm 0.92.0 refuses on an entity that has it, so
+   those types get no live events there: use the default selection on those versions. Run on 0.90.1 (refused) and 0.93.0 (admitted).
 3. To keep the old read count, set `live: { settleMs: false }`. Overlap stays on either way, at 250 ms.
 4. If a re-read's timing matters, set `live.minRereadMs`.
 5. Run `doctor` against the deployed identity to see which types fall back to keys only.

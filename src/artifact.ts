@@ -130,8 +130,6 @@ export interface OperationArtifact<TData = unknown, TVariables = Record<string, 
   readonly " $types"?: { readonly data: TData; readonly variables: TVariables }
   /** Declared justification for explicit interval polling. Absent in older artifacts. */
   readonly pollReason?: string
-  /** Declaring source files, supplied by generation when available. */
-  readonly sourcePaths?: readonly string[]
   readonly kind: "query" | "mutation" | "subscription"
   readonly name: string
   /** The operation text with every fragment it uses, as sent to the server. */

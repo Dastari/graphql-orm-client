@@ -60,5 +60,16 @@ describe('build policies', () => {
     }
     const declared = compile(schema, ['query Page @poll(reason: "External writes") { Notes { Id } }']).operations.Page!
     expect(() => createClient({ network }).watchQuery(declared, {}, { pollMs: 100 })).not.toThrow()
+    // A module generated before this rule, and production, warn and still poll: a working page mustn't crash on upgrade.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const { lists: _lists, ...earlier } = artifact
+    expect(() => createClient({ network }).watchQuery(earlier, {}, { pollMs: 100 })).not.toThrow()
+    const environment = process.env.NODE_ENV
+    process.env.NODE_ENV = 'production'
+    try {
+      expect(() => createClient({ network }).watchQuery(artifact, {}, { pollMs: 100 })).not.toThrow()
+    } finally { process.env.NODE_ENV = environment }
+    expect(warn).toHaveBeenCalledTimes(2)
+    warn.mockRestore()
   })
 })

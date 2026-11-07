@@ -168,13 +168,12 @@ is unsupported. All files declaring identical text are checked. Programmatic com
 `documentPaths` (document text to file paths); without it diagnostics name the GraphQL source or
 `<document N>` and configured path policies cannot match unknown paths.
 
-`pollMs` is a runtime option, including through hooks, so generation does not claim to scan call sites.
-Declare `query Name @poll(reason: "...") { ... }` before passing it. `watchQuery` rejects an undeclared
-interval, including dynamically composed options. `polling.undeclared: "warn" | "off"` on the client
-supports migration (`"error"` by default). `strict.pollWithoutReason` controls empty reason diagnostics
-at build time; GraphQL still rejects missing or incorrectly typed required directive arguments.
-Automatic live fallback polling is justified by its health reason and needs no `@poll` declaration.
-R11's ephemeral `client.stream` exception is proposed and is not imported or implemented here.
+`pollMs` is a runtime option, including through hooks, so a build can't see it. Declare it instead:
+`query Name @poll(reason: "...") { ... }`. An undeclared `pollMs` throws from `watchQuery` outside production, on a regenerated module, so
+development and tests find it. In production, and on a module generated before this release, it warns and still polls, because a working
+page mustn't crash on upgrade. `polling.undeclared: "warn" | "off"` on the client relaxes this. `strict.pollWithoutReason` covers an empty
+reason at build time. Fallback polling is reported through health and needs no declaration. The escape for a raw subscription is
+`client.stream` (R11).
 
 
 ## Live generation setting (R1)
@@ -191,7 +190,7 @@ using area mode programmatically. Unknown files do not match area globs.
 An implicit live fragment with no usable stream warns, appears in `liveUnavailable`, and uses the
 normal fallback interval (30 seconds unless changed); health reports `no-stream` and polling, or
 unavailable if fallback is disabled. Explicit `@live` on that type follows R5's error policy.
-Only object fragments become implicitly live; abstract fragments still require explicit intent.
+Only fragments on object types with a key become implicitly live. A keyless value type has no identity and no stream, and its data comes with its parent, so it stays as it is. Abstract fragments need explicit intent.
 Lists open streams only for types with a live fragment somewhere in the project. Default mode
 widens that set; an opted-out fragment does not disable another live fragment of the same type.
 

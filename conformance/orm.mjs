@@ -145,11 +145,23 @@ try {
  assert.equal(slot.NodeId,encodeNodeId('Slot',['north','a']))
  assert.equal((await post('query($id: ID!) { node(NodeId: $id) { ... on Slot { Site Name } } }',{id:slot.NodeId})).data.node.Site,'north')
  pass('single and composite server NodeIds agree with client; router node lookup')
- for (const [label,q] of [['federated',stream('', 'Id RemoteName')],['NodeId',stream('', 'Id NodeId')],['computed RecordVersion','subscription { TicketChanged { Ticket { Id RecordVersion } } }'],['computed','subscription { TicketChanged { Ticket { Id Summary } } }'],['relation','subscription { TicketChanged { Ticket { Id Vendor { Id } } } }']]) {
+ // From 0.92.0 a stream admits NodeId, and so a federated field keyed on it (#312).
+ const minor=Number((process.env.GRAPHQL_ORM_TAG??'').match(/v0\.(\d+)/)?.[1]??0)
+ const nodeIdAdmitted=minor>=92
+ for (const [label,q] of [...(nodeIdAdmitted?[]:[['federated',stream('', 'Id RemoteName')],['NodeId',stream('', 'Id NodeId')]]),['computed RecordVersion','subscription { TicketChanged { Ticket { Id RecordVersion } } }'],['computed','subscription { TicketChanged { Ticket { Id Summary } } }'],['relation','subscription { TicketChanged { Ticket { Id Vendor { Id } } } }']]) {
   const id=a.subscribe(q);await until(`${label} refusal`,()=>a.frames.some(x=>x.id===id))
   const frame=a.frames.find(x=>x.id===id);assert.equal((frame.payload.errors??frame.payload)[0].extensions.code,'INVALID_INPUT',JSON.stringify(frame));console.log(`${label} refusal frame: ${frame.type}`)
  }
- pass('NodeId, hand-written RecordVersion, computed and relation selections refused INVALID_INPUT; managed RecordVersion delivered')
+ if(nodeIdAdmitted){
+  const admitted=await raw(), nodeIdStream=admitted.subscribe(stream('', 'Id NodeId'))
+  await sleep(300)
+  await post('mutation { UpdateWidget(Id: "w1", Input: {Name: "NodeId carried"}) { Success } }')
+  await until('NodeId event',()=>admitted.frames.some(f=>f.id===nodeIdStream))
+  const carried=admitted.frames.find(f=>f.id===nodeIdStream)
+  assert.equal(carried.type,'next');assert.equal(carried.payload.data.WidgetChanged.Widget.NodeId,encodeNodeId('Widget',['w1']))
+  admitted.ws.close()
+ }
+ pass(`${nodeIdAdmitted?'NodeId delivered in a stream; ':'NodeId refused INVALID_INPUT; '}hand-written RecordVersion, computed and relation selections refused INVALID_INPUT; managed RecordVersion delivered`)
  for(const [field,code] of [['ContinuityLost','SUBSCRIPTION_CONTINUITY_LOST'],['SourceClosed','SUBSCRIPTION_SOURCE_CLOSED']]) {
   const id=a.subscribe(`subscription { ${field} }`)
   await until(code,()=>a.frames.some(f=>f.id===id&&f.type==='complete'))
@@ -164,7 +176,7 @@ try {
  const federatedFrame=a.frames.find(f=>f.id===federated)
  assert.equal(federatedFrame.type,'next');assert(!federatedFrame.payload.errors,JSON.stringify(federatedFrame))
  assert.equal(federatedFrame.payload.data.VendorChanged.Vendor.RemoteName,'Remote')
- pass('federated scalar with persisted Id key is admitted and fetched per event; NodeId-key federation is refused')
+ pass(`federated scalar with persisted Id key is admitted and fetched per event${nodeIdAdmitted?'':'; NodeId-key federation is refused'}`)
  // The raw frame path proves the protocol violation separately from graphql-ws recovery.
  revision++
  await until('reload error',()=>a.frames.some(x=>x.id===all&&x.type==='error'))
@@ -219,6 +231,48 @@ try {
   slotQuery.close();client.dispose();await socket.dispose()
  }
  pass('a composite-key event reaches its record though the served schema lists the key in another order')
+ // Deleting a child under a relation with propagate_change = "up". From 0.93.0 this notifies the parent (#290), and the
+ // parent must stay. Before that, nothing is sent.
+ const parents=compile(schema,[`fragment VendorRow on Vendor @live { Name }`,`query OneVendor($Id: String!) { Vendor(Id: $Id) { ...VendorRow } }`])
+ assert(/\bChangeKind\b/.test(parents.live.Vendor.operation.text))
+ {
+  await post('mutation { CreateVendor(Input: {Id: "parent", Name: "Parent"}) { Success } }')
+  for(const id of ['c1','c2','c3','c4','c5','c6']) await post(`mutation { CreateTicket(Input: {Id: "${id}", VendorId: "parent", Title: "Child"}) { Success } }`)
+  const socket=createWs({url:routerUrl.replace('http','ws'),webSocketImpl:WebSocket,connectionParams:{authorization:`Bearer ${token}`}})
+  const transport=graphqlWsTransport(socket)
+  let reads=0
+  const network=createHttpNetwork({url:routerUrl,headers})
+  const frames=[]
+  const client=createClient({network:{execute:(r,o)=>{reads++;return network.execute(r,o)}},live:{artifacts:parents.live,...transport,onDiagnostic:null,subscribe:(request,sink)=>transport.subscribe(request,{...sink,next:r=>{frames.push(r.data?.VendorChanged);sink.next(r)}})}})
+  const parent=client.watchQuery(parents.operations.OneVendor,{Id:'parent'})
+  parent.open()
+  const parentId=encodeNodeId('Vendor',['parent'])
+  await until('parent streams',()=>client.live.status().Vendor?.subscriptions>=1&&client.store.get(parentId))
+  await sleep(1000)
+  const propagatedDeletes=()=>frames.filter(f=>f?.Action==='DELETED'&&f.ChangeKind==='PROPAGATED'&&f.Vendor?.Id==='parent').length
+  await post('mutation { DeleteTicket(Id: "c1") { Success } }')
+  if(minor>=93){
+   const before=reads
+   await until('propagated delete',()=>propagatedDeletes()===1)
+   assert(client.store.get(parentId),'a propagated delete keeps the parent')
+   await until('parent read again',()=>reads>before)
+   assert(parent.getState().data?.Vendor)
+   await sleep(2100)
+   const burst=reads
+   await Promise.all(['c2','c3','c4','c5','c6'].map(id=>post(`mutation { DeleteTicket(Id: "${id}") { Success } }`)))
+   await until('5 propagated deletes',()=>propagatedDeletes()===6)
+   await sleep(2300)
+   assert(reads-burst<=2,`5 propagated deletes caused ${reads-burst} reads`)
+   assert(client.store.get(parentId))
+   pass('without a preimage grant, a child delete keeps the parent and reads it again, and a burst coalesces')
+  } else {
+   await sleep(500)
+   assert.equal(propagatedDeletes(),0)
+   assert(client.store.get(parentId))
+   pass('before 0.93.0 a child delete sends the parent nothing')
+  }
+  parent.close();client.dispose();await socket.dispose()
+ }
  const list=(await post('{ Widgets(Where: {Name: {InList: ["Newest", "Beta"]}}, OrderBy: [{Name: DESC}], Page: {Limit: 1, Offset: 1}) { Edges { Node { Id Name } } PageInfo { TotalCount HasNextPage } } }')).data.Widgets
  assert.equal(list.PageInfo.TotalCount,2);assert.equal(list.Edges[0].Node.Name,'Beta')
  const first=(await post('{ WidgetsKeyset(Page: {limit: 1, includeTotalCount: true}) { Edges { Node { Id } } PageInfo { EndCursor TotalCount HasNextPage } } }')).data.WidgetsKeyset
@@ -235,6 +289,23 @@ try {
  await post('mutation { DeleteWidget(Id: "delete-me") { Success } }')
  await until('delete preimage',()=>deletion.frames.some(f=>f.payload?.data?.WidgetChanged?.Action==='DELETED'))
  deletion.ws.close();pass('DELETED suppressed without grant, delivered with can_read_deleted_preimage')
+ // A parent deleted directly is removed, on the same generated stream that keeps it for a child delete.
+ {
+  await post('mutation { CreateVendor(Input: {Id: "gone", Name: "Gone"}) { Success } }')
+  const socket=createWs({url:routerUrl.replace('http','ws'),webSocketImpl:WebSocket,connectionParams:{authorization:`Bearer ${token}`}})
+  const transport=graphqlWsTransport(socket)
+  const client=createClient({network:createHttpNetwork({url:routerUrl,headers}),live:{artifacts:parents.live,...transport,onDiagnostic:null}})
+  const gone=client.watchQuery(parents.operations.OneVendor,{Id:'gone'});gone.open()
+  const goneId=encodeNodeId('Vendor',['gone'])
+  await until('direct delete stream',()=>client.live.status().Vendor?.subscriptions>=1&&client.store.get(goneId))
+  await sleep(1000)
+  assert.equal(client.live.status().Vendor.lastEventAt,null)
+  await post('mutation { DeleteVendor(Id: "gone") { Success } }')
+  await until('direct delete event',()=>client.live.status().Vendor.lastEventAt!==null)
+  assert(!client.store.get(goneId)||gone.getState().data?.Vendor==null,'a direct delete removes the record')
+  gone.close();client.dispose();await socket.dispose()
+  pass('a direct delete of a parent removes the record')
+ }
  for(const synchronous of [true,false]) {
   for(let repeat=0;repeat<8;repeat++) {
    for(const scenario of ['reload','kill','refuse']) {

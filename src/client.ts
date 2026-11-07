@@ -92,7 +92,10 @@ export interface ClientOptions {
 }
 
 export interface PollingOptions {
-  /** Undeclared pollMs policy. Default error; warn/off ease migration of old artifacts. */
+  /**
+   * `pollMs` on a query with no `@poll(reason)`. `error`, the default, throws outside production on a regenerated module, and otherwise
+   * warns and still polls. `warn` always warns, and `off` says nothing.
+   */
   readonly undeclared?: "error" | "warn" | "off"
   /**
    * How often a query refetches when it shows `@live` records that no subscription covers: types
@@ -1110,9 +1113,12 @@ export class Client {
   ): WatchedQuery<T> & { open(): void; close(): void } {
     const { policy = "store-and-network", pollMs } = typeof options === "string" ? { policy: options } : options
     if (pollMs !== undefined && !artifact.pollReason?.trim()) {
-      const message = `Operation ${artifact.name} (${artifact.sourcePaths?.join(", ") ?? "unknown source; regenerate"}): pollMs requires @poll(reason: "why polling is needed") on the query; regenerate its artifact (polling.undeclared controls migration)`
-      if ((this.polling.undeclared ?? "error") === "error") throw new Error(message)
-      if (this.polling.undeclared === "warn") console.warn(message)
+      const message = `Operation ${artifact.name}: pollMs needs @poll(reason: "why polling is needed") on the query. Add it and regenerate, or set polling.undeclared.`
+      const setting = this.polling.undeclared ?? "error"
+      // A build can't see a runtime option, so this is what finds it. It stays out of production and modules generated before the
+      // rule existed (no `lists`), because a working page mustn't crash on upgrade.
+      if (setting === "error" && artifact.lists !== undefined && !isProduction()) throw new Error(message)
+      if (setting !== "off") console.warn(message)
     }
     const key = `${queryKey(artifact, variables)}:${policy}`
     let resource = this.resources.get(key) as QueryResource<T> | undefined
@@ -1281,8 +1287,12 @@ export class Client {
   }
 }
 
+function isProduction(): boolean {
+  return typeof process !== "undefined" && process.env?.NODE_ENV === "production"
+}
+
 function defaultDiagnostic(diagnostic: LiveDiagnostic): void {
-  if (typeof process !== "undefined" && process.env?.NODE_ENV === "production") return
+  if (isProduction()) return
   console.warn(diagnostic.message)
 }
 

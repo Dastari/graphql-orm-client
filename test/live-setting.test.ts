@@ -27,6 +27,13 @@ describe('live generation settings', () => {
     }
     expect(compile(schema, [row.replace('Widget {', 'Widget @live(enabled: true) {')]).live.Widget).toBeDefined()
   })
+  it('leaves a keyless value type alone in default mode, so a query showing one does not start polling', () => {
+    const withSpec = buildSchema(`type Query { Widget: Widget } type Subscription { WidgetChanged(Key: ID): WidgetEvent! } type WidgetEvent { Action: String! Widget: Widget } type Widget { Id: ID! Spec: Spec } type Spec { Model: String }`)
+    const result = compile(withSpec, ['fragment SpecRow on Spec { Model }', 'query One { Widget { Spec { ...SpecRow } } }'], { live: 'default', onWarning: () => {} })
+    expect(result.fragments.SpecRow!.live).toBe(false)
+    expect(result.liveUnavailable).toEqual([])
+  })
+
   it('reports implicit streamless fragments but errors on explicit intent', () => {
     const warning = vi.fn()
     const note = 'fragment NoteBody on Note { Body }'

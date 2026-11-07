@@ -1,6 +1,6 @@
 ---
 name: graphql-orm-client-adopt
-description: Use explicit live fragments or opt-in default/area generation with @live(enabled: false); Configure project query/subscription owners and strict build policies, declare polling reasons; Install graphql-orm-client in an application, configure the network and one client per signed-in identity, pull and check schema snapshots, run the generator, wire route loaders and move an Apollo application across route by route.
+description: Install graphql-orm-client in an application, configure the network and one client per signed-in identity, pull and check schema snapshots, run the generator, wire route loaders and move an Apollo application across route by route.
 ---
 
 # Adopt graphql-orm-client
@@ -44,51 +44,6 @@ The client only works against graphql-orm services and their router.
 Verify: the route makes one request on first load, a second visit within the retention
 period makes none, and signing out clears every record.
 
+## Build policies and the live setting
 
-## Project build policies (R5)
-
-Built. `strict` in the generator config accepts `liveWithoutStream`, `pollWithoutReason`,
-`rawSubscriptions` and `queryOwnership`, each `"error"` (default), `"warn"` or `"off"`.
-An explicit `@live` fragment with no usable stream must remove `@live` or declare
-`@poll(reason: "why polling is needed")`. Reasons must be non-empty and are recorded on artifacts.
-`liveUnavailable` remains available when a policy is downgraded or polling is declared.
-
-Set `queryOwners: ["src/routes/**", "src/dialogs/**", "src/adapters/**"]` to restrict query documents;
-windows, pickers and other project owners can have their own paths. `subscriptionPaths` similarly
-restricts raw subscription documents. Both checks are disabled when their setting is absent.
-Globs use config-relative source document paths with `/`, `*`, `**` and `?`; brace/extglob syntax
-is unsupported. All files declaring identical text are checked. Programmatic compilation can pass
-`documentPaths` (document text to file paths); without it diagnostics name the GraphQL source or
-`<document N>` and configured path policies cannot match unknown paths.
-
-`pollMs` is a runtime option, including through hooks, so generation does not claim to scan call sites.
-Declare `query Name @poll(reason: "...") { ... }` before passing it. `watchQuery` rejects an undeclared
-interval, including dynamically composed options. `polling.undeclared: "warn" | "off"` on the client
-supports migration (`"error"` by default). `strict.pollWithoutReason` controls empty reason diagnostics
-at build time; GraphQL still rejects missing or incorrectly typed required directive arguments.
-Automatic live fallback polling is justified by its health reason and needs no `@poll` declaration.
-R11's ephemeral `client.stream` exception is proposed and is not imported or implemented here.
-
-
-## Live generation setting (R1)
-
-Built. The generator and `compile` default to `live: "explicit"`: only `@live` fragments request
-streams. `live: "default"` is opt-in, not recommended by default; the owner must decide before
-the package default changes. It makes object fragments live without a directive.
-`live: { "default": ["src/area/**"] }` enables that behaviour only for matching fragment document
-source files, relative to the config directory. It matches the fragment's file, not a spreading query's.
-Plain-string `compile(schema, sources)` keeps its explicit behaviour; pass `documentPaths` when
-using area mode programmatically. Unknown files do not match area globs.
-
-`@live(enabled: false)` opts a fragment out in every mode; `@live` and `@live(enabled: true)` opt in.
-An implicit live fragment with no usable stream warns, appears in `liveUnavailable`, and uses the
-normal fallback interval (30 seconds unless changed); health reports `no-stream` and polling, or
-unavailable if fallback is disabled. Explicit `@live` on that type follows R5's error policy.
-Only object fragments become implicitly live; abstract fragments still require explicit intent.
-Lists open streams only for types with a live fragment somewhere in the project. Default mode
-widens that set; an opted-out fragment does not disable another live fragment of the same type.
-
-Migration: keep `"explicit"` to retain current stream scope. Opt in per area, regenerate, and inspect
-`liveUnavailable` and `client.liveHealth()`. More live types use more operations: the router's default
-32-operation connection budget still applies; capacity refusals remain visible and uncovered data polls.
-No setting overrides server admission or guarantees every burst event arrives.
+Generator settings `strict`, `queryOwners`, `subscriptionPaths` and `live`: see the live skill.

@@ -27,14 +27,14 @@ router 0.8.1. `service/Cargo.lock` pins its dependencies. `GRAPHQL_ORM_TAG` cont
 both dependencies and the router; the runner creates a variant manifest and resolves
 a new lock outside the repository for another tag. Adding a workflow matrix entry
 runs that version against the same assertions; changed behaviour fails explicitly.
-Do not describe a second version as verified before running it.
+CI runs `graphql-orm-v0.90.1` and `graphql-orm-v0.93.0`. Do not describe another version as verified before running it.
 
-The service uses neutral Widget, Vendor, composite-key Slot and Ticket entities.
+The service uses neutral Widget, Vendor, composite-key Slot and Ticket entities. Ticket's relation to Vendor has `propagate_change = "up"`, so from 0.93.0 deleting a Ticket sends its Vendor a `DELETED` event with change kind `PROPAGATED`.
 Widget has a managed version with an explicit SQL default; Ticket has a relation,
 a computed Summary and a hand-written computed RecordVersion. The second subgraph
 is deliberately a small Node federation extension, owning Widget.RemoteName through
 the NodeId key and Vendor.RemoteName through the persisted Id key. The latter is
-admitted and resolved per event; the NodeId-key variant is refused. The source of entity events and all database writes is the Rust ORM.
+admitted and resolved per event; the NodeId-key variant follows NodeId's admission (see below). The source of entity events and all database writes is the Rust ORM.
 
 Assertions cover empty Keys, keys/key/unkeyed streams, creation outside the held
 keys, scalar admission, NodeId and computed/relation refusals, federation fetch
@@ -49,7 +49,7 @@ Recovery repeats reload, router kill and policy refusal followed by acceptance e
 times with both ws event scheduling modes. Browser reload and kill recovery each
 repeat eight times. Browser HTTP reads use a bridge to the same router so that CORS
 is independent of the WebSocket behaviour under test. Doctor invokes the built CLI
-against real router introspection and streams. `refused` uses `liveSelection: "as-written"`, whose stream selects NodeId. `fallback-not-refused` uses a computed field, so the server really refuses full and admits thin. Missing uses the real PageInfo type, which has no Changed stream. Invalid and
+against real router introspection and streams. `refused` uses `liveSelection: "as-written"` with a computed field, so no keys-only stream exists to fall back to. `fallback-not-refused` uses a computed field, so the server really refuses full and admits thin. Missing uses the real PageInfo type, which has no Changed stream. Invalid and
 required-key unknown deliberately alter the local schema snapshot; they do not
 simulate router responses. The required-key unknown path is a conservative doctor
 classification, not evidence that generated Changed streams require keys. Admission uses a real ORM update, while empty Keys remains quiet.
@@ -69,8 +69,9 @@ The composite Slot is excluded from generated GraphQL mutations (repository writ
 seed it). Otherwise the generated placeholder `gomCompositeKeyWritesUnavailable`
 has no operation catalogue entry and the router rejects the descriptor.
 
-A hand-written stream selecting NodeId is refused with `next { errors: [{ extensions: { code: "INVALID_INPUT" } }] }`,
-then `complete`. Generated streams don't select it, and recovery runs on the generated stream unchanged.
+A stream selecting NodeId is refused on 0.90.1 with `next { errors: [{ extensions: { code: "INVALID_INPUT" } }] }`, then `complete`, and so is
+a federated field keyed on it. On 0.93.0 both are admitted: the fix is in the changelog for 0.92.0 (#312), which itself isn't run. Generated streams
+don't select NodeId on either, and recovery runs on the generated stream unchanged.
 
 Introspection through the router lists `SlotKeyInput` as `Name, Site`, while the service's SDL and its NodeId use
 `Site, Name`. The suite pins this and proves that a real composite-key event reaches its record, written through

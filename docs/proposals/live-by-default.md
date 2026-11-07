@@ -12,8 +12,8 @@ and fixture accommodations are documented in [conformance](../../conformance/REA
 1. **A stream is admitted or refused whole.** `validate_subscription_selection` refuses a `Changed`
    subscription if any selected entity field isn't a persisted, subscribable column, with the generic
    `INVALID_INPUT`. Legacy generation spreads `@live` fragments unchanged, so one relation or computed
-   field in one fragment stops every fragment of that type. `NodeId` is refused too: run on
-   0.90.1, source-read on 0.91.1. The real wire shape is `next` with `INVALID_INPUT`, then
+   field in one fragment stops every fragment of that type. `NodeId` was refused too: run on
+   0.90.1. It's admitted from 0.92.0 (#312), run on 0.93.0. The real wire shape is `next` with `INVALID_INPUT`, then
    `complete`; managed RecordVersion is accepted, while a computed hand-written one is refused.
 2. **Nothing confirms a subscribe.** graphql-transport-ws has no per-operation acknowledgement, and
    `Changed` sends nothing until an event. A quiet admitted stream looks the same as an unanswered
@@ -282,8 +282,7 @@ In order. All opt-in, through its normal process.
      Widget.RemoteName through the NodeId key is refused with `INVALID_INPUT`, because
      the source stream cannot carry that key. Do not classify every federated field
      as refused. A snapshot can omit these fields to avoid fetches per event.
-2. **Merge PR #312** (`NodeId` and `RecordVersion` on relation-bearing entities). In flight. Without it
-   those entities have neither, whatever the client does.
+2. **PR #312** (`NodeId` and `RecordVersion` on relation-bearing entities) is merged and in 0.92.0.
 3. **A stream-started signal.** An opt-in first frame after authorization, as `CacheSync::changes` sends.
    It is the only thing that closes the first-read gap and makes `live` provable for a quiet stream.
 4. **A dedicated code for an unsupported selection,** so `INVALID_INPUT` needn't stand for it.
@@ -301,49 +300,6 @@ In order. All opt-in, through its normal process.
 - **`Snapshot`** is a request to graphql-orm and blocks nothing here.
 - **graphql-orm PR #312** is the owner's decision; the client doesn't wait for it.
 
-## Project build policies (R5)
+## Build policies and the live setting
 
-Built. `strict` in the generator config accepts `liveWithoutStream`, `pollWithoutReason`,
-`rawSubscriptions` and `queryOwnership`, each `"error"` (default), `"warn"` or `"off"`.
-An explicit `@live` fragment with no usable stream must remove `@live` or declare
-`@poll(reason: "why polling is needed")`. Reasons must be non-empty and are recorded on artifacts.
-`liveUnavailable` remains available when a policy is downgraded or polling is declared.
-
-Set `queryOwners: ["src/routes/**", "src/dialogs/**", "src/adapters/**"]` to restrict query documents;
-windows, pickers and other project owners can have their own paths. `subscriptionPaths` similarly
-restricts raw subscription documents. Both checks are disabled when their setting is absent.
-Globs use config-relative source document paths with `/`, `*`, `**` and `?`; brace/extglob syntax
-is unsupported. All files declaring identical text are checked. Programmatic compilation can pass
-`documentPaths` (document text to file paths); without it diagnostics name the GraphQL source or
-`<document N>` and configured path policies cannot match unknown paths.
-
-`pollMs` is a runtime option, including through hooks, so generation does not claim to scan call sites.
-Declare `query Name @poll(reason: "...") { ... }` before passing it. `watchQuery` rejects an undeclared
-interval, including dynamically composed options. `polling.undeclared: "warn" | "off"` on the client
-supports migration (`"error"` by default). `strict.pollWithoutReason` controls empty reason diagnostics
-at build time; GraphQL still rejects missing or incorrectly typed required directive arguments.
-Automatic live fallback polling is justified by its health reason and needs no `@poll` declaration.
-R11's ephemeral `client.stream` exception is proposed and is not imported or implemented here.
-
-## Live generation setting (R1)
-
-Built. The generator and `compile` default to `live: "explicit"`: only `@live` fragments request
-streams. `live: "default"` is opt-in, not recommended by default; the owner must decide before
-the package default changes. It makes object fragments live without a directive.
-`live: { "default": ["src/area/**"] }` enables that behaviour only for matching fragment document
-source files, relative to the config directory. It matches the fragment's file, not a spreading query's.
-Plain-string `compile(schema, sources)` keeps its explicit behaviour; pass `documentPaths` when
-using area mode programmatically. Unknown files do not match area globs.
-
-`@live(enabled: false)` opts a fragment out in every mode; `@live` and `@live(enabled: true)` opt in.
-An implicit live fragment with no usable stream warns, appears in `liveUnavailable`, and uses the
-normal fallback interval (30 seconds unless changed); health reports `no-stream` and polling, or
-unavailable if fallback is disabled. Explicit `@live` on that type follows R5's error policy.
-Only object fragments become implicitly live; abstract fragments still require explicit intent.
-Lists open streams only for types with a live fragment somewhere in the project. Default mode
-widens that set; an opted-out fragment does not disable another live fragment of the same type.
-
-Migration: keep `"explicit"` to retain current stream scope. Opt in per area, regenerate, and inspect
-`liveUnavailable` and `client.liveHealth()`. More live types use more operations: the router's default
-32-operation connection budget still applies; capacity refusals remain visible and uncovered data polls.
-No setting overrides server admission or guarantees every burst event arrives.
+R5 and the R1 setting are built: see [design.md](../design.md#project-build-policies-r5). The default stays `explicit` until the owner decides.

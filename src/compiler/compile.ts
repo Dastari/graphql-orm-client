@@ -275,7 +275,7 @@ function compileDocuments(
       const allowed = node.operation === "query" ? options.queryOwners : node.operation === "subscription" ? options.subscriptionPaths : undefined
       if (allowed && paths.get(node)?.some((file) => file.startsWith("<document ") || !allowed.some((glob) => matchesPath(file, glob)))) {
         report(node.operation === "query" ? "queryOwnership" : "rawSubscriptions", node,
-          node.operation === "query" ? "query is outside queryOwners; add its file path to queryOwners" : "raw subscription is outside subscriptionPaths; add its path, or use the proposed ephemeral client.stream API (R11, not yet built)")
+          node.operation === "query" ? "query is outside queryOwners; add its file path to queryOwners" : "raw subscription is outside subscriptionPaths; add its path, or use client.stream")
       }
     }
   }
@@ -304,7 +304,8 @@ function compileDocuments(
         const enabled = directive?.arguments?.find((a) => a.name.value === "enabled")?.value
         if (enabled?.kind === Kind.BOOLEAN && !enabled.value) return false
         if (directive) return true
-        if (!isObjectType(parent)) return false
+        // A keyless value type has no identity and no stream, and its data comes with its parent.
+        if (!isObjectType(parent) || !keyFieldsOf(schema, parent.name, options)) return false
         const setting = options.live
         return setting === "default" || typeof setting === "object" &&
           (paths.get(node) ?? []).some((file) => !file.startsWith("<document ") && setting.default.some((glob) => matchesPath(file, glob)))
@@ -330,7 +331,6 @@ function compileDocuments(
     const paged = pagedSpecOf(schema, node, rootType, options)
     operations[name] = {
       kind: node.operation,
-      sourcePaths: paths.get(node),
       ...(pollReason(node) ? { pollReason: pollReason(node) } : {}),
       lists: listTypes(schema, convert(schema, augmented.selectionSet, rootType, augmentedFragments, true, options), rootType, options),
       keys: pick(metadata.keys, reachable),
