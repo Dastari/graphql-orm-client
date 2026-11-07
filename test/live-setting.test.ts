@@ -17,7 +17,14 @@ describe('live generation settings', () => {
       expect(result.fragments.Row?.live).toBe(enabled)
       expect(result.operations.Page?.lists).toEqual(enabled ? ['Widget'] : [])
     }
-    expect(compile(schema, [row], { live: { default: ['src/area/**'] } }).fragments.Row?.live).toBe(false)
+    const warnings: string[] = []
+    expect(compile(schema, [row], { live: { default: ['src/area/**'] }, onWarning: (w) => warnings.push(w) }).fragments.Row?.live).toBe(false)
+    expect(warnings.filter((w) => w.startsWith('live.default'))).toEqual(['live.default pattern "src/area/**" matches no file that defines a fragment, so it makes nothing live. A pattern matches the file a fragment is written in, not the files that spread it. No fragment here has a source path to match.'])
+    // The first area holds only the page that spreads the fragment, so it's named. The second holds the fragment's own file.
+    warnings.length = 0
+    const elsewhere = compile(schema, [row, page], { live: { default: ['src/area/**', 'src/shared/**'] }, documentPaths: { [row]: ['src/shared/row.ts'], [page]: ['src/area/page.ts'] }, onWarning: (w) => warnings.push(w) })
+    expect(elsewhere.fragments.Row?.live).toBe(true)
+    expect(warnings.filter((w) => w.startsWith('live.default'))).toEqual(['live.default pattern "src/area/**" matches no file that defines a fragment, so it makes nothing live. A pattern matches the file a fragment is written in, not the files that spread it.'])
     for (const live of ['explicit', 'default', { default: ['src/**'] }] as const) {
       const disabled = row.replace('Widget {', 'Widget @live(enabled: false) {')
       const result = compile(schema, [disabled, page], { live })

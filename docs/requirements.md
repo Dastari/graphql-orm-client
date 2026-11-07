@@ -28,7 +28,8 @@ can't be noticed, the design isn't done.
 
 **R1. Live by default. Setting built; package default remains `explicit`.** A fragment on an entity with a usable `Changed` stream is live, with an
 explicit opt-out (`@live(enabled: false)`). A `live: "explicit" | "default" | { "default": ["src/area/**"] }` setting lets existing
-applications migrate one area at a time, and is proposed to go away at 1.0. Accepted by the owner once R2, R3, R4
+applications migrate one area at a time, and is proposed to go away at 1.0. An area pattern matches the file a fragment is written
+in, and the generator warns about one that matches no fragment's file. Accepted by the owner once R2, R3, R4
 and R6 hold; `default` is opt-in, not recommended by default. The owner must decide before changing the package default.
 *Acceptance:* a new fragment with no directive updates from a stream.
 
@@ -46,8 +47,8 @@ graphql-orm 0.90.1 and router 0.8.1, including actual admission refusal and a ch
 **R3. Lists stay correct.** *Built:* regenerated list metadata and un-narrowed streams, including
 empty and count-only lists; shared bounded re-reads and loaded-range pagination refresh.
 `listStreams: false` opts out; required-key schemas poll with a named health reason.
-Keyset refresh is bounded by `maxRereadPages` (10); offset by `maxRereadRows` (100). A retained tail
-is reported by `QueryState.listRefreshTruncated` and degraded health. Deletes without a preimage
+A refresh asks for up to `maxRereadRows` (100) rows per request: offset in one request, keyset in up
+to `maxRereadPages` (10). A retained tail is reported by `QueryState.listRefreshTruncated` and degraded health. Deletes without a preimage
 grant still need another event or poll. Verified against generated graphql-orm 0.90.1/router 0.8.1:
 8/8 runs per ws setting (16 total), including real filters, ordering, totals and pagination.
 Mock bursts produce two reads for 100 events. Aggregate shapes beyond connections remain R15.

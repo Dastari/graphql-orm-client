@@ -85,8 +85,9 @@ preimage-enabled deletes corrected lists in 16/16 runs. No claim of delete visib
 The schema still gives no effective offset maximum or applied page size. The client exposes
 `live.maxRereadRows` (default 100) to match the service configuration, never infers an offset from
 short pages. Requests beyond that bound retain the loaded tail with explicit truncated state.
-Keyset refresh follows returned cursors, up to `maxRereadPages` (10), with the same retained-tail
-state. A repeatable snapshot across pages is not guaranteed by 0.90.1: writes during traversal
+Keyset refresh asks for the loaded rows, up to `maxRereadRows` per request, and follows returned
+cursors for the rest, up to `maxRereadPages` (10) requests, with the same retained-tail state.
+Generated keyset roots clamp a page above the service maximum (read at 0.94.0, `pagination.rs`). A repeatable snapshot across pages is not guaranteed by 0.90.1: writes during traversal
 can change ordering. Proposed server support: a snapshot/revision token for consistent multi-page
 reads. Subscribe acknowledgement and key-only delete notification remain server gaps above.
 ### Write outcomes (R10)

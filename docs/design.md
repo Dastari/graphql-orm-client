@@ -820,17 +820,21 @@ queries opening on an existing stream need none. With no subscribe acknowledgeme
 the first-read gap and does not close it. `settleMs: false` disables confirming reads.
 
 `@paged` re-reads the current variables, so page 3 stays page 3. Regenerated `@connection` queries
-refresh the loaded range, including explicit refetch and polls. Offset connections request the
-loaded row count in one request, bounded by `live.maxRereadRows` (default 100, the generated
-service default maximum). Set this to the service's configured maximum: PageInfo does not expose
-it. Keyset connections follow returned EndCursor/HasNextPage page by page, bounded by
-`live.maxRereadPages` (default 10). Responses are assembled before publishing. Load-more and
+refresh the loaded range, including explicit refetch and polls. Each request asks for up to
+`live.maxRereadRows` rows (default 100, the generated service default maximum), and at least the
+query's own page size. Set this to the service's configured maximum: PageInfo does not expose it.
+Offset connections request the loaded row count in one request. Keyset connections ask for the
+loaded row count too, then follow EndCursor/HasNextPage for the rows still missing, asking only for
+those, up to `live.maxRereadPages` requests (default 10). A refresh of 60 loaded rows is one request
+either way. graphql-orm's generated keyset roots clamp a larger page to their maximum rather than
+refuse it (`pagination.rs`, 0.94.0), so a setting above the service's maximum costs requests, not errors. The loaded range
+includes the room on a partly filled last page, so a row created there appears, at no extra request. Responses are assembled before publishing. Load-more and
 refresh serialize; the requested loaded range survives overlapping membership changes. Existing
 record identities survive, allowing application selection and scroll state to remain attached.
 
 If the bound prevents a complete refresh, the loaded tail stays and
 `QueryState.listRefreshTruncated` is true; health reports `list-refresh-truncated`, never healthy.
-That tail may be stale and its order is not guaranteed. Increase the bound or reopen a smaller
+That tail may be stale and its order is not guaranteed, so the page should show it. Increase the bound or reopen a smaller
 range. This is not a snapshot across requests: concurrent server writes between keyset pages
 remain a server consistency limit. The existing pagination API manages the first `@connection`
 in a query; put independently managed connections in separate query owners.
@@ -1018,9 +1022,12 @@ is unsupported. All files declaring identical text are checked. Programmatic com
 `<document N>` and configured path policies cannot match unknown paths.
 
 `pollMs` is a runtime option, including through hooks, so a build can't see it. Declare it instead:
-`query Name @poll(reason: "...") { ... }`. An undeclared `pollMs` throws from `watchQuery` outside production, on a regenerated module, so
-development and tests find it. In production, and on a module generated before this release, it warns and still polls, because a working
-page mustn't crash on upgrade. `polling.undeclared: "warn" | "off"` on the client relaxes this. `strict.pollWithoutReason` covers an empty
+`query Name @poll(reason: "...") { ... }`. An undeclared `pollMs` throws from `watchQuery` on a regenerated module where
+`process.env.NODE_ENV` is set to something other than `production`, so development and tests find it. Elsewhere, and on a module generated
+before this rule, it warns and still polls, because a working page mustn't crash on upgrade. That includes a bundle that doesn't define
+`process.env.NODE_ENV`: with nothing saying which environment it is, it warns. The client reads the exact expression
+`process.env.NODE_ENV`, which bundlers replace, inside a `try`, so a browser with no `process` doesn't break it. `polling.undeclared`
+on the client sets it outright: `"error"` throws in every environment, and `"warn"` or `"off"` relax it. `strict.pollWithoutReason` covers an empty
 reason at build time. Fallback polling is reported through health and needs no declaration. The escape for a raw subscription is
 `createStream` from `graphql-orm-client/streams` (R11).
 
@@ -1030,7 +1037,9 @@ Built. The generator and `compile` default to `live: "explicit"`: only `@live` f
 streams. `live: "default"` is opt-in, not recommended by default; the owner must decide before
 the package default changes. It makes object fragments live without a directive.
 `live: { "default": ["src/area/**"] }` enables that behaviour only for matching fragment document
-source files, relative to the config directory. It matches the fragment's file, not a spreading query's.
+source files, relative to the config directory. It matches the file a fragment is written in, not the files
+that spread it: a page whose rows come from fragments in a shared folder needs that folder in the pattern.
+A pattern that matches no file defining a fragment makes nothing live, so the generator warns and names it.
 Plain-string `compile(schema, sources)` keeps its explicit behaviour; pass `documentPaths` when
 using area mode programmatically. Unknown files do not match area globs.
 

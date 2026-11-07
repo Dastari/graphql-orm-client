@@ -29,7 +29,7 @@ a new lock outside the repository for another tag. Adding a workflow matrix entr
 runs that version against the same assertions; changed behaviour fails explicitly.
 CI runs `graphql-orm-v0.90.1`, `v0.91.1`, `v0.93.0` and `v0.94.0`. Do not describe another version as verified before running it. All four use router 0.8.1. 0.91.1 behaves as 0.90.1 where the suite separates them (a stream selecting `NodeId` is refused, and a child delete sends its parent nothing), and 0.94.0 as 0.93.0. 0.92.0 isn't run.
 
-Set `GRAPHQL_ORM_LOG_INTERNAL_ERRORS=1`, as CI does, to see the cause of a service `INTERNAL_ERROR`. One local run on 0.94.0 stopped because the fixture's `UpdateVendor` writes during the doctor check got that error, with this logging off. It involves no client code. It didn't recur in 10 later runs on that version, and its cause isn't known.
+Set `GRAPHQL_ORM_LOG_INTERNAL_ERRORS=1`, as CI does, to see the cause of a service `INTERNAL_ERROR`. The service keeps its database in a file in the run's scratch directory, with one connection. It used `sqlite::memory:`, which lives in its one pool connection. sqlx 0.8.6 replaces that connection when its check on release fails (as after a cancelled request), after 10 idle minutes or after 30, and the new connection has an empty database. A CI run on 0.94.0 logged `no such table: widgets` right after the recovery groups, and an earlier local run's `UpdateVendor` failure was probably the same. Which of the three replaced the connection wasn't recorded.
 
 The service uses neutral Widget, Vendor, composite-key Slot and Ticket entities. Ticket's relation to Vendor has `propagate_change = "up"`, so from 0.93.0 deleting a Ticket sends its Vendor a `DELETED` event with change kind `PROPAGATED`.
 Widget has a managed version with an explicit SQL default; Ticket has a relation,
@@ -102,6 +102,8 @@ health, and that a keyless value type (the real PageInfo) stays out of it and do
 ## Bounded reads, aggregates and deleted references
 
 R14 checks bounded and complete `readAll` traversal against the generated offset connection.
+A keyset `@connection` loaded in three pages, the last partly filled, refreshes with one `{limit: 6}`
+request on `refetch()` and on each live re-read, and a row created inside the range appears.
 R15 holds two aliased count roots (including an aliased total) and a generated aggregate,
 creates a row through a separate request, and waits for all three totals to advance.
 The fixture opts Widget into generated aggregates; its existing row policy declares unrestricted

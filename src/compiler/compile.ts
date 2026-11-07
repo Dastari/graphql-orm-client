@@ -419,6 +419,12 @@ function compileDocuments(
       else (options.onWarning ?? console.warn)(message)
     }
   }
+  // An area that matches nothing makes nothing live and says nothing, which is easy to take for a trial that's running.
+  if (!nested && typeof options.live === "object") {
+    const fragmentFiles = [...fragmentNodes.values()].flatMap((node) => paths.get(node) ?? []).filter((file) => !file.startsWith("<document "))
+    for (const glob of options.live.default) if (!fragmentFiles.some((file) => matchesPath(file, glob)))
+      (options.onWarning ?? console.warn)(`live.default pattern "${glob}" matches no file that defines a fragment, so it makes nothing live. A pattern matches the file a fragment is written in, not the files that spread it.${fragmentFiles.length ? "" : " No fragment here has a source path to match."}`)
+  }
   if (!nested) for (const typename of liveUnavailable) {
     const implicit = [...fragmentNodes].filter(([name, node]) => fragments[name]?.live && fragments[name]?.typeCondition === typename && !node.directives?.some((d) => d.name.value === "live"))
     for (const [name, node] of implicit) (options.onWarning ?? console.warn)(`Fragment ${name} (${paths.get(node)?.join(", ")}): ${typename} has no usable Changed stream; automatic live fallback polls and health reports no-stream. Use @live(enabled: false) to opt out.`)

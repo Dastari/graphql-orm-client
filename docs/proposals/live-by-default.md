@@ -207,8 +207,8 @@ server `NodeId`, by exact match, so a composite type needs no `keys` configurati
 ### R3. Lists stay correct
 
 **Built.** See [the implementation and validation](../design.md#list-streams-r3).
-The keyset bound is `live.maxRereadPages` (10); offset is `live.maxRereadRows` (100, configure to
-the server maximum). A retained tail sets `QueryState.listRefreshTruncated` and degraded health.
+Each refresh request asks for up to `live.maxRereadRows` (100, configure to the server maximum);
+keyset refresh makes up to `live.maxRereadPages` (10) requests. A retained tail sets `QueryState.listRefreshTruncated` and degraded health.
 List streams open before the first read, including empty and count-only queries; settling confirms
 a newly opened stream, narrowing the gap without closing it. Required-key schemas poll, with an
 operation-naming health diagnostic.

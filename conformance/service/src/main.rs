@@ -236,7 +236,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     let port = std::env::var("SERVICE_PORT")?.parse::<u16>()?;
-    let mut db = Database::<SqliteBackend>::connect_sqlite("sqlite::memory:").await?;
+    // A file, not `sqlite::memory:`. An in-memory database lives in its one pool connection, and sqlx replaces that connection
+    // when its check on release fails (as after a cancelled request), after 10 idle minutes or after 30: the new connection then
+    // has an empty database, and every request fails with `no such table`. One connection keeps writes in order, as before.
+    let database = std::env::var("SERVICE_DATABASE").unwrap_or_else(|_| "sqlite::memory:".into());
+    let mut db = Database::<SqliteBackend>::connect_sqlite_with_options(
+        &database,
+        graphql_orm::db::ConnectionOptions::new().max_connections(1),
+    )
+    .await?;
     // Keep the generated service's bus out of the router-buffer burst test. The
     // deterministic FaultStreams checks still exercise service continuity loss.
     db.set_event_channel_capacity(8192);
