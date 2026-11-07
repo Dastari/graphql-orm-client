@@ -15,7 +15,7 @@ CONFORMANCE_SCRATCH=/path/outside/checkout pnpm conformance
 Set `CHROME` to an existing Chromium executable. A missing executable prints
 `NOT RUN`, not a pass; CI requires Chromium. A present executable that cannot launch
 fails the run. `PORT_BASE` defaults to 42000 and must reserve five ports within
-42000–42099 (or the delegated 41700–41799 range). Runs are serial. Use a different base for concurrent invocations.
+42000–42099. Runs are serial. Use a different base for concurrent invocations.
 The runner creates its own temporary directory if `CONFORMANCE_SCRATCH` is absent.
 Keep it to reuse Cargo output. Each invocation gets a separate runtime subdirectory. Check free disk first: allow at least 10 GB for a cold
 build. Manifests, binaries, schema snapshots, descriptors, browser bundles and
@@ -87,6 +87,9 @@ all 64 recovery cases and seven doctor verdicts, took 121.8 seconds on the final
 (an earlier complete run took 111 seconds). The workflow's
 20-minute timeout allows for slower runners and downloads. GitHub Actions has not
 been observed; these are local measurements.
+
+R1 generates a default-mode project against the real schema, verifies Widget stream updates and
+health, and that a keyless value type (the real PageInfo) stays out of it and doesn't poll. A keyed type with no stream is covered by mock tests: the service has none. The existing real 33-operation test pins router capacity.
 
 ## Bounded reads, aggregates and deleted references
 

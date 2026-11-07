@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- Compile a large schema far faster. After 0.1.0-alpha.10's stream selections, each live type re-extended the whole schema: 250 documents on a
+  45,000-line schema took about 24 s and now take under a second.
+- R1: opt-in `live: "default"` and `live: { "default": ["src/area/**"] }` generation;
+  the package default stays `"explicit"`. Migration: opt in by area, regenerate and inspect health
+  and socket capacity before widening. `@live(enabled: false)` opts out. Implicit streamless
+  fragments report and poll; explicit streamless `@live` still follows R5.
+
+- R5: generation rejects streamless explicit `@live` and empty polling reasons; optional
+  `queryOwners`/`subscriptionPaths` restrict document ownership. Migration: remove unsupported
+  `@live` or add `@poll(reason: "...")`; add legitimate owners to the configured globs.
+  Each policy has `strict.<rule>: "warn" | "off"` to stage adoption (see design).
+- `pollMs` needs `@poll(reason: "...")` on its query. A build can't see a runtime option, so an undeclared one throws from `watchQuery`
+  outside production on a regenerated module. In production, and on a module generated earlier, it warns and still polls.
+  `polling.undeclared: "warn" | "off"` relaxes this.
+- `@live` on an interface or union fragment is now reported rather than silently not live, under `strict.liveWithoutStream`.
 - R16: opt in to typed missing/deleted fragments with `readFragment(Fragment, ref, { deleted: "null" })` and the matching `useFragment` option. Handle null before reading fields. Runtime already returned null for removed references; old non-null signatures remain for migration. Set `store: { deletedRecords: "omit" }` and regenerate to omit missing nodes during list refresh. This can remove a row before the network reread completes. Live-record data keeps its existing shape.
 
 - R15: generated aggregate roots with a unique schema-derived entity now join R3 list refresh. Regenerate to enable this for project-live types. Aliased counts preserve their generated types.
@@ -16,6 +31,22 @@
   confirming reads narrow the subscribe gap without eliminating it.
 - Regenerated `@connection` queries refresh the loaded range and serialize load-more with refresh.
   Bounded refresh retains the tail and reports `listRefreshTruncated` and degraded health.
+- R12: add `errorsAtPath` and opt-in `partialResults: "preserve-errors"`. Migration: enable the setting and render path errors alongside retained (potentially stale) values. Legacy null overwrite remains the default.
+
+- R10: additive write outcome API and explicit retry hook method; no automatic replay. Opt into independent HTTP `writes` and `reads` limits; omitted limits preserve existing behaviour. Supply a reconciliation read for known affected records.
+
+- R9: query and mutation `@sensitive` returns plain expanded data without storing it. Live combinations and watched sensitive queries reject. Existing `no-store` behaviour is unchanged.
+- Add R11 ephemeral streams: `client.stream` and React `useEphemeralStream`, with explicit
+  sequence/resume contracts, bounded volatile buffers, coalesced notifications, reconnect replay
+  and visible gaps/evictions. Additive; no migration. Existing plain subscriptions are unchanged.
+
+- Generate flattened full/thin live projections. Unsupported full selections fall back to keys only;
+  events re-read holders for omitted fields and changed relation links. Health retains
+  `selection-refused`, and doctor distinguishes admitted/quiet fallback. Quiet fallback fails strict
+  mode; working fallback otherwise passes.
+- Automatic stale, restart and R4 confirming reads share `live.minRereadMs` (default 2000). Repeated
+  confirmations from changing query membership are bounded, and inactive queries catch up on return.
+- Infer composite keys from `<Type>KeyInput` and build key arguments from stored fields.
 
 R3 migration: regenerate to turn list behavior on; previously generated modules without `lists`
 keep today's keyed behavior. A list opens a stream only for a type with a `@live` fragment somewhere in

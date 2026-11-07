@@ -1,3 +1,6 @@
+import { ephemeral, type EphemeralOptions, type EphemeralStream } from "./ephemeral.js"
+import { withoutErrorNulls } from "./partial.js"
+import { wasNotSent, writeStatus, type WriteOutcome } from "./outcome.js"
 import type { ConnectionSpec, FragmentArtifact, FragmentRefFor, LinkSelection, OperationArtifact, PagedSpec, Selection } from "./artifact.js"
 import { fieldStorageKey, stableStringify, type Variables } from "./store/arguments.js"
 import { contextOf, identify, normalize } from "./store/normalize.js"
@@ -46,8 +49,8 @@ export class OperationError extends Error {
 
 /**
  * How a query uses stored data. Apollo's names: `cache-first` is `store-or-network`,
- * `cache-and-network` is `store-and-network`, and `network-only` is the same. Every query result
- * is normalised, so there is no `no-cache` for queries; use `network-only`. A mutation can skip
+ * `cache-and-network` is `store-and-network`, and `network-only` is the same. Query results are normalised unless the document declares `@sensitive`.
+ * There is no call-site `no-cache` policy for queries. A mutation can skip
  * the store with `MutationPolicy` `no-store`.
  */
 export type FetchPolicy =
@@ -86,8 +89,27 @@ export interface QueryState<T> {
 /** Node type selected by a root connection, preserving generated fragment references. */
 export type ReadAllRow<T> = T extends object ? { [K in keyof T]: T[K] extends { Edges: readonly { Node: infer N }[] } ? N : never }[keyof T] : never
 
+/** Options for `Client.execute`. */
+export interface ExecuteOptions {
+  signal?: AbortSignal
+  beforeWrite?: () => void
+  /** Internal loaded-range refresh; driven by the compiled connection and returned PageInfo. */
+  refreshConnection?: { loaded: number; pages: number; rows: number; onTruncated(value: boolean): void }
+  /**
+   * Read the response into a store of its own instead of the client's. Nothing reaches the
+   * client's store, its subscribers or its retention. The returned snapshot, and the fragment
+   * references in its data, read from that private store, which only the caller's result keeps
+   * alive. Mutations only (see `mutate`'s `policy: "no-store"`).
+   */
+  isolated?: boolean
+  observeResponse?: (response: GraphQLResponse) => void
+  beforeSend?: () => void
+}
+
 export interface ClientOptions {
   readonly network: Network
+  /** Opt-in: error-associated nulls do not erase previous good fields. Default is legacy overwrite. */
+  readonly partialResults?: "legacy" | "preserve-errors"
   readonly store?: StoreOptions
   /** Keep records read through `@live` fragments current with generated Changed subscriptions. */
   readonly live?: LiveOptions
@@ -95,6 +117,11 @@ export interface ClientOptions {
 }
 
 export interface PollingOptions {
+  /**
+   * `pollMs` on a query with no `@poll(reason)`. `error`, the default, throws outside production on a regenerated module, and otherwise
+   * warns and still polls. `warn` always warns, and `off` says nothing.
+   */
+  readonly undeclared?: "error" | "warn" | "off"
   /**
    * How often a query refetches when it shows `@live` records that no subscription covers: types
    * without a usable Changed subscription, records beyond a per-record cap, or a stream waiting out a
@@ -718,7 +745,11 @@ export class Client {
 
   readonly polling: PollingOptions
 
+  /** How error-associated null writes affect previously cached values. */
+  readonly partialResults: "legacy" | "preserve-errors"
+
   constructor(options: ClientOptions) {
+    this.partialResults = options.partialResults ?? "legacy"
     this.network = options.network
     this.polling = options.polling ?? {}
     this.subscribeTransport = options.live?.subscribe ?? null
@@ -888,6 +919,10 @@ export class Client {
     options: { policy?: FetchPolicy; signal?: AbortSignal } = {}
   ): Promise<{ data: T; errors: readonly GraphQLErrorLike[] }> {
     if (artifact.kind !== "query") throw new Error(`${artifact.name} is not a query`)
+    if (artifact.sensitive) {
+      const { snapshot, errors } = await this.execute(artifact, variables, options)
+      return { data: snapshot.data, errors }
+    }
     const selector = selectorOf(artifact, variables)
     if ((options.policy ?? "store-or-network") === "store-or-network") {
       const stored = this.store.lookup<T>(selector)
@@ -963,6 +998,17 @@ export class Client {
     }
     this.subscriptions.add(stop)
     return stop
+  }
+
+  /** Create a bounded, volatile stream. Call open() to subscribe and dispose() to erase it. */
+  stream<D, T, V extends Variables, C = unknown>(
+    artifact: OperationArtifact<D, V>, variables: V, options: EphemeralOptions<D, T, V, C>
+  ): EphemeralStream<T, C> {
+    if (this.store.isDisposed) throw new Error("This client was disposed with its identity")
+    if (!this.rereadOptions) throw new Error("A stream requires live.subscribe")
+    const stream = ephemeral(artifact, variables, options, this.rereadOptions, () => this.subscriptions.delete(stream.dispose))
+    this.subscriptions.add(stream.dispose)
+    return stream
   }
 
   /**
@@ -1096,41 +1142,17 @@ export class Client {
   async execute<T = unknown, V extends Variables = Variables>(
     artifact: OperationArtifact<T, V>,
     variables: V,
-    options: {
-      signal?: AbortSignal
-      beforeWrite?: () => void
-      /** Internal loaded-range refresh; driven by the compiled connection and returned PageInfo. */
-      refreshConnection?: { loaded: number; pages: number; rows: number; onTruncated(value: boolean): void }
-      /**
-       * Read the response into a store of its own instead of the client's. Nothing reaches the
-       * client's store, its subscribers or its retention. The returned snapshot, and the fragment
-       * references in its data, read from that private store, which only the caller's result keeps
-       * alive. Mutations only (see `mutate`'s `policy: "no-store"`).
-       */
-      isolated?: boolean
-    } = {}
+    options: ExecuteOptions = {}
   ): Promise<{ snapshot: Snapshot<T>; errors: readonly GraphQLErrorLike[] }> {
     const { snapshot, errors } = await this.executeResponse(artifact, variables, options)
     return { snapshot, errors }
   }
 
-  /** Send an operation and write its response into the store. */
+  /** `execute`, also returning the response's data as the server sent it. */
   private async executeResponse<T = unknown, V extends Variables = Variables>(
     artifact: OperationArtifact<T, V>,
     variables: V,
-    options: {
-      signal?: AbortSignal
-      beforeWrite?: () => void
-      /** Internal loaded-range refresh; driven by the compiled connection and returned PageInfo. */
-      refreshConnection?: { loaded: number; pages: number; rows: number; onTruncated(value: boolean): void }
-      /**
-       * Read the response into a store of its own instead of the client's. Nothing reaches the
-       * client's store, its subscribers or its retention. The returned snapshot, and the fragment
-       * references in its data, read from that private store, which only the caller's result keeps
-       * alive. Mutations only (see `mutate`'s `policy: "no-store"`).
-       */
-      isolated?: boolean
-    } = {}
+    options: ExecuteOptions = {}
   ): Promise<{ snapshot: Snapshot<T>; errors: readonly GraphQLErrorLike[]; response: Record<string, unknown> }> {
     if (this.store.isDisposed) throw new Error("This client was disposed with its identity")
     if (options.isolated && artifact.kind !== "mutation")
@@ -1157,12 +1179,14 @@ export class Client {
       if (options.refreshConnection && refreshSpec?.offset && refreshSpec.limit && refreshArg?.kind === "variable" && options.refreshConnection.loaded > 0) {
         networkVariables = { ...variables, [refreshArg.variable]: { ...(variables[refreshArg.variable] as object), [refreshSpec.offset]: (variables[refreshArg.variable] as Record<string, unknown> | undefined)?.[refreshSpec.offset] ?? 0, [refreshSpec.limit]: Math.min(options.refreshConnection.loaded, options.refreshConnection.rows) } }
       }
+      options.beforeSend?.()
       const response = await this.network.execute(
         { kind: artifact.kind, name: artifact.name, text: artifact.text, hash: artifact.hash, variables: networkVariables },
         { signal: controller.signal }
       )
       if (this.store.isDisposed || controller.signal.aborted)
         throw new DOMException("The request was cancelled", "AbortError")
+      options.observeResponse?.(response)
       const connectionTailFrom = options.refreshConnection && response.data
         ? await this.readLoadedRange(artifact, variables as Variables, response.data, options.refreshConnection, controller.signal)
         : undefined
@@ -1170,9 +1194,14 @@ export class Client {
       const errors = response.errors ?? []
       options.beforeWrite?.()
       if (!response.data) throw new OperationError(artifact.name, errors)
+      if (artifact.sensitive) return {
+        snapshot: { data: response.data as T, missing: false, seen: new Set(), selector: selectorOf(artifact, variables) },
+        errors,
+        response: response.data,
+      }
       const rootId = artifact.kind === "query" ? ROOT_ID : `client:${artifact.kind}:${++this.mutationCount}`
       const target = options.isolated ? new Store() : this.store
-      normalize(target, artifact.normalization, response.data, { ...contextOf(artifact, variables), connectionTailFrom }, rootId, artifact.rootType)
+      normalize(target, artifact.normalization, this.partialResults === "preserve-errors" ? withoutErrorNulls(response.data, errors) : response.data, { ...contextOf(artifact, variables), connectionTailFrom }, rootId, artifact.rootType)
       target.publish()
       const snapshot = target.lookup<T>(selectorOf(artifact, variables, rootId))
       if (rootId !== ROOT_ID) target.delete(rootId)
@@ -1192,7 +1221,16 @@ export class Client {
     variables: V,
     options: FetchPolicy | WatchOptions = "store-and-network"
   ): WatchedQuery<T> & { open(): void; close(): void } {
+    if (artifact.sensitive) throw new Error(`${artifact.name}: @sensitive queries use client.query; watched results retain values`)
     const { policy = "store-and-network", pollMs } = typeof options === "string" ? { policy: options } : options
+    if (pollMs !== undefined && !artifact.pollReason?.trim()) {
+      const message = `Operation ${artifact.name}: pollMs needs @poll(reason: "why polling is needed") on the query. Add it and regenerate, or set polling.undeclared.`
+      const setting = this.polling.undeclared ?? "error"
+      // A build can't see a runtime option, so this is what finds it. It stays out of production and modules generated before the
+      // rule existed (no `lists`), because a working page mustn't crash on upgrade.
+      if (setting === "error" && artifact.lists !== undefined && !isProduction()) throw new Error(message)
+      if (setting !== "off") console.warn(message)
+    }
     const key = `${queryKey(artifact, variables)}:${policy}`
     let resource = this.resources.get(key) as QueryResource<T> | undefined
     if (!resource) {
@@ -1286,13 +1324,17 @@ export class Client {
       refetchQueries?: readonly (OperationArtifact<any, any> | string)[]
       /** `store` (default) or `no-store`: return the response without writing any of it into the store. */
       policy?: MutationPolicy
+      /** Observe certainty without changing this method's returned/thrown behaviour. */
+      onOutcome?: (outcome: WriteOutcome) => void
+      /** Explicit read for known affected records after an unconfirmed write; never a write replay. */
+      reconcile?: () => Promise<unknown>
     } = {}
   ): Promise<{ data: T; errors: readonly GraphQLErrorLike[] }> {
     if (artifact.kind !== "mutation") throw new Error(`${artifact.name} is not a mutation`)
     // A misspelt policy must not quietly store a secret.
     if (options.policy !== undefined && options.policy !== "store" && options.policy !== "no-store")
       throw new Error(`${artifact.name}: unknown mutation policy ${JSON.stringify(options.policy)}`)
-    const isolated = options.policy === "no-store"
+    const isolated = artifact.sensitive || options.policy === "no-store"
     if (isolated && options.optimisticResponse)
       throw new Error(`${artifact.name}: optimisticResponse can't be combined with policy "no-store"`)
     let layer: OptimisticLayer | null = null
@@ -1308,18 +1350,54 @@ export class Client {
       layer = null
     }
     let result: { data: T; errors: readonly GraphQLErrorLike[] }
+    let sent = false
+    let response: GraphQLResponse | undefined
+    let failure: unknown
     try {
       const { snapshot, errors } = await this.execute<T>(artifact, variables, {
+        observeResponse: value => { response = value },
+        beforeSend: () => { sent = true },
         beforeWrite: rollback,
         ...(isolated ? { isolated } : {}),
         ...(options.signal ? { signal: options.signal } : {}),
       })
       result = { data: snapshot.data, errors }
+    } catch (error) {
+      failure = error
+      throw error
     } finally {
       rollback()
+      const status = response ? writeStatus(response)
+        : wasNotSent(failure) || !sent ? "failed" : "unconfirmed"
+      let reconciliation: WriteOutcome["reconciliation"] = status === "unconfirmed" ? "unavailable" : "not-needed"
+      if (status === "unconfirmed" && options.reconcile && !this.store.isDisposed) {
+        try { await options.reconcile(); reconciliation = "reread" }
+        catch { reconciliation = "failed" }
+      }
+      options.onOutcome?.({ status, reconciliation })
     }
     if (options.refetchQueries?.length) await this.refetchQueries(options.refetchQueries)
     return result
+  }
+
+  /**
+   * Opt into explicit write certainty. Never retries; call again with fresh variables after
+   * authentication. Supply a reconciliation read for known records, such as refetchFragment.
+   */
+  async mutateOutcome<T, V extends Variables>(
+    artifact: OperationArtifact<T, V>, variables: V,
+    options: NonNullable<Parameters<Client["mutate"]>[2]> = {}
+  ): Promise<{ data?: T; errors: readonly GraphQLErrorLike[]; error?: unknown; outcome: WriteOutcome }> {
+    let outcome: WriteOutcome = { status: "failed", reconciliation: "not-needed" }
+    try {
+      const result = await this.mutate(artifact, variables, { ...options, onOutcome: value => {
+        outcome = value
+        options.onOutcome?.(value)
+      } })
+      return { ...result, outcome }
+    } catch (error) {
+      return { error, errors: error instanceof OperationError ? error.errors : [], outcome }
+    }
   }
 
   /**
@@ -1360,8 +1438,12 @@ export class Client {
   }
 }
 
+function isProduction(): boolean {
+  return typeof process !== "undefined" && process.env?.NODE_ENV === "production"
+}
+
 function defaultDiagnostic(diagnostic: LiveDiagnostic): void {
-  if (typeof process !== "undefined" && process.env?.NODE_ENV === "production") return
+  if (isProduction()) return
   console.warn(diagnostic.message)
 }
 

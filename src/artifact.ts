@@ -114,20 +114,26 @@ export type FragmentRefFor<N extends string> = string extends N ? unknown : Frag
 export interface FragmentArtifact<TData = unknown, TName extends string = string> {
   /** Type-only: the fragment's own data. */
   readonly " $data"?: TData
+  /** Justification for deliberate polling of this fragment. */
+  readonly pollReason?: string
   readonly kind: "fragment"
   readonly name: TName
   readonly typeCondition: string
   /** What `readFragment` and `useFragment` return: only this fragment's own fields. */
   readonly selections: readonly Selection[]
-  /** Whether the fragment is marked `@live`. */
+  /** Whether the fragment requests live coverage, explicitly or through the generator live setting. */
   readonly live: boolean
   /** For a `@refetchable` fragment: the query that reads it again by `NodeId`. */
   readonly refetch?: OperationArtifact
 }
 
 export interface OperationArtifact<TData = unknown, TVariables = Record<string, unknown>> {
+  /** Plain result only: no normalisation, retention, fragment references or live delivery. */
+  readonly sensitive?: true
   /** Type-only: the root's data and variables. */
   readonly " $types"?: { readonly data: TData; readonly variables: TVariables }
+  /** Declared justification for explicit interval polling. Absent in older artifacts. */
+  readonly pollReason?: string
   readonly kind: "query" | "mutation" | "subscription"
   readonly name: string
   /** The operation text with every fragment it uses, as sent to the server. */

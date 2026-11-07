@@ -21,8 +21,8 @@ const sdl = `
 const schema = buildSchema(sdl)
 const compiled = compile(schema, [
   `fragment TicketTitle on Ticket @live { Title }`,
-  `fragment NoteBody on Note @live { Body }`,
-  `query TicketPage($Id: ID!) { Ticket(Id: $Id) { ...TicketTitle } }`,
+  `fragment NoteBody on Note @live @poll(reason: "No stream") { Body }`,
+  `query TicketPage($Id: ID!) @poll(reason: "Explicit interval test") { Ticket(Id: $Id) { ...TicketTitle } }`,
   `query NotePage($Id: ID!) { Note(Id: $Id) { ...NoteBody } }`,
 ], { liveSelection: "as-written" })
 const TicketPage = compiled.operations.TicketPage!

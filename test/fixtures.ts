@@ -98,7 +98,7 @@ export const documents = [
   `query WidgetPage($Id: String!) {
     Widget(Id: $Id) { ...WidgetDetail ...WidgetRow }
   }`,
-  `query SlotPage($Site: String!, $Name: String!) {
+  `query SlotPage($Site: String!, $Name: String!) @poll(reason: "Interval coverage test") {
     Slot(Site: $Site, Name: $Name) { State ...SlotState }
   }`,
   `query SearchPage($Text: String!) {
@@ -108,7 +108,7 @@ export const documents = [
     }
   }`,
   `fragment TicketRow on Ticket @live { Title State }`,
-  `query TicketsPage($Where: TicketWhereInput, $Page: PageInput) {
+  `query TicketsPage($Where: TicketWhereInput, $Page: PageInput) @poll(reason: "Interval coverage test") {
     Tickets(Where: $Where, Page: $Page) @paged {
       Edges { Node { ...TicketRow } }
     }
@@ -119,7 +119,7 @@ export const documents = [
       PageInfo { TotalCount }
     }
   }`,
-  `query LookupName($Text: String!) { LookupName(Text: $Text) }`,
+  `query LookupName($Text: String!) @poll(reason: "No stream") { LookupName(Text: $Text) }`,
   `query QueueSummary($Queue: String!) {
     TicketSummary(Queue: $Queue) { Open Closed Oldest { Title } }
   }`,

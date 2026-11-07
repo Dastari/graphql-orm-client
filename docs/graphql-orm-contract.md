@@ -46,9 +46,10 @@ included and no later server version is claimed as run.
 | Connection operation budget during overlap | Replacement needs temporary capacity for both generations | Router 0.8.1 at `graphql-orm-v0.90.1` counts operation ids in its connection's `operations` set before forwarding a subscribe; the default is 32. `SUBSCRIPTION_LIMIT_EXCEEDED` rejects only the new operation. The client retains baseline coverage, uses ordinary restart back-off and polls newly uncovered records until room is available. This is a capacity failure, not a five-minute selection refusal |
 | Stream-started signal | A client can't tell a quiet admitted stream from one that hasn't been answered, or know when it is safe to read after subscribing (R4, R7) | Missing. graphql-transport-ws has no per-subscribe acknowledgement and `Changed` sends nothing until an event. `CacheSync::changes` has the pattern: an initial signal after authorization. Proposed. Requested: [#341](https://github.com/Dastari/graphql-orm/issues/341) |
 | Stable refusal code for a stream | Tell an unsupported selection from a denial or an outage (R6, R8) | Partly. An unsupported selection is the generic `INVALID_INPUT`. Proposed: a code of its own. Requested: [#342](https://github.com/Dastari/graphql-orm/issues/342) |
+| Every frame reaches a subscriber, or it is told otherwise | A stream can be trusted while open | Missing through the router: under a burst it drops frames with no signal (#359). Run on router 0.8.1 at `graphql-orm-v0.90.1` and `graphql-orm-v0.93.0`: 921 of 1001 real `Changed` events, against all 1001 directly from the service |
 | `DELETED` reaches subscribers | Lists and records drop a deleted row (R3, R16) | Off by default: needs `RowPolicy::can_read_deleted_preimage`. Without it a row deleted elsewhere sends subscribers nothing. Proposed: a key-only signal with no preimage (see #217) |
 | Graph replacement signal | Streams end when the router replaces its schema | Exists, run against router 0.8.1: an `error` frame with `SUBSCRIPTION_SCHEMA_RELOAD`, then `complete`, and the retired connection answers new subscribes with `SERVICE_UNAVAILABLE`. The client restarts, on a fresh connection, and re-reads (0.1.0-alpha.7). **Asked of the router ([#339](https://github.com/Dastari/graphql-orm/issues/339)):** `complete` after `error` breaks the protocol. In headless Chromium it's harmless. On Node, `ws` delivers both frames in one tick, and graphql-ws then releases the operation twice |
-| Sequence numbers and replay | Recover missed events after a reconnect without refetching everything | Not planned by graphql-orm that we can find: generated events are process-local, delivered at most once and never replayed. The client refetches instead |
+| Sequence numbers and replay | Recover missed events after a reconnect without refetching everything | Missing in 0.90.1 (`adfa608`) and main 0.91.1 (`9d1a482`), both router 0.8.1: `continuity_events` wraps process-local broadcast channels and ends on lag; router subscriptions forward frames without adding sequences, cursors or replay. Custom subscription resolvers can declare their own sequence and resume argument, but the server provides no generic replay facility. Entity clients refetch; R11 ephemeral streams require application-declared sequence/resume semantics, report gaps and otherwise mark continuity unprovable. Proposed server dependency: opt-in durable custom-subscription replay with stable sequence, cursor and explicit retention-gap reporting |
 | One connection shape | Generic pagination | Planned. Offset connections and keyset lists both exist today; the client supports both until they are unified (`@connection` on either, `@paged` on offset connections) |
 | Effective page size in `PageInfo` | `@paged` computes `pageCount` from the page size it asked for | Missing. graphql-orm clamps an explicit `Limit` to `PaginationConfig::DEFAULT_MAX_LIMIT` (100) and a missing one to 50, but `PageInfo` reports neither the limit nor the offset it applied. A page size above the maximum gives a short page and a wrong page count, and the client can't tell. Needed: `PageInfo` fields for the applied `Limit` and `Offset`, or an error for a `Limit` above the maximum. Until then, keep page sizes within the server's maximum |
 | Persisted operations | Smaller requests; an allow-list of compiled operations at the router | Planned. The operation catalogue exists |
@@ -88,6 +89,18 @@ Keyset refresh follows returned cursors, up to `maxRereadPages` (10), with the s
 state. A repeatable snapshot across pages is not guaranteed by 0.90.1: writes during traversal
 can change ordering. Proposed server support: a snapshot/revision token for consistent multi-page
 reads. Subscribe acknowledgement and key-only delete notification remain server gaps above.
+### Write outcomes (R10)
+
+The client can only prove a write's outcome from what the server says. Today that means:
+
+- `Success: true` on every selected root, with no errors, is `confirmed`.
+- A response with no `data` key is `refused`: per GraphQL over HTTP, execution never started.
+- Anything else stays `unconfirmed`, including `Success: false`, because a generated result can report an error from after a
+  commit.
+
+A dedicated `extensions.outcome: "refused" | "failed"` is a proposed addition. The client already reads it, but no graphql-orm
+version sends it (read from `graphql-orm-v0.93.0`). Until one does, a refused write that executed shows as `unconfirmed`.
+
 
 ## Aggregates and deletes (R15, R16)
 

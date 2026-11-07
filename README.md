@@ -9,7 +9,7 @@ screen.
 > **Status: early alpha.** The compiler, the normalised store, the React bindings and the live
 > layer, cursor and offset pagination, page-number navigation, optimistic mutations, polling, plain
 > subscriptions and the generator with TypeScript types all work and are tested. Real applications
-> use it, and APIs may still change. Live updates are opt-in per fragment (`@live`) and have known
+> use it, and APIs may still change. Live updates default to explicit per-fragment opt-in (`@live`) and have known
 > limits: see [the requirements](docs/requirements.md).
 
 ## Why not Apollo or Relay
@@ -106,7 +106,8 @@ a page can draw "live updates unavailable". A stream with no event yet is `uncon
 `createHttpNetwork` takes `headers` (an object or a function called per request), `fetch` and
 `credentials`. A response with GraphQL errors is returned whatever its HTTP status; one without
 a GraphQL body throws `HttpError`. Commit mutations with `client.mutate`, or `useMutation` in
-React; pass `{ policy: "no-store" }` for a result that holds a one-time secret, so none of it is stored.
+React; declare `@sensitive` on a mutation or imperative query for plain results that never enter a store.
+The older mutation option `{ policy: "no-store" }` also isolates results, retaining private fragment reads.
 
 A table that pages by number marks its list `@paged` and passes graphql-orm's `PageInput` as a
 variable. `usePagedQuery` sets its `Limit` and `Offset` from a zero-based page index and size,
@@ -129,6 +130,11 @@ const page = usePagedQuery(TicketsPage, { Where: where }, { pageIndex, pageSize:
 An application coming from Apollo will find `skip`, `refetch(variables)`, fetch policies, `pollMs`,
 abort signals, `client.query`, `client.subscribe`, `useSubscription` and `refetchQueries`; the
 [design](docs/design.md#coming-from-apollo) maps each Apollo option.
+
+For progress, AI text deltas, terminal output and search results, use `client.stream` and React's
+`useEphemeralStream`. A required buffer limit bounds memory; sequence and resume declarations enable
+de-duplication and reconnect replay when the service supports it. Gaps, evictions and unprovable
+continuity are explicit. These values never enter the store. See [ephemeral streams](docs/design.md#ephemeral-streams-r11).
 
 A fragment marked `@refetchable` can read its record again on its own, through the router's
 `node(NodeId)` lookup: `useRefetchableFragment(Fragment, ref)` or
@@ -160,8 +166,17 @@ pnpm exec graphql-orm-client skills install --target claude   # or agents / code
 | `graphql-orm-client-adopt` | Install the client, configure the network, store and identity scope, and wire a router |
 | `graphql-orm-client-data` | Write fragments, route roots, pagination, refetching and mutations |
 | `graphql-orm-client-live` | Live updates, cache policy, expiry and polling fallbacks |
+| `graphql-orm-client-streams` | Ephemeral progress, AI text deltas, terminal output and search results |
 | `graphql-orm-client-server` | What a graphql-orm service must declare so the client works (for backend agents) |
 
 ## Licence
 
 MIT
+
+Generation enforces explicit live stream availability and declared polling reasons. Optional
+`queryOwners` and `subscriptionPaths` globs enforce project ownership. See the
+[policy settings and migration controls](docs/design.md#project-build-policies-r5).
+
+The generator keeps `live: "explicit"` by default. `"default"` or
+`{ "default": ["src/area/**"] }` is opt-in, not recommended by default.
+Use `@live(enabled: false)` to opt out; see [live settings](docs/design.md#live-generation-setting-r1).
