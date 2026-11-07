@@ -102,6 +102,8 @@ health, and that a keyless value type (the real PageInfo) stays out of it and do
 ## Bounded reads, aggregates and deleted references
 
 R14 checks bounded and complete `readAll` traversal against the generated offset connection.
+A keyset `@connection` loaded in three pages, the last partly filled, refreshes with one `{limit: 6}`
+request on `refetch()` and on each live re-read, and a row created inside the range appears.
 R15 holds two aliased count roots (including an aliased total) and a generated aggregate,
 creates a row through a separate request, and waits for all three totals to advance.
 The fixture opts Widget into generated aggregates; its existing row policy declares unrestricted
