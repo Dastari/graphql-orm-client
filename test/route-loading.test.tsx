@@ -2,11 +2,12 @@
 import { StrictMode } from "react"
 import { act, cleanup, render, screen } from "@testing-library/react"
 import { afterEach, expect, it, vi } from "vitest"
+import { buildSchema } from "graphql"
 import { createClient } from "../src/client.js"
 import { ClientProvider, useLoadedQuery } from "../src/react/index.js"
 import { compile, generate } from "../src/compiler/index.js"
 import { schema, ops, widget, catalog, mockNetwork } from "./fixtures.js"
-import { createMockStreams } from "../src/test/index.js"
+import { createMockNetwork, createMockStreams } from "../src/test/index.js"
 
 afterEach(() => { cleanup(); vi.useRealTimers() })
 const deferred = () => { let resolve!: (value: any) => void; const promise = new Promise<any>(r => resolve = r); return { promise, resolve } }
@@ -25,6 +26,7 @@ it("starts before mount, shares one in-flight read across two StrictMode views, 
   await act(async () => { pending.resolve({ data: catalog([widget("w1")]) }); await loaded.ready })
   expect(screen.getAllByText("ready")).toHaveLength(2)
   view.unmount(); await act(async () => {})
+  loaded.dispose()
   expect(() => loaded.mount()).toThrow(/disposed/)
   client.dispose()
 })
@@ -56,7 +58,7 @@ it("times out an unused load and rejects sensitive reads", async () => {
   const client = createClient({ network })
   const loaded = client.loadQuery(ops.CatalogPage, {}, { timeoutMs: 10 })
   await loaded.ready; await vi.advanceTimersByTimeAsync(10)
-  expect(() => loaded.mount()).toThrow(/disposed/)
+  expect(vi.getTimerCount()).toBe(0)
   expect(() => client.loadQuery({ ...ops.CatalogPage, sensitive: true }, {})).toThrow(/@sensitive.*client.query/)
   client.dispose()
 })
@@ -147,4 +149,24 @@ it("hydrates the idle server shell before showing a loader result without mismat
   expect(errors).toEqual([])
   await act(async () => root.unmount())
   container.remove(); client.dispose()
+})
+
+it("a load that expired, or whose last user unmounted, opens again when mounted, and a disposed one doesn't", async () => {
+  const network = createMockNetwork({ respond: () => ({ data: { Widget: { __typename: "Widget", Id: "w1", Name: "first" } } }) })
+  const schema = buildSchema(`type Query { Widget: Widget } type Widget { Id: ID! Name: String! }`)
+  const { operations } = compile(schema, [`query One { Widget { Id Name } }`])
+  const client = createClient({ network })
+  const expired = client.loadQuery(operations.One!, {}, { timeoutMs: 1 })
+  await expired.ready
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  const unmount = expired.mount()
+  expect(expired.getState().status).toBe("ready")
+  unmount()
+  await Promise.resolve()
+  const again = expired.mount()
+  expect(expired.getState().data).toBeDefined()
+  again()
+  expired.dispose()
+  expect(() => expired.mount()).toThrow(/disposed/)
+  client.dispose()
 })

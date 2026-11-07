@@ -90,11 +90,11 @@ not suspend. `handle.ready` resolves after the first read; inspect the state for
 hashes and variables share a `store-or-network` resource. Mounting a completed or in-flight handle
 sends no additional request. The same handle can serve several components. Effect cleanup waits one
 microtask, so StrictMode's synchronous cleanup/setup replay neither aborts the read nor churns streams.
-A real unmount closes after that microtask. A disposed handle cannot mount again: start a new load.
+A real unmount closes after that microtask. A later mount opens it again, because a handle can outlive that, as when a parent remounts. Only `dispose()` or the abort signal ends it for good; then start a new load.
 
 Pass the router's cancellation signal and call `handle.dispose()` when abandoning a navigation.
 Cancellation is quiet, including transports that return after abort; identity disposal clears the store
-synchronously and rejects late responses. An unmounted loader expires after 30 seconds by default;
+synchronously and rejects late responses. An unmounted loader closes after 30 seconds by default, and opens again if it's mounted later;
 `timeoutMs` must be positive and finite. Adjust it for slow navigation. Mount cancels that deadline.
 Disposal releases retention; records then follow the configured store retention/garbage collection.
 The handle itself should be dropped by the router when the navigation ends.

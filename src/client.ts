@@ -131,9 +131,9 @@ export interface LoadedQuery<T> extends WatchedQuery<T> {
   readonly ready: Promise<void>
   /** Identity owner, checked by the React binding. */
   readonly client: Client
-  /** Retain while mounted. The returned cleanup tolerates StrictMode effect replay. */
+  /** Retain while mounted, opening again if the load expired or its last user unmounted. The cleanup tolerates StrictMode effect replay. */
   mount(): () => void
-  /** Release this loader and any mounted users; idempotent. */
+  /** End this loader; it can't be mounted again. Idempotent. Without this, an unused loader only pauses. */
   dispose(): void
 }
 
@@ -1204,8 +1204,8 @@ export class Client {
 
   /**
    * Start a route read before mount. Shares a store-or-network read for equal artifacts/variables.
-   * Lists open their stream before this read (R3), even before mount; an unused loader closes
-   * after timeoutMs (default 30 seconds). Pass the router's abort signal and dispose on abandonment.
+   * Lists open their stream before this read (R3), even before mount; an unused loader closes after timeoutMs (default 30 seconds)
+   * and reopens if it's mounted later. Pass the router's abort signal and dispose on abandonment; a disposed loader can't be mounted.
    * Mount through useLoadedQuery; do not pass this result to useQuery.
    */
   loadQuery<T, V extends Variables>(
@@ -1216,26 +1216,40 @@ export class Client {
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new RangeError("loadQuery timeoutMs must be positive and finite")
     const watched = this.watchQuery(artifact, variables, "store-or-network")
     let disposed = false
+    let open = false
     let finishCancellation!: () => void
     const cancelled = new Promise<void>(resolve => { finishCancellation = resolve })
     let mounts = 0
     let timer: ReturnType<typeof setTimeout> | undefined
+    // Nobody is using it for now: an expired load, or the last unmount. A later mount opens it again, because a handle can
+    // outlive this, as when a slow route chunk takes longer than timeoutMs or a parent remounts.
+    const idle = () => {
+      if (!open) return
+      open = false
+      clearTimeout(timer)
+      this.subscriptions.delete(dispose)
+      watched.close()
+    }
     const dispose = () => {
       if (disposed) return
       disposed = true
       finishCancellation()
-      clearTimeout(timer)
       options.signal?.removeEventListener("abort", dispose)
-      this.subscriptions.delete(dispose)
-      watched.close()
+      idle()
+    }
+    const start = () => {
+      open = true
+      this.subscriptions.add(dispose)
+      watched.open()
     }
     const loaded: LoadedQuery<T> = {
       ...watched, client: this,
       ready: Promise.resolve(),
       dispose,
       mount: () => {
-        if (disposed) throw new Error(`${artifact.name}: route load was disposed; start a new loadQuery`)
+        if (disposed || this.store.isDisposed) throw new Error(`${artifact.name}: route load was disposed; start a new loadQuery`)
         clearTimeout(timer)
+        if (!open) start()
         mounts += 1
         let released = false
         return () => {
@@ -1243,16 +1257,15 @@ export class Client {
           released = true
           mounts -= 1
           // React replays effects synchronously. Keep the read and stream across that replay.
-          queueMicrotask(() => { if (mounts === 0) dispose() })
+          queueMicrotask(() => { if (mounts === 0) idle() })
         }
       },
     }
     if (options.signal?.aborted || this.store.isDisposed) { dispose(); return loaded }
-    timer = setTimeout(dispose, timeoutMs)
-    timer.unref?.()
     options.signal?.addEventListener("abort", dispose, { once: true })
-    this.subscriptions.add(dispose)
-    watched.open()
+    timer = setTimeout(idle, timeoutMs)
+    timer.unref?.()
+    start()
     // open starts the request; refetch joins it, except for an already complete cached read.
     if (!disposed) Object.assign(loaded, { ready: watched.getState().status === "ready" ? Promise.resolve() : Promise.race([watched.refetch(), cancelled]) })
     return loaded
