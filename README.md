@@ -9,7 +9,7 @@ screen.
 > **Status: early alpha.** The compiler, the normalised store, the React bindings and the live
 > layer, cursor and offset pagination, page-number navigation, optimistic mutations, polling, plain
 > subscriptions and the generator with TypeScript types all work and are tested. Real applications
-> use it, and APIs may still change. Live updates are opt-in per fragment (`@live`) and have known
+> use it, and APIs may still change. Live updates default to explicit per-fragment opt-in (`@live`) and have known
 > limits: see [the requirements](docs/requirements.md).
 
 ## Why not Apollo or Relay
@@ -176,3 +176,11 @@ pnpm exec graphql-orm-client skills install --target claude   # or agents / code
 ## Licence
 
 MIT
+
+Generation enforces explicit live stream availability and declared polling reasons. Optional
+`queryOwners` and `subscriptionPaths` globs enforce project ownership. See the
+[policy settings and migration controls](docs/design.md#project-build-policies-r5).
+
+The generator keeps `live: "explicit"` by default. `"default"` or
+`{ "default": ["src/area/**"] }` is opt-in, not recommended by default.
+Use `@live(enabled: false)` to opt out; see [live settings](docs/design.md#live-generation-setting-r1).

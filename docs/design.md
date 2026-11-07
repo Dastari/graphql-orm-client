@@ -343,7 +343,7 @@ how to narrow it:
 
 The payload's entity field is found by type (`Widget` in `WidgetChangedEvent`), and its action
 by name. Types with `@live` fragments but no usable subscription are listed in
-`compile(...).liveUnavailable`, and their holders must poll. `client.live.status()` reports
+`compile(...).liveUnavailable` when compilation succeeds (R5 requires an explicit polling reason or lowered strictness); their holders poll. `client.live.status()` reports
 per-type counts, including overflow beyond the `key`-mode limit. A `DELETED` event removes the
 record, and any query that showed it reads again, unless its change kind is `PROPAGATED` (see above).
 
@@ -570,7 +570,8 @@ await client.mutate(RenameWidgetMutation, { Id: id, Name: name }, {
 ## Polling
 
 - **Fixed intervals.** `watchQuery(..., { pollMs })` and `useQuery(..., { pollMs })` refetch on
-  an interval while that handle is open. Each handle's interval lasts until it closes, and the
+  an interval while that handle is open. The query must declare `@poll(reason: "...")`;
+  undeclared intervals fail unless `polling.undeclared` is `"warn"` or `"off"`. Each handle's interval lasts until it closes, and the
   shortest open interval wins; in React, a new `pollMs` (or none) replaces the old one.
 - **Live fallback.** A query that shows `@live` records no subscription covers polls every
   `polling.liveFallbackMs` (default 30 s; `null` turns it off). That covers types with no usable
@@ -1026,3 +1027,107 @@ adds 3,613 raw / 1,151 gzip bytes to main and 127 / 37 to React (source and buil
 slightly). The command failed the unrelated compiler timing budget: median 41,678.8 ms exceeded
 30,000 ms. Window measurements were explicitly skipped, so that portion is incomplete. No limits
 were raised and this is not a full budget pass.
+
+## Project build policies (R5)
+
+Built. `strict` in the generator config accepts `liveWithoutStream`, `pollWithoutReason`,
+`rawSubscriptions` and `queryOwnership`, each `"error"` (default), `"warn"` or `"off"`.
+An explicit `@live` fragment with no usable stream must remove `@live` or declare
+`@poll(reason: "why polling is needed")`. Reasons must be non-empty and are recorded on artifacts.
+`liveUnavailable` remains available when a policy is downgraded or polling is declared.
+
+Set `queryOwners: ["src/routes/**", "src/dialogs/**", "src/adapters/**"]` to restrict query documents;
+windows, pickers and other project owners can have their own paths. `subscriptionPaths` similarly
+restricts raw subscription documents. Both checks are disabled when their setting is absent.
+Globs use config-relative source document paths with `/`, `*`, `**` and `?`; brace/extglob syntax
+is unsupported. All files declaring identical text are checked. Programmatic compilation can pass
+`documentPaths` (document text to file paths); without it diagnostics name the GraphQL source or
+`<document N>` and configured path policies cannot match unknown paths.
+
+`pollMs` is a runtime option, including through hooks, so a build can't see it. Declare it instead:
+`query Name @poll(reason: "...") { ... }`. An undeclared `pollMs` throws from `watchQuery` outside production, on a regenerated module, so
+development and tests find it. In production, and on a module generated before this release, it warns and still polls, because a working
+page mustn't crash on upgrade. `polling.undeclared: "warn" | "off"` on the client relaxes this. `strict.pollWithoutReason` covers an empty
+reason at build time. Fallback polling is reported through health and needs no declaration. The escape for a raw subscription is
+`client.stream` (R11).
+
+## Live generation setting (R1)
+
+Built. The generator and `compile` default to `live: "explicit"`: only `@live` fragments request
+streams. `live: "default"` is opt-in, not recommended by default; the owner must decide before
+the package default changes. It makes object fragments live without a directive.
+`live: { "default": ["src/area/**"] }` enables that behaviour only for matching fragment document
+source files, relative to the config directory. It matches the fragment's file, not a spreading query's.
+Plain-string `compile(schema, sources)` keeps its explicit behaviour; pass `documentPaths` when
+using area mode programmatically. Unknown files do not match area globs.
+
+`@live(enabled: false)` opts a fragment out in every mode; `@live` and `@live(enabled: true)` opt in.
+An implicit live fragment with no usable stream warns, appears in `liveUnavailable`, and uses the
+normal fallback interval (30 seconds unless changed); health reports `no-stream` and polling, or
+unavailable if fallback is disabled. Explicit `@live` on that type follows R5's error policy.
+Only fragments on object types with a key become implicitly live. A keyless value type has no identity and no stream, and its data comes with its parent, so it stays as it is. Abstract fragments need explicit intent.
+Lists open streams only for types with a live fragment somewhere in the project. Default mode
+widens that set; an opted-out fragment does not disable another live fragment of the same type.
+
+Migration: keep `"explicit"` to retain current stream scope. Opt in per area, regenerate, and inspect
+`liveUnavailable` and `client.liveHealth()`. More live types use more operations: the router's default
+32-operation connection budget still applies; capacity refusals remain visible and uncovered data polls.
+No setting overrides server admission or guarantees every burst event arrives.
+
+R1 validation: the generated default-mode project updates a directive-free Widget fragment from
+a real stream and reports PageInfo polling with `no-stream`, against graphql-orm 0.90.1/router
+0.8.1. Mock tests cover versions, reconnect refetch, collection, identity disposal, source-area
+globs and 40 live types at a simulated 32-operation limit. Router configuration source at both
+0.90.1 and 0.93.0 sets that default limit to 32; this change did not run conformance on 0.93.0.
+
+## Bounded read-all (R14)
+
+`client.readAll(Query, variables, { limit, pageSize?, signal? })` returns `{ rows, total, truncated }`.
+Use exactly one root `@connection`, a variable page input and select `Edges { Node { ...Row } }`
+and `PageInfo { TotalCount }`. The positive integer limit is required; optional positive `pageSize` caps each request. Missing metadata or
+an absent/null total throws; totals are never inferred. Rows are normalised and deduplicated
+by opaque identity. Offset traversal advances by returned edge count; keyset traversal follows
+`PageInfo.EndCursor` while `HasNextPage` is true. Empty continuing pages or repeated cursors
+fail rather than loop. Pages have no shared snapshot: concurrent movement may omit rows.
+`total` is the exact total returned by the last page, not a snapshot-wide guarantee.
+Abort and identity disposal cancel traversal. This is a one-time read; watch a root for freshness.
+
+## Generated aggregates and counts (R15)
+
+Aliased count-only connections and multiple counts in one document use the same R3 list
+refresh path. Generated aggregates return arrays of `GraphqlAggregateResultRow`, with
+`Groups` and `Metrics` containing nullable `Field`, `Operator`, `Value` strings and a
+non-null `Kind` enum. Values stay exact strings; the generator preserves aliases and nullability.
+Read from graphql-orm tags 0.90.1 and 0.93.0: aggregate roots are opt-in (`aggregate = true`),
+accept generated Where, GroupBy, Metrics and GroupLimit inputs, and read their declared entity.
+The compiler matches the aggregate's input object types to connection-root inputs and derives
+the entity from `Edges.Node`. Exactly one candidate is required, and only project-live types
+enter `OperationArtifact.lists`. Shared result type or operation naming alone cannot establish
+entity ownership. With no matching connection, missing filter inputs, or several candidate
+entities, SDL is insufficient: no aggregate stream coverage is claimed. Poll explicitly.
+Proposed server contract: publish aggregate source entity metadata in the served schema.
+
+## Deleted records (R16)
+
+A direct `DELETED` removes the held store record and triggers its owning roots to re-read.
+Confirmed in React: a still-mounted row's `useFragment` returns null during the reread and
+after the response excludes it. `readFragment` also returns null. Legacy non-null signatures
+do not describe this state safely. Migrate by passing `{ deleted: "null" }` as the third
+argument to both functions: the return type becomes `D | null`; render a placeholder or
+return null before reading fields. Live-record fields and fragment masking stay unchanged.
+Null means unavailable (deleted, collected, disposed, or a missing record), not proof of a
+delete or permission to infer an empty result.
+
+Opt in to `createClient({ ..., store: { deletedRecords: "omit" } })` and regenerate.
+Readers omit missing direct list members and compiled connection edges with missing nodes
+while the owning root refreshes. The record is removed from storage immediately; stale
+connection references are replaced by the next read and collected normally. Totals still
+come from the server, so they may lag until the reread. Without this setting legacy list
+shape remains unchanged. Components holding old references must still handle null.
+`DELETED` with `PROPAGATED` retains the parent and re-reads its roots (graphql-orm 0.93.0).
+On both server tags read (0.90.1 and 0.93.0), without a preimage grant direct deletes send
+nothing: lists correct on their next delivered event or poll. A stream alone cannot promise
+instant delete visibility. Pages have no shared snapshot. Deletes carry no retained version tombstone: a late
+response can restore a removed row, even when that response carries a record version,
+because the deleted record no longer supplies a version to compare. Re-reading after
+reconnect remains necessary. Without a version, ordinary writes use last-arrival-wins.

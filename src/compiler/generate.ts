@@ -201,7 +201,7 @@ export function generate(schema: GraphQLSchema, sources: readonly string[], opti
     "",
     `/** Live subscriptions per type; pass to createClient({ live: { artifacts: live, ... } }). */`,
     `export const live = ${JSON.stringify(compiled.live)} as unknown as Readonly<Record<string, LiveArtifact>>`,
-    `/** Types with @live fragments but no usable Changed subscription; their holders must poll. */`,
+    `/** Types with live fragments but no usable Changed subscription; their holders must poll. */`,
     `export const liveUnavailable: readonly string[] = ${JSON.stringify(compiled.liveUnavailable)}`,
     "",
     `const documents: Record<string, unknown> = {`,

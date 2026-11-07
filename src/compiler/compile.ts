@@ -38,7 +38,20 @@ import type {
   Selection,
 } from "../artifact.js"
 
+/** Severity of a project policy diagnostic. */
+export type StrictLevel = "error" | "warn" | "off"
+
 export interface CompileOptions {
+  /** Live fragments remain explicit by default. Default mode is opt-in, optionally by source path. */
+  readonly live?: "explicit" | "default" | { readonly default: readonly string[] }
+  /** Policy severities; each rule defaults to error. */
+  readonly strict?: Partial<Record<"liveWithoutStream" | "pollWithoutReason" | "rawSubscriptions" | "queryOwnership", StrictLevel>>
+  /** Query document owners, relative to the config directory; absent disables ownership checks. */
+  readonly queryOwners?: readonly string[]
+  /** Paths allowed to declare raw subscriptions; absent disables this check. */
+  readonly subscriptionPaths?: readonly string[]
+  /** Source text to all declaring files, relative to the config directory. CLI supplies this. */
+  readonly documentPaths?: Readonly<Record<string, readonly string[]>>
   /** Reject unsupported conditional selections. legacy preserves the previous unsafe behaviour for migration only. */
   readonly conditionalDirectives?: "reject" | "legacy"
 
@@ -71,9 +84,9 @@ export interface CompileResult {
   readonly operations: Readonly<Record<string, OperationArtifact<any, any>>>
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   readonly fragments: Readonly<Record<string, FragmentArtifact<any, string>>>
-  /** Live subscriptions per type that has `@live` fragments. */
+  /** Live subscriptions per type with live fragments (explicit or enabled by the live setting). */
   readonly live: Readonly<Record<string, LiveArtifact>>
-  /** Types with `@live` fragments but no usable `Changed` subscription; they need polling. */
+  /** Types with live fragments but no usable `Changed` subscription; they need polling. */
   readonly liveUnavailable: readonly string[]
 }
 
@@ -85,7 +98,8 @@ export class CompileError extends Error {
 }
 
 const CLIENT_DIRECTIVES = parse(`
-  directive @live on FRAGMENT_DEFINITION
+  directive @live(enabled: Boolean = true) on FRAGMENT_DEFINITION
+  directive @poll(reason: String!) on QUERY | FRAGMENT_DEFINITION
   directive @sensitive on QUERY | MUTATION
   directive @connection(key: String!, paging: [String!]) on FIELD
   directive @refetchable(queryName: String) on FRAGMENT_DEFINITION
@@ -104,7 +118,7 @@ function clientSchemaOf(schema: GraphQLSchema): GraphQLSchema {
   return extended
 }
 
-const CLIENT_DIRECTIVE_NAMES = new Set(["live", "connection", "refetchable", "paged", "sensitive"])
+const CLIENT_DIRECTIVE_NAMES = new Set(["live", "poll", "connection", "refetchable", "paged", "sensitive"])
 
 /** graphql-orm's connection and keyset field names. */
 const DEFAULT_CONNECTION = {
@@ -216,6 +230,16 @@ function compileDocuments(
 ): CompileResult {
   const clientSchema = clientSchemaOf(schema)
   const documents = sources.map((source) => (typeof source === "string" ? parse(source) : source))
+  const paths = new Map<FragmentDefinitionNode | OperationDefinitionNode, readonly string[]>()
+  documents.forEach((document, index) => {
+    const source = sources[index]!
+    const text = typeof source === "string" ? source : source.loc?.source.body ?? print(source)
+    const sourceName = document.loc?.source.name
+    const files = options.documentPaths?.[text] ?? [sourceName && sourceName !== "GraphQL request" ? sourceName : `<document ${index + 1}>`]
+    for (const node of document.definitions) {
+      if (node.kind === Kind.FRAGMENT_DEFINITION || node.kind === Kind.OPERATION_DEFINITION) paths.set(node, files)
+    }
+  })
   const fragmentNodes = new Map<string, FragmentDefinitionNode>()
   const operationNodes: OperationDefinitionNode[] = []
   const problems: string[] = []
@@ -262,6 +286,25 @@ function compileDocuments(
   }
   if (problems.length) throw new CompileError(problems)
 
+  const policyProblems: string[] = []
+  const report = (rule: keyof NonNullable<CompileOptions["strict"]>, node: FragmentDefinitionNode | OperationDefinitionNode, message: string) => {
+    const level = options.strict?.[rule] ?? "error"
+    const detail = `${node.kind === Kind.FRAGMENT_DEFINITION ? "Fragment" : "Operation"} ${node.name?.value ?? "<anonymous>"} (${paths.get(node)?.join(", ")}): ${message} [strict.${rule}]`
+    if (level === "error") policyProblems.push(detail)
+    if (level === "warn") (options.onWarning ?? console.warn)(detail)
+  }
+  if (!nested) for (const node of [...fragmentNodes.values(), ...operationNodes]) {
+    const poll = node.directives?.find((d) => d.name.value === "poll")
+    if (poll && !pollReason(node)) report("pollWithoutReason", node, '@poll needs a non-empty reason; use @poll(reason: "why polling is needed")')
+    if (node.kind === Kind.OPERATION_DEFINITION) {
+      const allowed = node.operation === "query" ? options.queryOwners : node.operation === "subscription" ? options.subscriptionPaths : undefined
+      if (allowed && paths.get(node)?.some((file) => file.startsWith("<document ") || !allowed.some((glob) => matchesPath(file, glob)))) {
+        report(node.operation === "query" ? "queryOwnership" : "rawSubscriptions", node,
+          node.operation === "query" ? "query is outside queryOwners; add its file path to queryOwners" : "raw subscription is outside subscriptionPaths; add its path, or use client.stream")
+      }
+    }
+  }
+
   const augment = (selectionSet: SelectionSetNode, parent: GraphQLCompositeType): SelectionSetNode =>
     augmentSelectionSet(schema, selectionSet, parent, options)
 
@@ -277,10 +320,21 @@ function compileDocuments(
     augmentedFragments.set(name, augmented)
     fragments[name] = {
       kind: "fragment",
+      ...(pollReason(node) ? { pollReason: pollReason(node) } : {}),
       name,
       typeCondition: parent.name,
       selections: convert(schema, augmented.selectionSet, parent, fragmentNodes, false, options),
-      live: (node.directives ?? []).some((directive) => directive.name.value === "live"),
+      live: (() => {
+        const directive = node.directives?.find((d) => d.name.value === "live")
+        const enabled = directive?.arguments?.find((a) => a.name.value === "enabled")?.value
+        if (enabled?.kind === Kind.BOOLEAN && !enabled.value) return false
+        if (directive) return true
+        // A keyless value type has no identity and no stream, and its data comes with its parent.
+        if (!isObjectType(parent) || !keyFieldsOf(schema, parent.name, options)) return false
+        const setting = options.live
+        return setting === "default" || typeof setting === "object" &&
+          (paths.get(node) ?? []).some((file) => !file.startsWith("<document ") && setting.default.some((glob) => matchesPath(file, glob)))
+      })(),
     }
   }
 
@@ -297,7 +351,7 @@ function compileDocuments(
     const used = usedFragments(augmented.selectionSet, fragmentNodes)
     const sensitive = node.directives?.some(d => d.name.value === "sensitive") === true
     if (sensitive && [...used].some(name => fragments[name]?.live))
-      throw new CompileError([`${name}: @sensitive cannot spread a @live fragment`])
+      throw new CompileError([`${name}: @sensitive cannot spread a live fragment; mark it @live(enabled: false) or use a fragment of its own`])
     const text = [augmented, ...[...used].sort().map((fragment) => augmentedFragments.get(fragment)!)]
       .map((definition) => print(stripClientDirectives(definition)))
       .join("\n\n")
@@ -306,6 +360,7 @@ function compileDocuments(
     const paged = pagedSpecOf(schema, node, rootType, options)
     operations[name] = {
       kind: node.operation,
+      ...(pollReason(node) ? { pollReason: pollReason(node) } : {}),
       lists: listTypes(schema, normalization, rootType, options),
       ...(sensitive ? { sensitive: true } : {}),
       keys: pick(metadata.keys, reachable),
@@ -327,6 +382,16 @@ function compileDocuments(
     operations[name] = { ...operation, lists: (operation.lists ?? []).filter((typename) => liveTypes.has(typename)) }
   }
   const { live, liveUnavailable } = compileLive(schema, fragments, fragmentNodes, options)
+  for (const [name, node] of fragmentNodes) {
+    if (fragments[name]?.live && node.directives?.some((d) => d.name.value === "live") && liveUnavailable.includes(fragments[name]!.typeCondition) && !pollReason(node)) {
+      report("liveWithoutStream", node, `${fragments[name]!.typeCondition} has no usable Changed stream; use @live(enabled: false) or add @poll(reason: "why polling is needed")`)
+    }
+  }
+  if (!nested) for (const typename of liveUnavailable) {
+    const implicit = [...fragmentNodes].filter(([name, node]) => fragments[name]?.live && fragments[name]?.typeCondition === typename && !node.directives?.some((d) => d.name.value === "live"))
+    for (const [name, node] of implicit) (options.onWarning ?? console.warn)(`Fragment ${name} (${paths.get(node)?.join(", ")}): ${typename} has no usable Changed stream; automatic live fallback polls and health reports no-stream. Use @live(enabled: false) to opt out.`)
+  }
+  if (policyProblems.length) throw new CompileError(policyProblems)
   if (options.liveSelection !== "as-written") {
     const scalars = (selections: readonly Selection[]): string[] => selections.flatMap((selection) =>
       selection.kind === "scalar" ? [selection.fieldName] : selection.kind === "inline" ? scalars(selection.selections) : [])
@@ -432,14 +497,17 @@ function compileLive(
     compileLive(schema, fragments, fragmentNodes, { ...options, liveSelection: "full" })
   }
   const byType = new Map<string, string[]>()
+  const liveUnavailable: string[] = []
   for (const fragment of Object.values(fragments)) {
     if (!fragment.live) continue
     const type = schema.getType(fragment.typeCondition)
-    if (!type || !isObjectType(type)) continue
+    if (!type || !isObjectType(type)) {
+      if (!liveUnavailable.includes(fragment.typeCondition)) liveUnavailable.push(fragment.typeCondition)
+      continue
+    }
     byType.set(type.name, [...(byType.get(type.name) ?? []), fragment.name])
   }
   const live: Record<string, LiveArtifact> = {}
-  const liveUnavailable: string[] = []
   const subscriptionRoot = schema.getSubscriptionType()
   for (const [typename, names] of [...byType].sort(([a], [b]) => (a < b ? -1 : 1))) {
     const fieldName = options.liveField?.(typename) ?? `${typename}Changed`
@@ -462,6 +530,11 @@ function compileLive(
     const keyArg = field.args.find((arg) => arg.name.toLowerCase() === "key")
     const mode: LiveMode = keysArg ? "keys" : keyArg ? "key" : "unkeyed"
     const arg = keysArg ?? keyArg
+    // A stream needing another required argument cannot be generated from the ORM key contract.
+    if (field.args.some((candidate) => candidate !== arg && isNonNullType(candidate.type) && candidate.defaultValue === undefined)) {
+      liveUnavailable.push(typename)
+      continue
+    }
     const operationName = `Live${typename}`
     const variables = arg ? `($${arg.name}: ${String(arg.type)})` : ""
     const argumentUse = arg ? `(${arg.name}: $${arg.name})` : ""
@@ -536,7 +609,7 @@ function compileLive(
       ...(thinOperation ? { thinOperation, rereadFragments: [...new Set(rereadFragments)] } : {}),
     }
   }
-  return { live, liveUnavailable }
+  return { live, liveUnavailable: liveUnavailable.sort() }
 }
 
 function pick<T>(source: Record<string, T>, names: ReadonlySet<string>): Record<string, T> {
@@ -867,8 +940,13 @@ function convert(
       const fieldDef = "getFields" in parent ? parent.getFields()[name] : undefined
       if (!fieldDef) throw new CompileError([`${parent.name}.${name} does not exist`])
       const named = getNamedType(fieldDef.type) as GraphQLCompositeType
+      const connectionNames = { ...DEFAULT_CONNECTION, ...options.connection }
+      const edgeNode = name === connectionNames.edges && isObjectType(named) && named.getFields()[connectionNames.node]
+        ? selection.selectionSet.selections.find((s): s is FieldNode => s.kind === Kind.FIELD && s.name.value === connectionNames.node)
+        : undefined
       result.push({
         kind: "link",
+        ...(edgeNode ? { listNode: edgeNode.alias?.value ?? edgeNode.name.value } : {}),
         responseKey,
         fieldName: name,
         args,
@@ -926,7 +1004,22 @@ function listTypes(schema: GraphQLSchema, selections: readonly Selection[], pare
     if (!field) continue
     const type = getNamedType(field.type)
     const unwrapped = isNonNullType(field.type) ? field.type.ofType : field.type
-    if (isListType(unwrapped)) add(type)
+    // Generated aggregates share their result objects across entities. The root name cannot
+    // identify their source; a unique shared filter input with a connection root can.
+    if (isListType(unwrapped) && isObjectType(type) && type.name === "GraphqlAggregateResultRow") {
+      const candidates = new Set<string>()
+      const inputs = new Set(field.args.map(arg => getNamedType(arg.type)).filter(isInputObjectType))
+      for (const candidate of Object.values(parent.getFields())) {
+        if (!candidate.args.some(arg => inputs.has(getNamedType(arg.type) as import("graphql").GraphQLInputObjectType))) continue
+        const connection = getNamedType(candidate.type)
+        if (!isObjectType(connection)) continue
+        const edgeField = connection.getFields()[names.edges]
+        const edgeType = edgeField && getNamedType(edgeField.type)
+        const nodeField = edgeType && isObjectType(edgeType) ? edgeType.getFields()[names.node] : undefined
+        if (nodeField) candidates.add(getNamedType(nodeField.type).name)
+      }
+      if (candidates.size === 1) add(schema.getType([...candidates][0]!)!)
+    } else if (isListType(unwrapped)) add(type)
     if (isObjectType(type)) {
       const edges = type.getFields()[names.edges]
       const edge = edges && getNamedType(edges.type)
@@ -936,4 +1029,26 @@ function listTypes(schema: GraphQLSchema, selections: readonly Selection[], pare
     if (isCompositeType(type)) for (const name of listTypes(schema, selection.selections, type, options)) result.add(name)
   }
   return [...result].sort()
+}
+
+/** Match a config-relative POSIX path using *, ** and ? globs (no brace or extglob syntax). */
+export function matchesPath(path: string, glob: string): boolean {
+  const pattern = glob.replaceAll("\\", "/").replace(/^\.\//, "")
+  let expression = ""
+  for (let i = 0; i < pattern.length; i++) {
+    const c = pattern[i]!
+    if (c === "*" && pattern[i + 1] === "*") {
+      i++
+      if (pattern[i + 1] === "/") { i++; expression += "(?:.*/)?" }
+      else expression += ".*"
+    } else if (c === "*") expression += "[^/]*"
+    else if (c === "?") expression += "[^/]"
+    else expression += c.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  }
+  return new RegExp(`^${expression}$`).test(path.replaceAll("\\", "/").replace(/^\.\//, ""))
+}
+
+function pollReason(node: FragmentDefinitionNode | OperationDefinitionNode): string | undefined {
+  const value = node.directives?.find((d) => d.name.value === "poll")?.arguments?.find((a) => a.name.value === "reason")?.value
+  return value?.kind === Kind.STRING && value.value.trim() ? value.value : undefined
 }
