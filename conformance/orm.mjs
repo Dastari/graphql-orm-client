@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict'
 import { installRelationBatching } from '../dist/relations.js'
-import { readFragment } from '../dist/index.js'
 import { liveSettingCheck } from './live-setting.mjs'
 import { doctorChecks } from './doctor.mjs'
 import { browserRecovery } from './browser.mjs'
