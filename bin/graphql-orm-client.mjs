@@ -67,13 +67,17 @@ async function loadProject(args) {
   const out = resolve(base, config.out)
   const extensions = config.extensions ?? [".ts", ".tsx"]
   const files = (config.documents ?? ["src"]).flatMap((entry) => walk(resolve(base, entry), extensions, out))
+  const documentPaths = {}
   const sources = files.flatMap((file) => {
     try {
-      return extractDocuments(readFileSync(file, "utf8"), config.functionName ?? "graphql")
+      const documents = extractDocuments(readFileSync(file, "utf8"), config.functionName ?? "graphql")
+      for (const text of documents) (documentPaths[text] ??= []).push(relative(base, file).split("\\").join("/"))
+      return documents
     } catch (error) {
       fail(`${relative(base, file)}: ${error.message}`)
     }
   })
+  config.documentPaths = documentPaths
   const snapshotPath = resolve(base, config.schema)
   if (command === "generate" && args.includes("--check") && existsSync(snapshotPath + ".sha256") &&
       readFileSync(snapshotPath + ".sha256", "utf8") !== digest(readFileSync(snapshotPath, "utf8")) + "\n")

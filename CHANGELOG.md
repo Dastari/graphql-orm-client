@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- R18: add cancellable `client.loadQuery` handles and non-Suspense `useLoadedQuery`, sharing a read
+  across loader, mount and StrictMode replay. Migration is opt-in: replace `preload`/`useQuery` as a
+  pair, forward the router abort signal and dispose abandoned navigation. Unmounted loads expire
+  after 30 seconds (`timeoutMs`). List streams open before reading and close with the handle.
+- Conditional `@skip`/`@include` selections now fail builds by default: previous readers treated
+  omitted fields as missing and generated types required them; live projections lost conditions.
+  Migration: set generator `conditionalDirectives: "legacy"` temporarily, split conditional route
+  roots, then remove the setting and regenerate. Fragment arguments remain unsupported with a
+  clearer error. Whole-operation hook `skip` is unchanged.
+- Server-shell `useQuery` renders idle without registering a watch or starting I/O. Hydration uses
+  the same idle snapshot. Migration: render an idle placeholder, or temporarily pass
+  `{ serverSnapshot: "legacy" }` to restore the prior snapshot. Server data rendering, result streaming
+  and store handoff remain non-goals.
+
 - Add `graphql-orm-client/persistence`: async adapters, a thin IndexedDB adapter, identity/release
   envelopes, bounded coalesced writes and stale restoration. Import `persistClient` explicitly and
   provide identityKey, schemaHash and serverRelease to adopt. Set generator `persistence: true` and regenerate for the exported schemaHash.
@@ -12,6 +26,27 @@
 
 - Compile a large schema far faster. After 0.1.0-alpha.10's stream selections, each live type re-extended the whole schema: 250 documents on a
   45,000-line schema took about 24 s and now take under a second.
+- R1: opt-in `live: "default"` and `live: { "default": ["src/area/**"] }` generation;
+  the package default stays `"explicit"`. Migration: opt in by area, regenerate and inspect health
+  and socket capacity before widening. `@live(enabled: false)` opts out. Implicit streamless
+  fragments report and poll; explicit streamless `@live` still follows R5.
+
+- R5: generation rejects streamless explicit `@live` and empty polling reasons; optional
+  `queryOwners`/`subscriptionPaths` restrict document ownership. Migration: remove unsupported
+  `@live` or add `@poll(reason: "...")`; add legitimate owners to the configured globs.
+  Each policy has `strict.<rule>: "warn" | "off"` to stage adoption (see design).
+- `pollMs` needs `@poll(reason: "...")` on its query. A build can't see a runtime option, so an undeclared one throws from `watchQuery`
+  outside production on a regenerated module. In production, and on a module generated earlier, it warns and still polls.
+  `polling.undeclared: "warn" | "off"` relaxes this.
+- `@live` on an interface or union fragment is now reported rather than silently not live, under `strict.liveWithoutStream`.
+- R16: opt in to typed missing/deleted fragments with `readFragment(Fragment, ref, { deleted: "null" })` and the matching `useFragment` option. Handle null before reading fields. Runtime already returned null for removed references; old non-null signatures remain for migration. Set `store: { deletedRecords: "omit" }` and regenerate to omit missing nodes during list refresh. This can remove a row before the network reread completes. Live-record data keeps its existing shape.
+
+- R15: generated aggregate roots with a unique schema-derived entity now join R3 list refresh. Regenerate to enable this for project-live types. Aliased counts preserve their generated types.
+
+- R14: `client.readAll` traverses a compiled root connection with a required limit, exact last-page total, truncation and abort support. Select TotalCount; unknown totals fail. Pages have no shared snapshot.
+
+
+
 - R3: generated `OperationArtifact.lists` enables one un-narrowed stream per open list type,
   including empty and count-only lists. Events invalidate membership, order and totals through
   the existing re-read limiter. Unheld rows are not stored. List interest opens before the read;
@@ -23,7 +58,7 @@
 - R10: additive write outcome API and explicit retry hook method; no automatic replay. Opt into independent HTTP `writes` and `reads` limits; omitted limits preserve existing behaviour. Supply a reconciliation read for known affected records.
 
 - R9: query and mutation `@sensitive` returns plain expanded data without storing it. Live combinations and watched sensitive queries reject. Existing `no-store` behaviour is unchanged.
-- Add R11 ephemeral streams: `client.stream` and React `useEphemeralStream`, with explicit
+- Add R11 ephemeral streams: `createStream(client, ...)` from `graphql-orm-client/streams`, and React `useEphemeralStream`, with explicit
   sequence/resume contracts, bounded volatile buffers, coalesced notifications, reconnect replay
   and visible gaps/evictions. Additive; no migration. Existing plain subscriptions are unchanged.
 

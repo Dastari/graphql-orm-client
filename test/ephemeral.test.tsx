@@ -3,6 +3,7 @@ import { act, cleanup, render } from "@testing-library/react"
 import { afterEach, expect, it } from "vitest"
 import { buildSchema } from "graphql"
 import { createClient } from "../src/client.js"
+import { createStream } from "../src/ephemeral.js"
 import { compile } from "../src/compiler/index.js"
 import type { OperationArtifact } from "../src/artifact.js"
 import { useEphemeralStream } from "../src/react/index.js"
@@ -16,7 +17,7 @@ function setup() {
   const streams = createMockStreams({ schema })
   const client = createClient({ network: createMockNetwork(), live: { ...clock.live, subscribe: streams.subscribe, connection: { state: () => "connected", subscribe: (fn) => streams.onReconnect(() => fn({ reconnected: true })) }, restart: { minMs: 10, maxMs: 100 } } })
   const sequence = { value: (item: Item) => item.seq, after: 0, cursor: (item: Item) => item.seq, resume: (_: { after?: number }, after: number) => ({ after }) }
-  const stream = client.stream(artifact, {}, { select: (data) => data.output, bufferSize: 1200, sequence })
+  const stream = createStream(client, artifact, {}, { select: (data) => data.output, bufferSize: 1200, sequence })
   const emit = (seq: number) => streams.one("Output").next({ data: { output: { seq, text: String(seq) } } })
   return { client, stream, streams, clock, emit, sequence }
 }
@@ -46,7 +47,7 @@ it("coalesces React renders and replays 1000 items across a socket reconnect wit
 })
 it("reports a declared gap when a service cannot replay", () => {
   const { client, streams, clock, sequence } = setup()
-  const stream = client.stream(artifact, {}, { select: (data) => data.output, bufferSize: 10, sequence: { value: sequence.value, after: 0 } })
+  const stream = createStream(client, artifact, {}, { select: (data) => data.output, bufferSize: 10, sequence: { value: sequence.value, after: 0 } })
   stream.open()
   streams.one("Output").next({ data: { output: { seq: 1, text: "a" } } })
   streams.reconnect(); clock.advance(100)
@@ -57,7 +58,7 @@ it("reports a declared gap when a service cannot replay", () => {
 })
 it("reports unprovable continuity without sequence and never deduplicates by guessing", () => {
   const { client, streams, clock } = setup()
-  const stream = client.stream(artifact, {}, { select: (data) => data.output, bufferSize: 10 })
+  const stream = createStream(client, artifact, {}, { select: (data) => data.output, bufferSize: 10 })
   stream.open()
   for (let n = 0; n < 2; n++) streams.one("Output").next({ data: { output: { seq: 1, text: "a" } } })
   clock.advance(16)
@@ -66,7 +67,7 @@ it("reports unprovable continuity without sequence and never deduplicates by gue
 })
 it("counts buffer overflow without confusing eviction with a transport gap", () => {
   const { client, streams, clock, sequence } = setup()
-  const stream = client.stream(artifact, {}, { select: (data) => data.output, bufferSize: 2, sequence })
+  const stream = createStream(client, artifact, {}, { select: (data) => data.output, bufferSize: 2, sequence })
   stream.open()
   for (let seq = 1; seq <= 5; seq++) streams.one("Output").next({ data: { output: { seq, text: "a" } } })
   clock.advance(16)
@@ -83,7 +84,7 @@ it("erases identity data synchronously, ignores late frames and cancels every ti
   expect(stream.getState()).toMatchObject({ status: "ended", items: [], cursor: undefined, sequence: undefined })
   expect(streams.open.size).toBe(0)
   expect(clock.pending()).toHaveLength(0)
-  expect(() => client.stream(artifact, {}, { select: (data) => data.output, bufferSize: 2 })).toThrow(/disposed/)
+  expect(() => createStream(client, artifact, {}, { select: (data) => data.output, bufferSize: 2 })).toThrow(/disposed/)
 })
 it("fails a refusal without a retry storm, including next-errors followed by complete", () => {
   for (const frame of ["error", "next"] as const) {
@@ -98,7 +99,7 @@ it("bounds delayed retries even if every subscribe fails synchronously", () => {
   const clock = createTestClock()
   let attempts = 0
   const client = createClient({ network: createMockNetwork(), live: { ...clock.live, subscribe() { attempts++; throw new Error("offline") }, restart: { minMs: 1, maxMs: 2 } } })
-  const stream = client.stream(artifact, {}, { select: (data) => data.output, bufferSize: 1, maxRetries: 3 })
+  const stream = createStream(client, artifact, {}, { select: (data) => data.output, bufferSize: 1, maxRetries: 3 })
   stream.open(); expect(attempts).toBe(1)
   clock.advance(100)
   expect(attempts).toBe(4)
@@ -107,7 +108,7 @@ it("bounds delayed retries even if every subscribe fails synchronously", () => {
 })
 it("ends on completion and rejects invalid configuration and sequence values", () => {
   const { client, stream, streams, clock, emit } = setup()
-  expect(() => client.stream(artifact, {}, { select: (data) => data.output, bufferSize: 0 })).toThrow(/bufferSize/)
+  expect(() => createStream(client, artifact, {}, { select: (data) => data.output, bufferSize: 0 })).toThrow(/bufferSize/)
   stream.open(); emit(1); streams.one("Output").end(); clock.advance(16)
   expect(stream.getState().status).toBe("ended")
   client.dispose()
@@ -124,7 +125,7 @@ it("handles synchronous socket notifications while stopping a stream without rec
     connection: { state: () => socket, subscribe(fn) { signal = fn; return () => { signal = undefined } } },
     subscribe() { starts++; return () => { socket = "closed"; signal?.({ reconnected: false }) } },
   } })
-  const stream = client.stream(artifact, {}, { select: (data) => data.output, bufferSize: 10 })
+  const stream = createStream(client, artifact, {}, { select: (data) => data.output, bufferSize: 10 })
   stream.open(); signal?.({ reconnected: true })
   expect(starts).toBe(1)
   expect(clock.pending().filter((timer) => timer.ms > 16)).toHaveLength(1)

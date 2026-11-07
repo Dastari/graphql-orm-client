@@ -1,7 +1,7 @@
 # Live by default: design for requirement groups 1 and 2
 
 Status: **proposed; the owner approved the direction on 2026-11-06. Built so far: the restart of ended
-streams (fact 4), in 0.1.0-alpha.7; R20 and R7, in 0.1.0-alpha.8; R8 and R6, in 0.1.0-alpha.9. R4's client-side overlap and confirming reads are built; true gap closure still needs a server started signal. Group 1, R2 and R3 are built.** Requirement numbers refer to [requirements.md](../requirements.md).
+streams (fact 4), in 0.1.0-alpha.7; R20 and R7, in 0.1.0-alpha.8; R8 and R6, in 0.1.0-alpha.9. R4's client-side overlap and confirming reads are built; true gap closure still needs a server started signal. Group 1, R2, R3, R5 and the opt-in R1 setting are built. The package live default remains explicit.** Requirement numbers refer to [requirements.md](../requirements.md).
 R21's `conformance/` fixture now runs the admission, key delivery, delete, node, version,
 list and router-frame facts against `graphql-orm-v0.90.1` (adfa608d), router 0.8.1 and SQLite.
 Other facts remain source-read from `main` at `9d1a482` unless noted. Recovery assertions
@@ -232,10 +232,11 @@ operation-naming health diagnostic.
 
 ### R1. Live by default
 
+**Setting built. The package default stays `explicit`; `default` is opt-in, not recommended by default.**
+
 A generator setting: `"live": "explicit" | "default" | { "default": ["src/area/**"] }`, the last for moving
 one area at a time. With `default`, a fragment on an object type with a usable stream is live unless it
-says `@live(enabled: false)`. A type with no stream is reported and polls, and health says so. Under
-`default`, `@live` on such a type becomes an error once R5 lands. The setting goes away at 1.0.
+says `@live(enabled: false)`. A type with no stream is reported and polls, and health says so. Explicit `@live` on such a type follows R5’s error policy. Removing the setting at 1.0 remains proposed.
 
 ## Settings and migration
 
@@ -298,3 +299,7 @@ In order. All opt-in, through its normal process.
 - **R7:** `unconfirmed` and `idle` are added.
 - **`Snapshot`** is a request to graphql-orm and blocks nothing here.
 - **graphql-orm PR #312** is the owner's decision; the client doesn't wait for it.
+
+## Build policies and the live setting
+
+R5 and the R1 setting are built: see [design.md](../design.md#project-build-policies-r5). The default stays `explicit` until the owner decides.

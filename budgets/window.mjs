@@ -18,5 +18,7 @@ const query = client.watchQuery(compiled.operations.TicketsPage, {})
 query.open()
 await query.refetch()
 client.live.flush()
+// Past the confirming read after a stream opens, whose response would otherwise be counted as retained.
+await new Promise((resolve) => setTimeout(resolve, 1500))
 window.budget = { client, query, ws, rows: query.getState().data.Tickets.Edges.length }
 window.openTool = () => window.open("/tool", "_blank", "popup,width=640,height=480")

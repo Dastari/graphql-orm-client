@@ -14,23 +14,22 @@ running application can say so. It never quietly goes stale.
 application and say nothing about live updates. If the feature doesn't update live, or stale data
 can't be noticed, the design isn't done.
 
-## Verified gaps in the current code
+## Current defaults and remaining gaps
 
-- `@live` is opt-in per fragment, so it can be forgotten.
-- `@live` only updates records already held. New rows, removed rows and changed totals need a poll.
-- `@live` on a type with no stream only adds it to `liveUnavailable`, and falls back to polling.
-- Nothing checks where a query is written, and `pollMs` is one option away.
-- A stream narrowed by `Keys` or `Key` can't see a new row, or a row moving into a filtered list, so
-  R3 needs a stream that isn't narrowed.
+- The live setting remains `explicit`. Opt-in `default` and area modes are built (R1).
+- Regenerated lists of project-live types use un-narrowed streams and bounded re-reads (R3).
+- Explicit streamless `@live` fails generation unless polling is declared or strictness is lowered (R5).
+- Optional query/subscription path ownership checks and declared polling reasons are built (R5).
+  Runtime `pollMs` cannot be detected at build time; the runtime enforces the declaration.
 - `DELETED` reaches subscribers only when the host grants `can_read_deleted_preimage`, so a row deleted
   elsewhere usually sends nothing (R3, R16).
 
 ## 1. Staying live without thinking about it
 
-**R1. Live by default.** A fragment on an entity with a usable `Changed` stream is live, with an
-explicit opt-out (`@live(false)` or similar). A `live: "explicit" | "default"` setting lets existing
-applications migrate one area at a time, and goes away at 1.0. Accepted by the owner once R2, R3, R4
-and R6 hold; check with the owner before turning it on.
+**R1. Live by default. Setting built; package default remains `explicit`.** A fragment on an entity with a usable `Changed` stream is live, with an
+explicit opt-out (`@live(enabled: false)`). A `live: "explicit" | "default" | { "default": ["src/area/**"] }` setting lets existing
+applications migrate one area at a time, and is proposed to go away at 1.0. Accepted by the owner once R2, R3, R4
+and R6 hold; `default` is opt-in, not recommended by default. The owner must decide before changing the package default.
 *Acceptance:* a new fragment with no directive updates from a stream.
 
 **R2. The compiler decides what goes in a stream. Built.** Full projections carry keys,
@@ -71,12 +70,12 @@ key-set replacement and between the first snapshot and subscribe. **The first-re
 not eliminated against a real server:** no subscribe acknowledgement exists. R3's list streams open before the read, with a confirming read after settling. At a full router connection, old coverage stays open while replacements retry;
 newly uncovered records poll meanwhile. True gap closure depends on a server started signal.
 
-**R5. Build failures in place of conventions**, each with a small, named escape:
+**R5. Build failures in place of conventions. Built**, with per-rule `strict` error/warn/off settings (see design), each with a small, named escape:
 
 | Rule | Default | Escape |
 | --- | --- | --- |
 | `@live` on a type with no usable stream | Error | Opt out, or `@poll(reason: "...")` |
-| `pollMs` on a query | Error at build | `@poll(reason: "...")`, recorded in generated output |
+| `pollMs` on a query | Runtime error; build validates declared reasons, no call-site scan | `@poll(reason: "...")`, recorded in generated output |
 | Raw subscriptions outside allowed paths | Error when paths are set | The ephemeral stream (R11) |
 | Queries outside query owners | Error when `queryOwners` globs are set | Add the path to the globs |
 
@@ -140,7 +139,7 @@ retry after step-up authentication, with no queued replay and no credential held
 the store: progress, AI text deltas, terminal output, search results. It has a resume cursor, sequence
 de-duplication, replay after reconnect, a bounded buffer and render coalescing. This replaces the
 consumer-written versions and is the one sanctioned exception in R5.
-*Built:* `client.stream` and React `useEphemeralStream`: explicit sequence/cursor/resume declarations,
+*Built:* `createStream` from `graphql-orm-client/streams` and React `useEphemeralStream`: explicit sequence/cursor/resume declarations,
 bounded volatile buffers, coalesced snapshots, socket reconnect replay and visible gaps/evictions.
 Replay requires a service-provided custom subscription; no sequence means continuity is unprovable.
 *Acceptance:* a high-frequency stream reconnects with no duplicate or missing items and without
@@ -161,12 +160,23 @@ code.
 
 **R14. Bounded read-all.** For roots that only filter on a key, `readAll` pages to a stated limit and
 reports whether it truncated, along with the exact total. Consumers have written this several times.
+*Built:* `client.readAll` requires a limit, compiled root connection and selected TotalCount.
+It normalises and deduplicates rows, honours cancellation, and rejects unknown totals.
+Pages have no shared snapshot; see the design for concurrent-write limits.
 
 **R15. Counts and aggregates.** Typed results for generated aggregates, and aliased count reads, stay
 current under R3.
+*Built:* aliases retain generated types; aggregate source entities derive from a unique schema
+input/connection match and use R3 refresh only when the project made that type live.
+Ambiguous SDL needs explicit polling; no source is guessed.
 
 **R16. Deleted records.** The live layer removes a deleted record from lists and the store. A
 component holding one gets a defined deleted state and doesn't crash. Confirm today's behaviour.
+*Built:* opt-in `{ deleted: "null" }` gives fragment readers a required nullable result;
+React tests cover a still-mounted row before and after its owning list rereads.
+`store.deletedRecords: "omit"` omits absent list nodes with regenerated artifacts.
+Legacy readers already returned null at runtime; the old signatures remain for migration.
+Without a server preimage grant, correction waits for another event or poll.
 *Built in 0.1.0-alpha.10:* `DELETED` with change kind `PROPAGATED` (a child deleted under a record that still exists,
 graphql-orm 0.93.0) keeps the record and re-reads its holders.
 
@@ -181,6 +191,11 @@ a stale keyset cursor can be accepted at the wrong place.
 loader can avoid a waterfall. Suspense is optional. Decide on fragment arguments
 (`@argumentDefinitions`) and support for `@skip`/`@include`. Server rendering stays a non-goal, but
 document how the client behaves inside a framework that renders a shell on the server.
+*Built:* `client.loadQuery` and `useLoadedQuery` share a retained read across loader and mount,
+with abort, unused-load timeout and StrictMode replay cleanup. Non-Suspense. Conditional selections
+are rejected by default (`conditionalDirectives: "legacy"` is migration only); fragment arguments
+are rejected. Node server shells return idle without starting queries; no data streaming or store
+handoff. See [route loading](design.md#route-loading-r18) for lifecycle and migration.
 
 **R19. Several windows.** An application with pop-out windows or several tabs opens one socket and
 store per window. The owner decided to keep that for now; R22 measures the cost, including pop-out tool

@@ -17,6 +17,7 @@ import {
   pageVariables,
   pagedState,
   type Client,
+  type LoadedQuery,
   type FetchPolicy,
   type GraphQLErrorLike,
   type PagedState,
@@ -64,6 +65,9 @@ const IDLE: QueryState<never> = {
 }
 
 export interface QueryOptions {
+  /** Server shells render idle by default; legacy preserves the previous server snapshot during migration. */
+  readonly serverSnapshot?: "idle" | "legacy"
+
   readonly policy?: FetchPolicy
   /** Refetch on this interval while mounted; another value (or none) replaces it. */
   readonly pollMs?: number
@@ -97,10 +101,10 @@ export function useQuery<T = unknown, V extends Variables = Variables>(
     [options.policy, options.pollMs]
   )
   const watched = useMemo(
-    () => (effective === null ? null : client.watchQuery<T, V>(artifact, effective, watchOptions)),
+    () => (effective === null || (typeof window === "undefined" && options.serverSnapshot !== "legacy") ? null : client.watchQuery<T, V>(artifact, effective, watchOptions)),
     // variablesKey stands in for variables: equal variables share one query.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [client, artifact, variablesKey, watchOptions]
+    [client, artifact, variablesKey, watchOptions, options.serverSnapshot]
   )
   useEffect(() => {
     if (!watched) return
@@ -110,7 +114,7 @@ export function useQuery<T = unknown, V extends Variables = Variables>(
   const state = useSyncExternalStore(
     watched?.subscribe ?? noopSubscribe,
     watched?.getState ?? idleState,
-    watched?.getState ?? idleState
+    options.serverSnapshot === "legacy" ? watched?.getState ?? idleState : idleState
   ) as QueryState<T>
   const refetch = useCallback(
     async (next?: Partial<V>) => {
@@ -131,6 +135,14 @@ export function useQuery<T = unknown, V extends Variables = Variables>(
     [client, artifact, watched, variablesKey, baseKey, watchOptions]
   )
   return { ...state, refetch, loadMore: watched?.loadMore ?? resolved }
+}
+
+/** Read a loader handle without another request. Non-Suspense; server shells render idle. */
+export function useLoadedQuery<T>(loaded: LoadedQuery<T>): QueryState<T> {
+  const client = useClient()
+  if (client !== loaded.client) throw new Error("useLoadedQuery: loader belongs to a different identity client")
+  useEffect(() => loaded.mount(), [loaded])
+  return useSyncExternalStore(loaded.subscribe, loaded.getState, idleState) as QueryState<T>
 }
 
 export interface PagedQueryOptions extends QueryOptions {
@@ -250,7 +262,14 @@ function useFragmentSnapshot(fragment: FragmentArtifact<any, any>, ref: unknown)
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
 }
 
-/** A component's own fragment fields, re-rendered only when they change. */
+/**
+ * A component's own fragment fields, re-rendered only when they change. `{ deleted: "null" }` types a deleted or missing
+ * record as null; a live record's data is unchanged.
+ */
+export function useFragment<D = Record<string, unknown>, N extends string = string>(
+  fragment: FragmentArtifact<D, N>, ref: FragmentRefFor<N> | null | undefined,
+  options: { deleted: "null" }
+): D | null
 export function useFragment<D = Record<string, unknown>, N extends string = string>(
   fragment: FragmentArtifact<D, N>,
   ref: FragmentRefFor<N>
@@ -259,7 +278,7 @@ export function useFragment<D = Record<string, unknown>, N extends string = stri
   fragment: FragmentArtifact<D, N>,
   ref: FragmentRefFor<N> | null | undefined
 ): D | null
-export function useFragment(fragment: FragmentArtifact<any, any>, ref: unknown): unknown {
+export function useFragment(fragment: FragmentArtifact<any, any>, ref: unknown, _options?: { deleted: "null" }): unknown {
   const snapshot = useFragmentSnapshot(fragment, ref)
   return snapshot?.data ?? null
 }
