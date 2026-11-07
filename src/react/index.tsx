@@ -333,6 +333,8 @@ export interface MutationState {
 export function useMutation<T = unknown, V extends Variables = Variables>(
   mutation: OperationArtifact<T, V>
 ): MutationState & {
+  /** Explicit retry surface: call again after authentication with fresh variables; nothing is queued. */
+  commitOutcome: (variables: V, options?: MutationOptions) => ReturnType<Client["mutateOutcome"]>
   commit: (variables: V, options?: MutationOptions) => Promise<{ data: T; errors: readonly GraphQLErrorLike[] }>
 } {
   const client = useClient()
@@ -364,7 +366,16 @@ export function useMutation<T = unknown, V extends Variables = Variables>(
     },
     [client, mutation]
   )
-  return { ...state, commit }
+  const commitOutcome = useCallback(async (variables: V, options: MutationOptions = {}) => {
+    pending.current += 1
+    setState(previous => ({ ...previous, inFlight: true }))
+    const result = await client.mutateOutcome(mutation, variables, options)
+    pending.current -= 1
+    if (mounted.current) setState({ inFlight: pending.current > 0,
+      error: result.error instanceof Error ? result.error : result.errors.length ? graphQLError(mutation.name, result.errors) : null })
+    return result
+  }, [client, mutation])
+  return { ...state, commit, commitOutcome }
 }
 
 /** Errors returned with data, as an `OperationError` that keeps each error's `extensions.code`. */

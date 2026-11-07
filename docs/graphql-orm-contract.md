@@ -89,3 +89,15 @@ Keyset refresh follows returned cursors, up to `maxRereadPages` (10), with the s
 state. A repeatable snapshot across pages is not guaranteed by 0.90.1: writes during traversal
 can change ordering. Proposed server support: a snapshot/revision token for consistent multi-page
 reads. Subscribe acknowledgement and key-only delete notification remain server gaps above.
+### Write outcomes (R10)
+
+The client can only prove a write's outcome from what the server says. Today that means:
+
+- `Success: true` on every selected root, with no errors, is `confirmed`.
+- A response with no `data` key is `refused`: per GraphQL over HTTP, execution never started.
+- Anything else stays `unconfirmed`, including `Success: false`, because a generated result can report an error from after a
+  commit.
+
+A dedicated `extensions.outcome: "refused" | "failed"` is a proposed addition. The client already reads it, but no graphql-orm
+version sends it (read from `graphql-orm-v0.93.0`). Until one does, a refused write that executed shows as `unconfirmed`.
+

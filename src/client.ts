@@ -1,4 +1,6 @@
 import { ephemeral, type EphemeralOptions, type EphemeralStream } from "./ephemeral.js"
+import { withoutErrorNulls } from "./partial.js"
+import { wasNotSent, writeStatus, type WriteOutcome } from "./outcome.js"
 import type { ConnectionSpec, FragmentArtifact, FragmentRefFor, LinkSelection, OperationArtifact, PagedSpec, Selection } from "./artifact.js"
 import { fieldStorageKey, stableStringify, type Variables } from "./store/arguments.js"
 import { contextOf, identify, normalize } from "./store/normalize.js"
@@ -47,8 +49,8 @@ export class OperationError extends Error {
 
 /**
  * How a query uses stored data. Apollo's names: `cache-first` is `store-or-network`,
- * `cache-and-network` is `store-and-network`, and `network-only` is the same. Every query result
- * is normalised, so there is no `no-cache` for queries; use `network-only`. A mutation can skip
+ * `cache-and-network` is `store-and-network`, and `network-only` is the same. Query results are normalised unless the document declares `@sensitive`.
+ * There is no call-site `no-cache` policy for queries. A mutation can skip
  * the store with `MutationPolicy` `no-store`.
  */
 export type FetchPolicy =
@@ -86,6 +88,8 @@ export interface QueryState<T> {
 
 export interface ClientOptions {
   readonly network: Network
+  /** Opt-in: error-associated nulls do not erase previous good fields. Default is legacy overwrite. */
+  readonly partialResults?: "legacy" | "preserve-errors"
   readonly store?: StoreOptions
   /** Keep records read through `@live` fragments current with generated Changed subscriptions. */
   readonly live?: LiveOptions
@@ -716,7 +720,11 @@ export class Client {
 
   readonly polling: PollingOptions
 
+  /** How error-associated null writes affect previously cached values. */
+  readonly partialResults: "legacy" | "preserve-errors"
+
   constructor(options: ClientOptions) {
+    this.partialResults = options.partialResults ?? "legacy"
     this.network = options.network
     this.polling = options.polling ?? {}
     this.subscribeTransport = options.live?.subscribe ?? null
@@ -886,6 +894,10 @@ export class Client {
     options: { policy?: FetchPolicy; signal?: AbortSignal } = {}
   ): Promise<{ data: T; errors: readonly GraphQLErrorLike[] }> {
     if (artifact.kind !== "query") throw new Error(`${artifact.name} is not a query`)
+    if (artifact.sensitive) {
+      const { snapshot, errors } = await this.execute(artifact, variables, options)
+      return { data: snapshot.data, errors }
+    }
     const selector = selectorOf(artifact, variables)
     if ((options.policy ?? "store-or-network") === "store-or-network") {
       const stored = this.store.lookup<T>(selector)
@@ -1056,6 +1068,8 @@ export class Client {
        * alive. Mutations only (see `mutate`'s `policy: "no-store"`).
        */
       isolated?: boolean
+      observeResponse?: (response: GraphQLResponse) => void
+      beforeSend?: () => void
     } = {}
   ): Promise<{ snapshot: Snapshot<T>; errors: readonly GraphQLErrorLike[] }> {
     if (this.store.isDisposed) throw new Error("This client was disposed with its identity")
@@ -1083,12 +1097,14 @@ export class Client {
       if (options.refreshConnection && refreshSpec?.offset && refreshSpec.limit && refreshArg?.kind === "variable" && options.refreshConnection.loaded > 0) {
         networkVariables = { ...variables, [refreshArg.variable]: { ...(variables[refreshArg.variable] as object), [refreshSpec.offset]: (variables[refreshArg.variable] as Record<string, unknown> | undefined)?.[refreshSpec.offset] ?? 0, [refreshSpec.limit]: Math.min(options.refreshConnection.loaded, options.refreshConnection.rows) } }
       }
+      options.beforeSend?.()
       const response = await this.network.execute(
         { kind: artifact.kind, name: artifact.name, text: artifact.text, hash: artifact.hash, variables: networkVariables },
         { signal: controller.signal }
       )
       if (this.store.isDisposed || controller.signal.aborted)
         throw new DOMException("The request was cancelled", "AbortError")
+      options.observeResponse?.(response)
       const connectionTailFrom = options.refreshConnection && response.data
         ? await this.readLoadedRange(artifact, variables as Variables, response.data, options.refreshConnection, controller.signal)
         : undefined
@@ -1096,9 +1112,13 @@ export class Client {
       const errors = response.errors ?? []
       options.beforeWrite?.()
       if (!response.data) throw new OperationError(artifact.name, errors)
+      if (artifact.sensitive) return {
+        snapshot: { data: response.data as T, missing: false, seen: new Set(), selector: selectorOf(artifact, variables) },
+        errors,
+      }
       const rootId = artifact.kind === "query" ? ROOT_ID : `client:${artifact.kind}:${++this.mutationCount}`
       const target = options.isolated ? new Store() : this.store
-      normalize(target, artifact.normalization, response.data, { ...contextOf(artifact, variables), connectionTailFrom }, rootId, artifact.rootType)
+      normalize(target, artifact.normalization, this.partialResults === "preserve-errors" ? withoutErrorNulls(response.data, errors) : response.data, { ...contextOf(artifact, variables), connectionTailFrom }, rootId, artifact.rootType)
       target.publish()
       const snapshot = target.lookup<T>(selectorOf(artifact, variables, rootId))
       if (rootId !== ROOT_ID) target.delete(rootId)
@@ -1118,6 +1138,7 @@ export class Client {
     variables: V,
     options: FetchPolicy | WatchOptions = "store-and-network"
   ): WatchedQuery<T> & { open(): void; close(): void } {
+    if (artifact.sensitive) throw new Error(`${artifact.name}: @sensitive queries use client.query; watched results retain values`)
     const { policy = "store-and-network", pollMs } = typeof options === "string" ? { policy: options } : options
     const key = `${queryKey(artifact, variables)}:${policy}`
     let resource = this.resources.get(key) as QueryResource<T> | undefined
@@ -1212,13 +1233,17 @@ export class Client {
       refetchQueries?: readonly (OperationArtifact<any, any> | string)[]
       /** `store` (default) or `no-store`: return the response without writing any of it into the store. */
       policy?: MutationPolicy
+      /** Observe certainty without changing this method's returned/thrown behaviour. */
+      onOutcome?: (outcome: WriteOutcome) => void
+      /** Explicit read for known affected records after an unconfirmed write; never a write replay. */
+      reconcile?: () => Promise<unknown>
     } = {}
   ): Promise<{ data: T; errors: readonly GraphQLErrorLike[] }> {
     if (artifact.kind !== "mutation") throw new Error(`${artifact.name} is not a mutation`)
     // A misspelt policy must not quietly store a secret.
     if (options.policy !== undefined && options.policy !== "store" && options.policy !== "no-store")
       throw new Error(`${artifact.name}: unknown mutation policy ${JSON.stringify(options.policy)}`)
-    const isolated = options.policy === "no-store"
+    const isolated = artifact.sensitive || options.policy === "no-store"
     if (isolated && options.optimisticResponse)
       throw new Error(`${artifact.name}: optimisticResponse can't be combined with policy "no-store"`)
     let layer: OptimisticLayer | null = null
@@ -1234,18 +1259,54 @@ export class Client {
       layer = null
     }
     let result: { data: T; errors: readonly GraphQLErrorLike[] }
+    let sent = false
+    let response: GraphQLResponse | undefined
+    let failure: unknown
     try {
       const { snapshot, errors } = await this.execute<T>(artifact, variables, {
+        observeResponse: value => { response = value },
+        beforeSend: () => { sent = true },
         beforeWrite: rollback,
         ...(isolated ? { isolated } : {}),
         ...(options.signal ? { signal: options.signal } : {}),
       })
       result = { data: snapshot.data, errors }
+    } catch (error) {
+      failure = error
+      throw error
     } finally {
       rollback()
+      const status = response ? writeStatus(response)
+        : wasNotSent(failure) || !sent ? "failed" : "unconfirmed"
+      let reconciliation: WriteOutcome["reconciliation"] = status === "unconfirmed" ? "unavailable" : "not-needed"
+      if (status === "unconfirmed" && options.reconcile && !this.store.isDisposed) {
+        try { await options.reconcile(); reconciliation = "reread" }
+        catch { reconciliation = "failed" }
+      }
+      options.onOutcome?.({ status, reconciliation })
     }
     if (options.refetchQueries?.length) await this.refetchQueries(options.refetchQueries)
     return result
+  }
+
+  /**
+   * Opt into explicit write certainty. Never retries; call again with fresh variables after
+   * authentication. Supply a reconciliation read for known records, such as refetchFragment.
+   */
+  async mutateOutcome<T, V extends Variables>(
+    artifact: OperationArtifact<T, V>, variables: V,
+    options: NonNullable<Parameters<Client["mutate"]>[2]> = {}
+  ): Promise<{ data?: T; errors: readonly GraphQLErrorLike[]; error?: unknown; outcome: WriteOutcome }> {
+    let outcome: WriteOutcome = { status: "failed", reconciliation: "not-needed" }
+    try {
+      const result = await this.mutate(artifact, variables, { ...options, onOutcome: value => {
+        outcome = value
+        options.onOutcome?.(value)
+      } })
+      return { ...result, outcome }
+    } catch (error) {
+      return { error, errors: error instanceof OperationError ? error.errors : [], outcome }
+    }
   }
 
   /**

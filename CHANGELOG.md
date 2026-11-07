@@ -10,6 +10,11 @@
   confirming reads narrow the subscribe gap without eliminating it.
 - Regenerated `@connection` queries refresh the loaded range and serialize load-more with refresh.
   Bounded refresh retains the tail and reports `listRefreshTruncated` and degraded health.
+- R12: add `errorsAtPath` and opt-in `partialResults: "preserve-errors"`. Migration: enable the setting and render path errors alongside retained (potentially stale) values. Legacy null overwrite remains the default.
+
+- R10: additive write outcome API and explicit retry hook method; no automatic replay. Opt into independent HTTP `writes` and `reads` limits; omitted limits preserve existing behaviour. Supply a reconciliation read for known affected records.
+
+- R9: query and mutation `@sensitive` returns plain expanded data without storing it. Live combinations and watched sensitive queries reject. Existing `no-store` behaviour is unchanged.
 - Add R11 ephemeral streams: `client.stream` and React `useEphemeralStream`, with explicit
   sequence/resume contracts, bounded volatile buffers, coalesced notifications, reconnect replay
   and visible gaps/evictions. Additive; no migration. Existing plain subscriptions are unchanged.

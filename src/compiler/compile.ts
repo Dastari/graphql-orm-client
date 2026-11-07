@@ -83,6 +83,7 @@ export class CompileError extends Error {
 
 const CLIENT_DIRECTIVES = parse(`
   directive @live on FRAGMENT_DEFINITION
+  directive @sensitive on QUERY | MUTATION
   directive @connection(key: String!, paging: [String!]) on FIELD
   directive @refetchable(queryName: String) on FRAGMENT_DEFINITION
   directive @paged(paging: String) on FIELD
@@ -100,7 +101,7 @@ function clientSchemaOf(schema: GraphQLSchema): GraphQLSchema {
   return extended
 }
 
-const CLIENT_DIRECTIVE_NAMES = new Set(["live", "connection", "refetchable", "paged"])
+const CLIENT_DIRECTIVE_NAMES = new Set(["live", "connection", "refetchable", "paged", "sensitive"])
 
 /** graphql-orm's connection and keyset field names. */
 const DEFAULT_CONNECTION = {
@@ -282,6 +283,9 @@ function compileDocuments(
       selectionSet: augmentSelectionSet(schema, node.selectionSet, rootType, options, false),
     }
     const used = usedFragments(augmented.selectionSet, fragmentNodes)
+    const sensitive = node.directives?.some(d => d.name.value === "sensitive") === true
+    if (sensitive && [...used].some(name => fragments[name]?.live))
+      throw new CompileError([`${name}: @sensitive cannot spread a @live fragment`])
     const text = [augmented, ...[...used].sort().map((fragment) => augmentedFragments.get(fragment)!)]
       .map((definition) => print(stripClientDirectives(definition)))
       .join("\n\n")
@@ -291,13 +295,14 @@ function compileDocuments(
     operations[name] = {
       kind: node.operation,
       lists: listTypes(schema, normalization, rootType, options),
+      ...(sensitive ? { sensitive: true } : {}),
       keys: pick(metadata.keys, reachable),
       versions: pick(metadata.versions, reachable),
       name,
       text,
       hash: createHash("sha256").update(text).digest("hex"),
       rootType: rootType.name,
-      selections: convert(schema, augmented.selectionSet, rootType, fragmentNodes, false, options),
+      selections: convert(schema, augmented.selectionSet, rootType, sensitive ? augmentedFragments : fragmentNodes, sensitive, options),
       normalization,
       fragments: Object.fromEntries([...used].sort().map((fragment) => [fragment, fragments[fragment]!])),
       ...(paged ? { paged } : {}),
