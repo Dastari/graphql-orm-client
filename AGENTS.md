@@ -53,6 +53,15 @@ changes need tests for ordering, version conflicts, identity disposal, garbage c
 reconnect replay. Do not commit node_modules, build output, test output, credentials or
 .handoff notes.
 
+## Releases
+
+Consumers pin exact versions, so while the package is pre-1.0 a release can change behaviour, but only like this:
+
+- Every breaking change has migration steps in `CHANGELOG.md`, and a generator error or warning where one is possible.
+- A behaviour change that alters what a working application does has a setting that restores it.
+- Anything not yet released can still move, for example to its own entry point, with no migration.
+- `test/release.test.ts` checks the version, changelog and shipped skills agree. CI, a clean-clone install and the changelog's steps come before publishing.
+
 ## Conformance
 
 From a source checkout, `pnpm conformance` runs the built client against the SQLite service and real router

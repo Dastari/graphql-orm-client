@@ -1,22 +1,49 @@
 ---
 name: graphql-orm-client-data
-description: Keep regenerated lists and counts current with list streams and bounded loaded-page refresh; use full/thin stream projections and bounded holder re-reads (minRereadMs); Write components with graphql-orm-client fragments and route roots, page through tables by number (@paged, usePagedQuery), load more (@connection), refetch, run mutations (including one-time secrets with `no-store`) and plain subscriptions, and port Apollo queries without request waterfalls or over-fetching, and test components against a mock network, scripted streams and a controllable clock (graphql-orm-client/test); declare sensitive operations (@sensitive), get honest write outcomes (mutateOutcome) and show partial results per path (errorsAtPath); read everything up to a limit (readAll), keep aliased counts and aggregates current, and handle deleted records; start a route's read before mount (loadQuery); honour declared lifetime fields and persist data per identity.
+description: Write components and data flows with graphql-orm-client. Use whenever a component shows or changes server data: fragments and route roots (loadQuery), pagination (@paged, @connection), mutations and write outcomes, secrets (@sensitive), batched relations (@batch), readAll, deleted rows, persistence, porting from Apollo, and testing with graphql-orm-client/test.
 ---
 
 # Fragments, roots, pagination and mutations
 
 Status: early alpha. Check the installed `docs/design.md` for the current API.
 
-Composite keys are inferred from `<Type>KeyInput`, and need no `keys` setting. Queries
-can include relation/computed fields in `@live` fragments: omitted stream fields refresh through
-bounded holder re-reads. `liveSelection: "as-written"` preserves legacy stream text.
+## The default path
+
+1. Give each component that shows server data its own fragment, in the same file. Mark it `@live` if the record can change while it's on
+   screen (see the live skill).
+2. Spread that fragment up to one query owned by the route. Start it in the route loader.
+3. Run `graphql-orm-client generate`. Import `graphql` from the generated module, so a wrong field fails the build.
+4. Change data with `useMutation`. Spread the affected fragments into the mutation so the response updates the store.
+
+```tsx
+import type { FragmentRefs, LoadedQuery } from "graphql-orm-client"
+import { useFragment, useLoadedQuery } from "graphql-orm-client/react"
+import { graphql, type TicketsPageQuery } from "./graphql/generated"
+
+const TicketRow = graphql(`fragment TicketRow on Ticket @live { Title State }`)
+function Row({ ticket }: { ticket: FragmentRefs<"TicketRow"> }) {
+  const { Title, State } = useFragment(TicketRow, ticket)
+  return <li>{Title}: {State}</li>
+}
+
+const TicketsPage = graphql(`
+  query TicketsPage($Where: TicketWhereInput) {
+    Tickets(Where: $Where) { Edges { Node { Id ...TicketRow } } }
+  }
+`)
+// In the route's loader: return client.loadQuery(TicketsPage, { Where: where }, { signal })
+function Page({ loaded }: { loaded: LoadedQuery<TicketsPageQuery> }) {
+  const { data } = useLoadedQuery(loaded)
+  return <ul>{data?.Tickets.Edges.map(({ Node }) => <Row key={Node.Id} ticket={Node} />)}</ul>
+}
+```
 
 ## Components declare their own data
 
 - Give every component that renders server data its own fragment, in the same file, on the
   type it renders. Name it after the component (`WidgetRow` → `fragment WidgetRow on Widget`).
 - Read it with `useFragment(Fragment, ref)`. The component receives a fragment reference,
-  never a raw result object.
+  never a raw result object. Type the prop `FragmentRefs<"WidgetRow">`, from `graphql-orm-client`.
 - Select only the fields the component renders. To render a child component, spread the
   child's fragment (`...WidgetHealth`) and pass the reference down. Do not select the child's
   fields in the parent.
@@ -137,25 +164,7 @@ expect(client.live.status().Ticket.subscriptions).toBe(1)
 - `clock.advance(ms)` fires timers without letting promises settle; use `clock.tick(ms)` when a request is
   involved.
 
-## Regenerated lists
-
-Regenerate to emit operation `lists`: root and nested lists and count-only connections use one
-un-narrowed stream per type, opened before the read even when empty. Every event re-reads lists
-through `live.minRereadMs`; unheld rows are not stored. Server cost: one row-policy check per event
-per subscriber. `live.listStreams: false` makes lists poll; required-key schemas also poll. Old
-artifacts retain keyed behavior. Health names the operation for disabled/required-key list streams;
-a quiet list is unconfirmed, never live. Confirming reads after settleMs narrow, but cannot close,
-the subscribe gap without a server acknowledgement.
-
-`@paged` keeps the shown page. `@connection` refreshes the loaded range: offset in one request up
-to `live.maxRereadRows` (100, match the service maximum); keyset through returned cursors up to
-`live.maxRereadPages` (10). Load-more serializes with refresh. Beyond the bound, a retained tail
-may be stale: draw `QueryState.listRefreshTruncated` and health `list-refresh-truncated` honestly.
-No server snapshot across keyset pages is promised. Without a delete preimage grant, the server
-sends no DELETED event; only the next event or poll repairs the list. Do not promise immediate
-delete visibility when polling is disabled. See docs/design.md, List streams (R3), for validation.
-
-### Secrets, write outcomes and partial results
+## Secrets, write outcomes and partial results
 
 - Put `@sensitive` on a query or mutation whose result must stay out of the store: tokens, one-time secrets. Results are plain
   values with fragments expanded, not fragment references. Use `client.query` for a sensitive query: watching one is an error,
@@ -181,19 +190,19 @@ A query passed `pollMs` declares why: `query Name @poll(reason: "...") { ... }`.
   reading fields. `store: { deletedRecords: "omit" }` drops missing rows from lists while the query re-reads. Both are opt-in.
 
 
-### Lifetime
+## Lifetime
 
 Declare generator `lifetimes` only when the service guarantees the field's meaning and format.
 Regenerate to adopt. Handle `QueryState.lifetime` (`expired` or `unknown`); unknown time values
-are not proved valid. See [lifetime](../../docs/design.md#lifetime-r17) for formats and diagnostics.
+are not proved valid. Formats and diagnostics are in the installed design.
 
-### Persistence
+## Persistence
 
 Use `persistClient` from `graphql-orm-client/persistence` only with an explicit identity key, generated
 `schemaHash` (enable generator `persistence: true`) and a deployment revision in `serverRelease`. Await `ready` before starting reads; show
 `QueryState.stale` until a network write confirms restored data. Dispose the client before an identity
 change. Sensitive operations and no-store mutation results are excluded automatically.
-See [persistence](../../docs/design.md#persistence-r17) for adapter, budget and failure semantics.
+Adapter, budget and failure behaviour are in the installed design. Disposing a client deletes its saved data, so dispose on an identity change, not on window close.
 
 ## Batched relation names
 
@@ -204,4 +213,4 @@ queries and regenerate. With no `document`, as when rendering on a server, nothi
 `pending`. Supply the schema's actual mapping and list root. Keep the limit
 within the service's page maximum (default 100). Render `pending`, `missing`, `error` and
 `ready` separately. In `ready`, pass `.data` to the related fragment reader. Mark related
-fragments `@live` when live delivery is wanted. See the installed design's R13 section.
+fragments `@live` when live delivery is wanted. See the installed design's section on batched relation reads.

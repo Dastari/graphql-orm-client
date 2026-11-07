@@ -1,53 +1,17 @@
 # graphql-orm-client
 
-A GraphQL client for APIs served by [graphql-orm](https://github.com/Dastari/graphql-orm) and
-its federation router. Each component declares the fields it needs as a fragment. A build
-step combines those fragments into one query per route, and a normalised store keeps each
-record once. Generated `Changed` subscriptions update the store while the records are on
-screen.
+A GraphQL client for APIs served by [graphql-orm](https://github.com/Dastari/graphql-orm) and its federation router. Each component declares the fields it
+needs as a fragment, a build step combines those into one query per route, a normalised store keeps each record once, and generated `Changed` subscriptions
+keep the data current while it's on screen. If that can't happen, the build fails or the running application can say so.
 
-> **Status: early alpha.** The compiler, the normalised store, the React bindings and the live
-> layer, cursor and offset pagination, page-number navigation, optimistic mutations, polling, plain
-> subscriptions and the generator with TypeScript types all work and are tested. Real applications
-> use it, and APIs may still change. Live updates default to explicit per-fragment opt-in (`@live`) and have known
-> limits: see [the requirements](docs/requirements.md).
+> **Status: early alpha.** Real applications use it, and APIs may still change. Pin an exact version and read the [changelog](CHANGELOG.md)'s migration
+> steps when you move. Known limits are in [the requirements](docs/requirements.md).
 
-## Why not Apollo or Relay
+## The default path
 
-- **Apollo** guesses identity and pagination per type (`dataIdFromObject`, `typePolicies`),
-  treats subscriptions as separate operations, and lets any component read any cached field.
-- **Relay** has the right model: colocated fragments, compiled root queries, data masking and
-  a normalised store. But it expects its own schema conventions (`id`, `edges`, `node`,
-  `pageInfo`) and has no notion of graphql-orm's change events, keyset lists or `Where`
-  filters.
+Install a [release archive](https://github.com/Dastari/graphql-orm-client/releases), pinned to one version, with `graphql` and, for live updates, `graphql-ws`.
 
-graphql-orm generates the schema, so the client can rely on server guarantees instead of
-configuration: stable keys, uniform connections, typed change events and an operation
-catalogue. This client is built on those guarantees.
-
-## How it works
-
-| Stage | What happens |
-| --- | --- |
-| Component | Declares a fragment on the type it renders and reads it with `useFragment`. It only sees the fields it asked for (data masking). |
-| Route root | Owns one query that spreads its children's fragments. A browser route loader starts it with `client.loadQuery`; `useLoadedQuery` consumes the same read. |
-| Compiler | `graphql-orm-client generate` turns every root into a flattened query, a sha256 hash of its text, a normalisation map, per-fragment readers and, for fragments marked `@live`, a subscription document. |
-| Store | Keeps records by `NodeId` (type name plus complete key), orders writes by record version and retains by reference count. |
-| Live layer | Subscribes to the generated `Changed` events for the records held through `@live` fragments and writes each event's entity into the store. Polling is a fallback for records no subscription covers. |
-
-Read [the design](docs/design.md) for the full model and [the graphql-orm
-contract](docs/graphql-orm-contract.md) for what the server must provide.
-
-Browser route loaders return `client.loadQuery(Query, variables, { signal })`; components read the
-handle with `useLoadedQuery` from the React subpath. Dispose abandoned navigations. Unmounted
-loads expire after 30 seconds. See [route loading and server shells](docs/design.md#route-loading-r18).
-
-## Generate
-
-Write documents with `graphql(...)` in your source files, one operation or fragment per call,
-then generate a typed module:
-
-`graphql-orm-client.config.json`:
+**1. Point it at your router.** `graphql-orm-client.config.json`:
 
 ```json
 {
@@ -60,23 +24,11 @@ then generate a typed module:
 
 ```sh
 pnpm exec graphql-orm-client schema pull --url https://router.example/graphql --token-env TOKEN
-pnpm exec graphql-orm-client schema pull --url https://router.example/graphql --token-env TOKEN --check
-pnpm exec graphql-orm-client generate          # write the module
-pnpm exec graphql-orm-client generate --check  # fail when it is out of date (CI)
+pnpm exec graphql-orm-client generate          # after any document or schema change
+pnpm exec graphql-orm-client generate --check  # in CI: fail when it's out of date
 ```
 
-Import `graphql` from the generated module. Each call returns a typed artifact:
-
-- for an operation, typed data and variables;
-- for a fragment, the fragment's own data.
-
-A query's data shows child fragments as references. `readFragment`, `useFragment` and
-`useFragmentList` open those references, and only for the fragment that produced them. The
-module also exports `live`, to pass to `createClient({ live: { artifacts: live, subscribe } })`,
-and `liveUnavailable`, which lists the types that have no usable `Changed` subscription.
-
-Connect the client to the router with the built-in transport. Pass `live` only when the
-router serves subscriptions:
+**2. Create one client per signed-in identity.** Dispose it when the identity changes.
 
 ```ts
 import { createClient as createWsClient } from "graphql-ws"
@@ -84,83 +36,49 @@ import { createClient, createHttpNetwork, graphqlWsTransport } from "graphql-orm
 import { live } from "./graphql/generated"
 
 const ws = createWsClient({ url: "wss://graph.example.com/graphql" })
-const client = createClient({
+export const client = createClient({
   network: createHttpNetwork({ url: "/api/graphql" }),
   live: { artifacts: live, ...graphqlWsTransport(ws) },
 })
 ```
 
-Generated streams omit relations, argument scalars and `NodeId`. Unsupported scalars trigger a
-keys-only fallback; events re-read holders to refresh omitted fields, including changed relation links.
-Automatic re-reads are limited per query by `live.minRereadMs` (default 2000). Generator setting
-`liveSelection: "as-written"` preserves legacy selections; old generated modules keep working.
+**3. Give each component its own fragment.** Mark it `@live` if the record can change while it's on screen. That's all it takes for its fields, and for lists and
+counts of that type, to stay current.
 
-Regenerated lists, including empty lists and counts, open one un-narrowed stream per type before
-the first read and re-read on events. `live.listStreams: false` makes lists poll; old artifacts keep
-keyed behavior until regenerated. Loaded pages refresh within documented bounds;
-`QueryState.listRefreshTruncated` reports a retained stale tail.
+```tsx
+import type { FragmentRefs, LoadedQuery } from "graphql-orm-client"
+import { useFragment, useLoadedQuery } from "graphql-orm-client/react"
+import { graphql, type TicketsPageQuery } from "./graphql/generated"
 
-Live queries read once more after their records gain a stream (default `live.settleMs: 250`).
-This adds a request on first load and narrows the read/subscribe gap; without a server subscribe
-acknowledgement it cannot eliminate it. `live: { settleMs: false }` restores the previous request cost.
+const TicketRow = graphql(`fragment TicketRow on Ticket @live { Title State }`)
+function Row({ ticket }: { ticket: FragmentRefs<"TicketRow"> }) {
+  const { Title, State } = useFragment(TicketRow, ticket)
+  return <li>{Title}: {State}</li>
+}
+```
 
-Burst repair reads are on by default after 32 events; `live: { burstRead: false }` disables them.
-See [scheduling and read cost](docs/design.md#burst-repair-reads).
-
-`client.liveHealth()` and `useLiveHealth()` say what keeps the data fresh per type and for the socket, so
-a page can draw "live updates unavailable". A stream with no event yet is `unconfirmed`, not `live`.
-
-`createHttpNetwork` takes `headers` (an object or a function called per request), `fetch` and
-`credentials`. A response with GraphQL errors is returned whatever its HTTP status; one without
-a GraphQL body throws `HttpError`. Commit mutations with `client.mutate`, or `useMutation` in
-React; declare `@sensitive` on a mutation or imperative query for plain results that never enter a store.
-The older mutation option `{ policy: "no-store" }` also isolates results, retaining private fragment reads.
-
-A table that pages by number marks its list `@paged` and passes graphql-orm's `PageInput` as a
-variable. `usePagedQuery` sets its `Limit` and `Offset` from a zero-based page index and size,
-keeps the previous page on screen while the next one loads, and reports `totalCount` and
-`pageCount`:
+**4. Own the request at the route.** One query spreads its children's fragments, and the route's loader starts it before mount.
 
 ```tsx
 const TicketsPage = graphql(`
-  query TicketsPage($Where: TicketWhereInput, $Page: PageInput) {
-    Tickets(Where: $Where, Page: $Page, OrderBy: [{ Opened: DESC }, { Id: ASC }]) @paged {
-      Edges { Node { ...TicketRow } }
-    }
+  query TicketsPage($Where: TicketWhereInput) {
+    Tickets(Where: $Where) { Edges { Node { Id ...TicketRow } } }
   }
 `)
-
-const page = usePagedQuery(TicketsPage, { Where: where }, { pageIndex, pageSize: 25 })
-// page.data (the page, or the previous one while `page.placeholder`), page.totalCount, page.pageCount
+// In the loader: return client.loadQuery(TicketsPage, { Where: where }, { signal })
+function Page({ loaded }: { loaded: LoadedQuery<TicketsPageQuery> }) {
+  const { data } = useLoadedQuery(loaded)
+  return <ul>{data?.Tickets.Edges.map(({ Node }) => <Row key={Node.Id} ticket={Node} />)}</ul>
+}
 ```
 
-An application coming from Apollo will find `skip`, `refetch(variables)`, fetch policies, `pollMs`,
-abort signals, `client.query`, `client.subscribe`, `useSubscription` and `refetchQueries`; the
-[design](docs/design.md#coming-from-apollo) maps each Apollo option.
+**5. Say when data can't stay current.** `useLiveHealth()` says, per type, whether a stream is keeping it fresh, so a page can draw "live updates unavailable".
 
-For progress, AI text deltas, terminal output and search results, use `createStream` from `graphql-orm-client/streams` and React's
-`useEphemeralStream`. A required buffer limit bounds memory; sequence and resume declarations enable
-de-duplication and reconnect replay when the service supports it. Gaps, evictions and unprovable
-continuity are explicit. These values never enter the store. See [ephemeral streams](docs/design.md#ephemeral-streams-r11).
+**6. Check it against the real router before a deploy.** What a router admits for an identity can't be known at build time.
 
-A fragment marked `@refetchable` can read its record again on its own, through the router's
-`node(NodeId)` lookup: `useRefetchableFragment(Fragment, ref)` or
-`client.refetchFragment(Fragment, ref)`. Its type must implement `Node`.
-
-The schema may be router or subgraph SDL; federation directives are accepted.
-
-`graphql-orm-client doctor --url <router> --token-env TOKEN` checks every document against the schema the router
-serves, and opens each live stream briefly to see whether it's admitted for that identity. What a router admits
-can't be known at build time. It runs introspection and subscriptions only. Use it in a deploy check.
-
-`graphql-orm-client/test` has a mock network keyed by operation name, scripted streams with the router's
-real frames (refusal, lost events, schema reload, socket failure) and a clock the test drives, so an
-application can test its own freshness with no server. See the
-[data skill](skills/graphql-orm-client-data/SKILL.md#testing).
-
-Opt-in lifetime policies and identity-scoped persistence are documented in the
-[design](docs/design.md#lifetime-r17). Persistence uses the separate `graphql-orm-client/persistence`
-entry point and requires an explicit identity key, schema hash and server release identifier.
+```sh
+pnpm exec graphql-orm-client doctor --url https://router.example/graphql --token-env TOKEN
+```
 
 ## For agents
 
@@ -180,14 +98,51 @@ pnpm exec graphql-orm-client skills install --target claude   # or agents / code
 | `graphql-orm-client-streams` | Ephemeral progress, AI text deltas, terminal output and search results |
 | `graphql-orm-client-server` | What a graphql-orm service must declare so the client works (for backend agents) |
 
+## How it works
+
+| Stage | What happens |
+| --- | --- |
+| Component | Declares a fragment on the type it renders and reads it with `useFragment`. It only sees the fields it asked for (data masking). |
+| Route root | Owns one query that spreads its children's fragments. A browser route loader starts it with `client.loadQuery`; `useLoadedQuery` consumes the same read. |
+| Compiler | `graphql-orm-client generate` turns every root into a flattened query, a sha256 hash of its text, a normalisation map, per-fragment readers and, for fragments marked `@live`, a subscription document. |
+| Store | Keeps records by `NodeId` (type name plus complete key), orders writes by record version and retains by reference count. |
+| Live layer | Subscribes to the generated `Changed` events for the records held through `@live` fragments and writes each event's entity into the store. Polling is a fallback for records no subscription covers. |
+
+Read [the design](docs/design.md) for the full model and [the graphql-orm
+contract](docs/graphql-orm-contract.md) for what the server must provide.
+
+## Why not Apollo or Relay
+
+- **Apollo** guesses identity and pagination per type (`dataIdFromObject`, `typePolicies`),
+  treats subscriptions as separate operations, and lets any component read any cached field.
+- **Relay** has the right model: colocated fragments, compiled root queries, data masking and
+  a normalised store. But it expects its own schema conventions (`id`, `edges`, `node`,
+  `pageInfo`) and has no notion of graphql-orm's change events, keyset lists or `Where`
+  filters.
+
+graphql-orm generates the schema, so the client can rely on server guarantees instead of
+configuration: stable keys, uniform connections, typed change events and an operation
+catalogue. This client is built on those guarantees.
+
+## What else is here
+
+| Need | Use | Entry |
+| --- | --- | --- |
+| A table with page numbers | `@paged`, `usePagedQuery` | `/react` |
+| Infinite scroll | `@connection`, `loadMore` | `/react` |
+| Changing data | `useMutation`, `client.mutate`; `mutateOutcome` when the UI must say whether a write happened | `/react`, main |
+| A secret that must stay out of the store | `@sensitive` | main |
+| One refused alias beside the rest of a response | `errorsAtPath`, `partialResults: "preserve-errors"` | main |
+| A related name on every row, read in one request | `@batch`, `installRelationBatching` | `/relations` |
+| Every row up to a stated limit | `readAll` | `/read-all` |
+| Progress, AI text deltas, terminal output, search results | `createStream`, `useEphemeralStream` | `/streams`, `/react` |
+| Offline start, and lifetime fields | `persistClient`, generator `lifetimes` | `/persistence` |
+| One record's refresh | `@refetchable`, `useRefetchableFragment` | `/react` |
+| Testing freshness with no server | `createMockNetwork`, `createMockStreams`, `createTestClock` | `/test` |
+| Coming from Apollo | [the option map](docs/design.md#coming-from-apollo) | |
+
+Build settings (`strict`, `queryOwners`, `live`) and runtime settings are in the [live skill](skills/graphql-orm-client-live/SKILL.md) and the [design](docs/design.md).
+
 ## Licence
 
 MIT
-
-Generation enforces explicit live stream availability and declared polling reasons. Optional
-`queryOwners` and `subscriptionPaths` globs enforce project ownership. See the
-[policy settings and migration controls](docs/design.md#project-build-policies-r5).
-
-The generator keeps `live: "explicit"` by default. `"default"` or
-`{ "default": ["src/area/**"] }` is opt-in, not recommended by default.
-Use `@live(enabled: false)` to opt out; see [live settings](docs/design.md#live-generation-setting-r1).
