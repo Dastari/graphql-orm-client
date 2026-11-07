@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `generate` warns when a fragment on a keyed type with a `Changed` stream isn't live, because it won't update on screen and nothing says so at run time. It's one line naming the fragments, and it changes no output. Mark them `@live`, or `@live(enabled: false)` if that's meant. `strict: { fragmentNotLive: "off" }` silences it, and `"error"` fails the build.
 - R18: add cancellable `client.loadQuery` handles and non-Suspense `useLoadedQuery`, sharing a read
   across loader, mount and StrictMode replay. Migration is opt-in: replace `preload`/`useQuery` as a
   pair, forward the router abort signal and dispose abandoned navigation. Unmounted loads expire

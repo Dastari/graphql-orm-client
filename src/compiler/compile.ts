@@ -45,7 +45,13 @@ export interface CompileOptions {
   /** Live fragments remain explicit by default. Default mode is opt-in, optionally by source path. */
   readonly live?: "explicit" | "default" | { readonly default: readonly string[] }
   /** Policy severities; each rule defaults to error. */
-  readonly strict?: Partial<Record<"liveWithoutStream" | "pollWithoutReason" | "rawSubscriptions" | "queryOwnership", StrictLevel>>
+  readonly strict?: Partial<Record<"liveWithoutStream" | "pollWithoutReason" | "rawSubscriptions" | "queryOwnership", StrictLevel>> & {
+    /**
+     * A fragment on a keyed type with a `Changed` stream that isn't live, and so won't update on screen. Default `warn`: it's easy to miss, and
+     * nothing says so at run time. `@live(enabled: false)` on a fragment says it's meant.
+     */
+    readonly fragmentNotLive?: StrictLevel
+  }
   /** Query document owners, relative to the config directory; absent disables ownership checks. */
   readonly queryOwners?: readonly string[]
   /** Paths allowed to declare raw subscriptions; absent disables this check. */
@@ -396,6 +402,21 @@ function compileDocuments(
   for (const [name, node] of fragmentNodes) {
     if (fragments[name]?.live && node.directives?.some((d) => d.name.value === "live") && liveUnavailable.includes(fragments[name]!.typeCondition) && !pollReason(node)) {
       report("liveWithoutStream", node, `${fragments[name]!.typeCondition} has no usable Changed stream; use @live(enabled: false) or add @poll(reason: "why polling is needed")`)
+    }
+  }
+  if (!nested) {
+    const notLive = [...fragmentNodes].filter(([name, node]) => {
+      const fragment = fragments[name]
+      if (!fragment || fragment.live || node.directives?.some((directive) => directive.name.value === "live")) return false
+      const type = schema.getType(fragment.typeCondition)
+      if (!type || !isObjectType(type) || !keyFieldsOf(schema, type.name, options)) return false
+      return !!schema.getSubscriptionType()?.getFields()[options.liveField?.(type.name) ?? `${type.name}Changed`]
+    }).map(([name]) => name)
+    const level = options.strict?.fragmentNotLive ?? "warn"
+    if (notLive.length && level !== "off") {
+      const message = `${notLive.length === 1 ? "Fragment" : "Fragments"} ${notLive.sort().join(", ")} won't update on screen: the type has a Changed stream, but the fragment isn't live. Mark it @live, or @live(enabled: false) if that's meant. [strict.fragmentNotLive]`
+      if (level === "error") policyProblems.push(message)
+      else (options.onWarning ?? console.warn)(message)
     }
   }
   if (!nested) for (const typename of liveUnavailable) {

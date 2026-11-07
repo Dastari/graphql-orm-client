@@ -12,7 +12,8 @@ Status: early alpha. Check the installed `docs/design.md` for the current API.
 1. Give each component that shows server data its own fragment, in the same file. Mark it `@live` if the record can change while it's on
    screen (see the live skill).
 2. Spread that fragment up to one query owned by the route. Start it in the route loader.
-3. Run `graphql-orm-client generate`. Import `graphql` from the generated module, so a wrong field fails the build.
+3. Run `graphql-orm-client generate`. Import `graphql` from the generated module, so a wrong field fails the build. Read its warnings: one
+   saying a fragment won't update on screen means it should be `@live`.
 4. Change data with `useMutation`. Spread the affected fragments into the mutation so the response updates the store.
 
 ```tsx

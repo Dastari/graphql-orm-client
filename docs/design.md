@@ -495,7 +495,7 @@ same arguments as `client.mutate` and rejects when the mutation fails.
 
 ```ts
 await client.mutate(RenameWidgetMutation, { Id: id, Name: name }, {
-  optimisticResponse: { UpdateWidget: { __typename: "WidgetResult", Success: true, Entity: { __typename: "Widget", Id: id, Name: name } } },
+  optimisticResponse: { UpdateWidget: { __typename: "WidgetResult", Success: true, Widget: { __typename: "Widget", Id: id, Name: name } } },
 })
 ```
 
@@ -1032,6 +1032,8 @@ the package default changes. It makes object fragments live without a directive.
 source files, relative to the config directory. It matches the fragment's file, not a spreading query's.
 Plain-string `compile(schema, sources)` keeps its explicit behaviour; pass `documentPaths` when
 using area mode programmatically. Unknown files do not match area globs.
+
+Under `explicit`, a fragment on a keyed type with a `Changed` stream that isn't marked at all gets a generator warning, `strict.fragmentNotLive` (`"warn"` by default; `"error"` or `"off"`). An acceptance test found the reason: an agent given only the package and an ordinary feature request wrote a clean page with no `@live`, and against a real router a row created or renamed elsewhere never appeared, with health reading `idle`. `@live(enabled: false)` says it's meant and silences it.
 
 `@live(enabled: false)` opts a fragment out in every mode; `@live` and `@live(enabled: true)` opt in.
 An implicit live fragment with no usable stream warns, appears in `liveUnavailable`, and uses the

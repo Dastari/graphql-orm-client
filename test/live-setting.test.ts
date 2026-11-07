@@ -34,6 +34,24 @@ describe('live generation settings', () => {
     expect(result.liveUnavailable).toEqual([])
   })
 
+  it('warns once about fragments that could be live and are not, at the level the project set', () => {
+    const live = buildSchema(`type Query { Widget: Widget Note: Note Spec: Spec } type Subscription { WidgetChanged(Key: ID): WidgetEvent! } type WidgetEvent { Action: String! Widget: Widget } type Widget { Id: ID! Name: String! } type Note { Id: ID! Body: String } type Spec { Model: String }`)
+    const sources = ['fragment Quiet on Widget { Name }', 'fragment Loud on Widget @live { Name }', 'fragment Meant on Widget @live(enabled: false) { Name }', 'fragment NoStream on Note { Body }', 'fragment Keyless on Spec { Model }']
+    const warnings: string[] = []
+    compile(live, sources, { onWarning: (message) => warnings.push(message) })
+    const notLive = warnings.filter((message) => message.includes('strict.fragmentNotLive'))
+    expect(notLive).toHaveLength(1)
+    expect(notLive[0]).toContain('Fragment Quiet ')
+    expect(notLive[0]).not.toMatch(/Loud|Meant|NoStream|Keyless/)
+    const off: string[] = []
+    compile(live, sources, { strict: { fragmentNotLive: 'off' }, onWarning: (message) => off.push(message) })
+    expect(off.filter((message) => message.includes('strict.fragmentNotLive'))).toEqual([])
+    expect(() => compile(live, sources, { strict: { fragmentNotLive: 'error' }, onWarning: () => {} })).toThrow(/Quiet/)
+    const defaulted: string[] = []
+    compile(live, sources, { live: 'default', onWarning: (message) => defaulted.push(message) })
+    expect(defaulted.filter((message) => message.includes('strict.fragmentNotLive'))).toEqual([])
+  })
+
   it('reports implicit streamless fragments but errors on explicit intent', () => {
     const warning = vi.fn()
     const note = 'fragment NoteBody on Note { Body }'
