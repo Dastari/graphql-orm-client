@@ -58,7 +58,10 @@ it("times out an unused load and rejects sensitive reads", async () => {
   const client = createClient({ network })
   const loaded = client.loadQuery(ops.CatalogPage, {}, { timeoutMs: 10 })
   await loaded.ready; await vi.advanceTimersByTimeAsync(10)
-  expect(vi.getTimerCount()).toBe(0)
+  // Expired, so it no longer holds its read: a later mount opens it again rather than failing.
+  const unmount = loaded.mount()
+  expect(loaded.getState().status).toBe("ready")
+  unmount()
   expect(() => client.loadQuery({ ...ops.CatalogPage, sensitive: true }, {})).toThrow(/@sensitive.*client.query/)
   client.dispose()
 })
