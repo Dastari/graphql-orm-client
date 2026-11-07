@@ -36,7 +36,7 @@ function setup(rows = Array.from({ length: 200 }, (_, i) => row(i)), fail: boole
   if (fail === true) throw new Error("offline")
   return { ...(fail === "partial" ? { errors: [{message:"denied"}] } : {}), data: { Vendors: { __typename: "VendorConnection", Edges: missing ? [] : ids.map(Id => ({ __typename: "VendorEdge", Node: { __typename: "Vendor", Id, Name: namePrefix + Id, RecordVersion: 1 } })) } } }
  } } })
- installRelationBatching(client)
+ installRelationBatching(client, { withoutDocument: "read" })
  return { client, requests, setNamePrefix: (value: string) => { namePrefix = value } }
 }
 const read = (ref: unknown) => readFragment(compiled.fragments.Row!, ref) as { Vendor: { status: string; data?: unknown; error?: unknown } }
@@ -147,7 +147,7 @@ describe("batched relations", () => {
    ids.push(values)
    return {data:{Vendors:{__typename:'VendorConnection',Edges:values.map(Id=>({__typename:'VendorEdge',Node:{__typename:'Vendor',Id,Name:name,RecordVersion:version}}))}}}
   }},live:{artifacts:c.live,subscribe:streams.subscribe,settleMs:false,debounceMs:0,minRereadMs:1,onDiagnostic:null}})
-  installRelationBatching(client)
+  installRelationBatching(client, { withoutDocument: "read" })
   const q=client.watchQuery<{Tickets:unknown[]}>(c.operations.Rows!,{});q.open()
   await pause(); await pause()
   const shown=()=>readFragment(c.fragments.Row!,q.getState().data!.Tickets[0]) as {Vendor:{status:string;data:unknown}}
@@ -188,7 +188,7 @@ describe("batched relations", () => {
    signal=o.signal
    return new Promise(resolve=>{finish=resolve})
   }}})
-  installRelationBatching(client)
+  installRelationBatching(client, { withoutDocument: "read" })
   const result=await client.execute(compiled.operations.Rows!,{})
   read((result.snapshot.data as {Tickets:unknown[]}).Tickets[0]);await pause()
   expect(finish).toBeDefined();client.dispose();expect(signal?.aborted).toBe(true)

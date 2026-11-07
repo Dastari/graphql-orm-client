@@ -8,8 +8,14 @@ import type { Variables } from "./store/arguments.js"
  * Enable compiler-generated @batch relations for this client. Coalesces reads for 5 ms,
  * sharing normal records across queries. Install before opening queries. No effect on
  * documents without @batch. Dispose with the client; queued work checks identity disposal.
+ *
+ * Reading a relation can queue a request, so a read that happens while rendering can too. A queued request only ever reads, is
+ * sent once per record however many renders ask, and writes nothing until after render. With no `document`, as when rendering on a
+ * server, nothing is sent and the relation stays `pending`, because private reads must never run in server rendering.
+ * `withoutDocument: "read"` allows it, for a non-browser client that means to.
  */
-export function installRelationBatching(client: Client): void {
+export function installRelationBatching(client: Client, options: { readonly withoutDocument?: "skip" | "read" } = {}): void {
+  const canSend = () => options.withoutDocument === "read" || typeof document !== "undefined"
   const store = client.store
   if (store.relation) throw new Error("Relation batching is already installed")
   type Job = { selection: LinkSelection; variables: Variables; value: KeyPart; id: string; stateId: string; parents: Set<string> }
@@ -38,7 +44,7 @@ export function installRelationBatching(client: Client): void {
     if (state?.fields.get("status") === "error") return { status: "error", stateId, error: state.fields.get("error") }
     if (!snapshot.missing && state?.fields.get("status") !== "stale") return { status: "ready", id, stateId }
     if (state?.fields.get("status") === "missing") return { status: "missing", stateId }
-    if (store.collecting) return { status: "pending", stateId }
+    if (store.collecting || !canSend()) return { status: "pending", stateId }
     const existing = queued.get(stateId) ?? active.get(stateId)
     if (existing) existing.parents.add(parent)
     else {

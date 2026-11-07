@@ -149,7 +149,7 @@ try {
  const routerReads=batchRouterReads
  const batchNetwork=createHttpNetwork({url:`${frontUrl}/batch`,headers})
  const batchClient=createClient({network:batchNetwork})
- installRelationBatching(batchClient)
+ installRelationBatching(batchClient, { withoutDocument: "read" })
  const batchRefs=[]
  for(const Offset of [0,100]) {
   const result=await batchClient.execute(batched.operations.BatchTickets,{Page:{Limit:100,Offset},Where:{Id:{InList:Array.from({length:200},(_,i)=>`batch-t${i}`)}}})

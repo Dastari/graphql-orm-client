@@ -167,7 +167,8 @@ delete visibility when polling is disabled. See docs/design.md, List streams (R3
 For repeated singular relations, use
 `Vendor @batch(foreignKey: "VendorId", root: "Vendors", key: "Id") { ...VendorBadge }`.
 Install `installRelationBatching(client)` from `graphql-orm-client/relations` before opening
-queries and regenerate. Supply the schema's actual mapping and list root. Keep the limit
+queries and regenerate. With no `document`, as when rendering on a server, nothing is sent and the relation stays
+`pending`. Supply the schema's actual mapping and list root. Keep the limit
 within the service's page maximum (default 100). Render `pending`, `missing`, `error` and
 `ready` separately. In `ready`, pass `.data` to the related fragment reader. Mark related
 fragments `@live` when live delivery is wanted. See the installed design's R13 section.

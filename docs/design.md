@@ -1018,3 +1018,5 @@ minified browser closure changes from 55,720 to 56,492 bytes; level-9 gzip chang
 17,995 to 18,191 bytes (limits: 60,000 and 20,000).
 Documents without the directive keep their existing request behaviour; adoption requires
 installation, annotation and regeneration only.
+
+Reading a relation can queue a request, so a read during render can too. That queue only reads, sends each id once however many renders ask, including under StrictMode, and writes to the store only after render, so a render React discards leaves at most a read whose result the next render uses. Tests pin each of these. With no `document`, as when rendering on a server, nothing is sent and the relation stays `pending`, because private reads must never run in server rendering; `withoutDocument: "read"` allows it for a non-browser client that means to.
