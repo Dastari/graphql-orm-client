@@ -90,6 +90,7 @@ function writeFields(
         break
       }
       case "link": {
+        if (selection.batch) break
         if (!(selection.responseKey in value)) break
         const key = fieldStorageKey(selection, context.variables)
         const child = value[selection.responseKey]

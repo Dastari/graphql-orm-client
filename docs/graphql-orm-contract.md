@@ -30,7 +30,7 @@ served SDL and recomputes protocol fingerprints. Composite placeholder mutations
 also lack catalogue metadata; Slot uses repository writes and is excluded from
 GraphQL mutations. See [conformance](../conformance/README.md) for reproductions
 and recovery coverage. No server fix is
-included and no later server version is claimed as run.
+included; R13’s later runs on both tags are recorded below.
 
 | Need | Why the client needs it | Status |
 | --- | --- | --- |
@@ -101,3 +101,31 @@ The client can only prove a write's outcome from what the server says. Today tha
 A dedicated `extensions.outcome: "refused" | "failed"` is a proposed addition. The client already reads it, but no graphql-orm
 version sends it (read from `graphql-orm-v0.93.0`). Until one does, a refused write that executed shows as `unconfirmed`.
 
+
+## Batched relation lookup (R13)
+
+Source read at **graphql-orm-v0.90.1 (adfa608d)** and
+**graphql-orm-v0.93.0 (f0722a09)**: `graphql-orm-macros/src/relations.rs` binds declared
+`from` source fields to `to` target fields. Served SDL exposes scalar foreign keys and
+relation types but does not encode this mapping. The client requires it explicitly.
+
+In both tags, `graphql-orm-macros/src/entity.rs` emits `<Entity>WhereInput` fields only
+for filterable columns. Generated list roots accept `Where` and `Page`, returning
+`Edges { Node }`. `graphql-orm/src/graphql/filters.rs` supplies scalar `InList` lists;
+String, UUID and Int have no separate list-length cap in that source. Signed64 filters
+limit lists to 256 operands. `graphql-orm/src/graphql/orm/query.rs` defaults to 50 rows,
+with a maximum of 100, on both tags. The client explicitly requests at most 100 keys and
+rows, or a lower declared service limit. It never assumes an Id is filterable or guesses
+a plural root; generated requests are validated against the served schema.
+
+Proposed server metadata: expose complete relation source-to-target mappings and the
+configured effective page maximum through SDL or catalogue. Until then `@batch` supplies
+the mapping and optional lower limit. No server change is included here.
+
+R13 conformance ran against both tags and router 0.8.1: 200 Ticket/Vendor pairs,
+two parent-page requests and two 100-key related reads, counted in the HTTP bridge
+forwarding to the router. Related names were read through masked fragments. The real
+R13 scenario runs in Node; the complete suite also runs its Chromium recovery checks.
+Pending, missing, chunk errors, cross-query deduplication, live foreign-key changes,
+ordering/version conflicts, disposal, collection, polling and reconnect recovery are
+additionally covered by mock tests.

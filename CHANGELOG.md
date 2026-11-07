@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- R13: opt-in `@batch` compiles bounded relation reads with shared caching and masked
+  pending/ready/missing/error states. To adopt, install `installRelationBatching(client)`
+  from `graphql-orm-client/relations`, annotate relations and regenerate. Existing documents
+  keep their request behaviour. With batching installed, mounted fragment subscriptions retain records during collection.
+
 - Compile a large schema far faster. After 0.1.0-alpha.10's stream selections, each live type re-extended the whole schema: 250 documents on a
   45,000-line schema took about 24 s and now take under a second.
 - R3: generated `OperationArtifact.lists` enables one un-narrowed stream per open list type,

@@ -15,7 +15,7 @@ CONFORMANCE_SCRATCH=/path/outside/checkout pnpm conformance
 Set `CHROME` to an existing Chromium executable. A missing executable prints
 `NOT RUN`, not a pass; CI requires Chromium. A present executable that cannot launch
 fails the run. `PORT_BASE` defaults to 42000 and must reserve five ports within
-42000–42099. Runs are serial. Use a different base for concurrent invocations.
+42000–42099 (or the reserved task range 41800–41899). Runs are serial. Use a different base for concurrent invocations.
 The runner creates its own temporary directory if `CONFORMANCE_SCRATCH` is absent.
 Keep it to reuse Cargo output. Each invocation gets a separate runtime subdirectory. Check free disk first: allow at least 10 GB for a cold
 build. Manifests, binaries, schema snapshots, descriptors, browser bundles and
@@ -35,6 +35,10 @@ a computed Summary and a hand-written computed RecordVersion. The second subgrap
 is deliberately a small Node federation extension, owning Widget.RemoteName through
 the NodeId key and Vendor.RemoteName through the persisted Id key. The latter is
 admitted and resolved per event; the NodeId-key variant follows NodeId's admission (see below). The source of entity events and all database writes is the Rust ORM.
+
+R13 seeds 200 Ticket/Vendor pairs and reads their related names through masked fragments.
+The HTTP bridge counts requests forwarded to the real router: two parent pages and two
+100-key relation chunks. Fixture rows are removed before the other list assertions.
 
 Assertions cover empty Keys, keys/key/unkeyed streams, creation outside the held
 keys, scalar admission, NodeId and computed/relation refusals, federation fetch

@@ -59,6 +59,14 @@ interface Retention {
  * subscribers whose snapshot read a changed record are re-read and notified once.
  */
 export class Store {
+  /** Refresh batched dependencies after refetch or reconnect. */
+  refreshRelations?: (selector: Selector) => void
+  /** Resolve a compiler-declared relation; installed by the optional relations entry point. */
+  relation?: (selection: import("../artifact.js").LinkSelection, parent: string, variables: Variables) => { status: string; id?: string; stateId?: string; error?: unknown }
+
+  /** Notify readers after a derived relation changes state. */
+  touch(id: string): void { if (!this.disposed) this.changed.add(id) }
+
   private readonly records = new Map<string, StoredRecord>()
   private readonly changed = new Set<string>()
   private readonly subscriptions = new Set<Subscription>()
@@ -176,7 +184,7 @@ export class Store {
       if (![...previous.seen].some((id) => changed.has(id))) continue
       const next = this.lookup(previous.selector)
       const data = recycle(previous.data, next.data)
-      if (data === previous.data && next.missing === previous.missing) {
+      if (!this.relation && data === previous.data && next.missing === previous.missing) {
         subscription.snapshot = { ...next, data: previous.data }
         continue
       }
@@ -232,6 +240,10 @@ export class Store {
       const result = readSelections(this, retention.selector, { inlineSpreads: true, rootKeys })
       for (const id of result.seen) reachable.add(id)
     }
+    for (const subscription of this.relation ? this.subscriptions : []) {
+      const result = readSelections(this, subscription.snapshot.selector, { inlineSpreads: true, rootKeys })
+      for (const id of result.seen) reachable.add(id)
+    }
     for (const id of [...this.records.keys()]) {
       if (!reachable.has(id)) this.delete(id)
     }
@@ -257,6 +269,8 @@ export class Store {
     this.retained.clear()
     this.subscriptions.clear()
     this.records.clear()
+    this.relation = undefined
+    this.refreshRelations = undefined
     this.changed.clear()
   }
 

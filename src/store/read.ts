@@ -77,6 +77,15 @@ export function readSelections<T>(store: Store, selector: Selector, options: Rea
           break
         }
         case "link": {
+          if (selection.batch) {
+            if (!store.relation) throw new Error("@batch requires installRelationBatching(client) from graphql-orm-client/relations")
+            const state = store.relation(selection, id, selector.variables)
+            if (state.stateId) seen.add(state.stateId)
+            data[selection.responseKey] = state.status === "ready" && state.id
+              ? { status: "ready", data: readRecord(state.id, selection.selections) }
+              : state.status === "error" ? { status: "error", error: state.error } : { status: state.status }
+            break
+          }
           const key = fieldStorageKey(selection, selector.variables)
           if (id === ROOT_ID) options.rootKeys?.add(key)
           if (!record.fields.has(key)) {

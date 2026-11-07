@@ -1,6 +1,6 @@
 ---
 name: graphql-orm-client-data
-description: Keep regenerated lists and counts current with list streams and bounded loaded-page refresh; use full/thin stream projections and bounded holder re-reads (minRereadMs); Write components with graphql-orm-client fragments and route roots, page through tables by number (@paged, usePagedQuery), load more (@connection), refetch, run mutations (including one-time secrets with `no-store`) and plain subscriptions, and port Apollo queries without request waterfalls or over-fetching, and test components against a mock network, scripted streams and a controllable clock (graphql-orm-client/test); declare sensitive operations (@sensitive), get honest write outcomes (mutateOutcome) and show partial results per path (errorsAtPath).
+description: Write masked fragments and route queries, batch relation reads, paginate, refetch, run mutations and subscriptions, handle sensitive data, write outcomes and partial errors, and test with the client test kit.
 ---
 
 # Fragments, roots, pagination and mutations
@@ -161,3 +161,13 @@ delete visibility when polling is disabled. See docs/design.md, List streams (R3
 - Use `errorsAtPath(errors, ["alias"])` to show one refused root or alias beside the rest of the response. Set
   `partialResults: "preserve-errors"` on the client so a refused field doesn't overwrite a good stored value with null.
 
+
+## Batched relation names
+
+For repeated singular relations, use
+`Vendor @batch(foreignKey: "VendorId", root: "Vendors", key: "Id") { ...VendorBadge }`.
+Install `installRelationBatching(client)` from `graphql-orm-client/relations` before opening
+queries and regenerate. Supply the schema's actual mapping and list root. Keep the limit
+within the service's page maximum (default 100). Render `pending`, `missing`, `error` and
+`ready` separately. In `ready`, pass `.data` to the related fragment reader. Mark related
+fragments `@live` when live delivery is wanted. See the installed design's R13 section.

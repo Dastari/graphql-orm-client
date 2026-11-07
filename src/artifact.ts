@@ -60,6 +60,21 @@ export interface PagedSpec {
   readonly hasPreviousPage: string | null
 }
 
+/** State of an explicitly batched relation. Missing includes unreadable records. */
+export type RelationState<T> =
+  | { readonly status: "pending" }
+  | { readonly status: "ready"; readonly data: T }
+  | { readonly status: "missing" }
+  | { readonly status: "error"; readonly error: unknown }
+
+/** Compiler-validated, single-key relation lookup. */
+export interface BatchSpec {
+  readonly foreignKey: string
+  readonly key: string
+  readonly operation: OperationArtifact
+  readonly limit: number
+}
+
 export interface LinkSelection {
   readonly kind: "link"
   readonly responseKey: string
@@ -69,6 +84,7 @@ export interface LinkSelection {
   /** Concrete types the field can return. */
   readonly types: readonly string[]
   readonly selections: readonly Selection[]
+  readonly batch?: BatchSpec
   readonly connection?: ConnectionSpec
 }
 
