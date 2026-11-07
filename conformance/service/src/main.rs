@@ -92,7 +92,7 @@ struct Ticket {
     vendor_id: String,
     title: String,
     #[graphql(skip)]
-    #[relation(target = "Vendor", from = "vendor_id", to = "id")]
+    #[relation(target = "Vendor", from = "vendor_id", to = "id", propagate_change = "up")]
     vendor: Option<Vendor>,
 }
 #[graphql_complex_object]

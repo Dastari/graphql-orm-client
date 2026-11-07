@@ -12,8 +12,8 @@ and fixture accommodations are documented in [conformance](../../conformance/REA
 1. **A stream is admitted or refused whole.** `validate_subscription_selection` refuses a `Changed`
    subscription if any selected entity field isn't a persisted, subscribable column, with the generic
    `INVALID_INPUT`. Legacy generation spreads `@live` fragments unchanged, so one relation or computed
-   field in one fragment stops every fragment of that type. `NodeId` is refused too: run on
-   0.90.1, source-read on 0.91.1. The real wire shape is `next` with `INVALID_INPUT`, then
+   field in one fragment stops every fragment of that type. `NodeId` was refused too: run on
+   0.90.1. It's admitted from 0.92.0 (#312), run on 0.93.0. The real wire shape is `next` with `INVALID_INPUT`, then
    `complete`; managed RecordVersion is accepted, while a computed hand-written one is refused.
 2. **Nothing confirms a subscribe.** graphql-transport-ws has no per-operation acknowledgement, and
    `Changed` sends nothing until an event. A quiet admitted stream looks the same as an unanswered
@@ -281,8 +281,7 @@ In order. All opt-in, through its normal process.
      Widget.RemoteName through the NodeId key is refused with `INVALID_INPUT`, because
      the source stream cannot carry that key. Do not classify every federated field
      as refused. A snapshot can omit these fields to avoid fetches per event.
-2. **Merge PR #312** (`NodeId` and `RecordVersion` on relation-bearing entities). In flight. Without it
-   those entities have neither, whatever the client does.
+2. **PR #312** (`NodeId` and `RecordVersion` on relation-bearing entities) is merged and in 0.92.0.
 3. **A stream-started signal.** An opt-in first frame after authorization, as `CacheSync::changes` sends.
    It is the only thing that closes the first-read gap and makes `live` provable for a quiet stream.
 4. **A dedicated code for an unsupported selection,** so `INVALID_INPUT` needn't stand for it.
