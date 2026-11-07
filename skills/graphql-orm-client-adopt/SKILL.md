@@ -1,6 +1,6 @@
 ---
 name: graphql-orm-client-adopt
-description: Install graphql-orm-client in an application, configure the network and one client per signed-in identity, pull and check schema snapshots, run the generator, wire route loaders and move an Apollo application across route by route.
+description: Install graphql-orm-client in an application, configure network read/write bounds, partial-result policy and one client per signed-in identity, pull and check schema snapshots, run the generator, wire route loaders and move an Apollo application across route by route.
 ---
 
 # Adopt graphql-orm-client
@@ -43,3 +43,9 @@ The client only works against graphql-orm services and their router.
 
 Verify: the route makes one request on first load, a second visit within the retention
 period makes none, and signing out clears every record.
+
+### Network bounds
+
+`createHttpNetwork({ url, reads, writes })` takes `{ deadlineMs, maxResponseBytes }` for each. Both are off unless set, and a write past
+its deadline is `unconfirmed`, not retried. See the data skill for `@sensitive`, write outcomes and partial results.
+

@@ -106,7 +106,8 @@ a page can draw "live updates unavailable". A stream with no event yet is `uncon
 `createHttpNetwork` takes `headers` (an object or a function called per request), `fetch` and
 `credentials`. A response with GraphQL errors is returned whatever its HTTP status; one without
 a GraphQL body throws `HttpError`. Commit mutations with `client.mutate`, or `useMutation` in
-React; pass `{ policy: "no-store" }` for a result that holds a one-time secret, so none of it is stored.
+React; declare `@sensitive` on a mutation or imperative query for plain results that never enter a store.
+The older mutation option `{ policy: "no-store" }` also isolates results, retaining private fragment reads.
 
 A table that pages by number marks its list `@paged` and passes graphql-orm's `PageInput` as a
 variable. `usePagedQuery` sets its `Limit` and `Offset` from a zero-based page index and size,

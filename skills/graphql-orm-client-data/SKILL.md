@@ -1,6 +1,6 @@
 ---
 name: graphql-orm-client-data
-description: Keep regenerated lists and counts current with list streams and bounded loaded-page refresh; use full/thin stream projections and bounded holder re-reads (minRereadMs); Write components with graphql-orm-client fragments and route roots, page through tables by number (@paged, usePagedQuery), load more (@connection), refetch, run mutations (including one-time secrets with `no-store`) and plain subscriptions, and port Apollo queries without request waterfalls or over-fetching, and test components against a mock network, scripted streams and a controllable clock (graphql-orm-client/test).
+description: Keep regenerated lists and counts current with list streams and bounded loaded-page refresh; use full/thin stream projections and bounded holder re-reads (minRereadMs); Write components with graphql-orm-client fragments and route roots, page through tables by number (@paged, usePagedQuery), load more (@connection), refetch, run mutations (including one-time secrets with `no-store`) and plain subscriptions, and port Apollo queries without request waterfalls or over-fetching, and test components against a mock network, scripted streams and a controllable clock (graphql-orm-client/test); declare sensitive operations (@sensitive), get honest write outcomes (mutateOutcome) and show partial results per path (errorsAtPath).
 ---
 
 # Fragments, roots, pagination and mutations
@@ -149,3 +149,15 @@ may be stale: draw `QueryState.listRefreshTruncated` and health `list-refresh-tr
 No server snapshot across keyset pages is promised. Without a delete preimage grant, the server
 sends no DELETED event; only the next event or poll repairs the list. Do not promise immediate
 delete visibility when polling is disabled. See docs/design.md, List streams (R3), for validation.
+
+### Secrets, write outcomes and partial results
+
+- Put `@sensitive` on a query or mutation whose result must stay out of the store: tokens, one-time secrets. Results are plain
+  values with fragments expanded, not fragment references. Use `client.query` for a sensitive query: watching one is an error,
+  because a watch retains results. A sensitive document spreading a `@live` fragment fails the build.
+- Use `client.mutateOutcome`, or `commitOutcome` from `useMutation`, when the UI must tell the user whether a write happened. Status is
+  `confirmed`, `refused`, `failed` or `unconfirmed`. `mutate` and `commit` are unchanged. A write is never retried: pass `reconcile` to
+  read the record again after an `unconfirmed` one, and call again yourself after step-up authentication.
+- Use `errorsAtPath(errors, ["alias"])` to show one refused root or alias beside the rest of the response. Set
+  `partialResults: "preserve-errors"` on the client so a refused field doesn't overwrite a good stored value with null.
+
