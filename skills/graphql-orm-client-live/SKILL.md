@@ -176,7 +176,7 @@ is unsupported. All files declaring identical text are checked. Programmatic com
 development and tests find it. In production, and on a module generated before this release, it warns and still polls, because a working
 page mustn't crash on upgrade. `polling.undeclared: "warn" | "off"` on the client relaxes this. `strict.pollWithoutReason` covers an empty
 reason at build time. Fallback polling is reported through health and needs no declaration. The escape for a raw subscription is
-`client.stream` (R11).
+`createStream` from `graphql-orm-client/streams` (R11).
 
 
 ## Live generation setting (R1)
