@@ -89,4 +89,4 @@ all 64 recovery cases and seven doctor verdicts, took 121.8 seconds on the final
 been observed; these are local measurements.
 
 R1 generates a default-mode project against the real schema, verifies Widget stream updates and
-health, and no-stream polling health for the real PageInfo type (which has no Changed stream). The existing real 33-operation test pins router capacity.
+health, and that a keyless value type (the real PageInfo) stays out of it and doesn't poll. A keyed type with no stream is covered by mock tests: the service has none. The existing real 33-operation test pins router capacity.
