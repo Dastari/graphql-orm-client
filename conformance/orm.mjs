@@ -312,7 +312,7 @@ try {
  // A keyset list loaded in three pages, the last partly filled, refreshes in one real request, and a row created inside it appears.
  {
   for (const id of ['ks-a','ks-b','ks-c']) await post(`mutation { CreateWidget(Input: {Id: "${id}", Name: "${id}"}) { Success } }`)
-  const keyset=compile(schema,[`fragment KeysetRow on Widget @live { Name }`,`query Keyset($Page: KeysetPageInput) { WidgetsKeyset(Page: $Page) @connection(key: "keyset") { Edges { Node { Id ...KeysetRow } } PageInfo { EndCursor HasNextPage } } }`])
+  const keyset=compile(schema,[`fragment KeysetRow on Widget @live { Name }`,`query Keyset($Page: KeysetPageInput!) { WidgetsKeyset(Page: $Page) @connection(key: "keyset") { Edges { Node { Id ...KeysetRow } } PageInfo { EndCursor HasNextPage } } }`])
   const socket=createWs({url:routerUrl.replace('http','ws'),webSocketImpl:WebSocket,connectionParams:{authorization:`Bearer ${token}`}})
   const http=createHttpNetwork({url:routerUrl,headers}), pages=[]
   const client=createClient({network:{execute:(r,o)=>{ if (r.name==='Keyset') pages.push(r.variables.Page); return http.execute(r,o) }},live:{artifacts:keyset.live,...graphqlWsTransport(socket),minRereadMs:0,debounceMs:0,settleMs:false,onDiagnostic:null}})
