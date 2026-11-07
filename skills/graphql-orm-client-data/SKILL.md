@@ -1,6 +1,6 @@
 ---
 name: graphql-orm-client-data
-description: Configure project query/subscription owners and strict build policies, declare polling reasons; Keep regenerated lists and counts current with list streams and bounded loaded-page refresh; use full/thin stream projections and bounded holder re-reads (minRereadMs); Write components with graphql-orm-client fragments and route roots, page through tables by number (@paged, usePagedQuery), load more (@connection), refetch, run mutations (including one-time secrets with `no-store`) and plain subscriptions, and port Apollo queries without request waterfalls or over-fetching, and test components against a mock network, scripted streams and a controllable clock (graphql-orm-client/test).
+description: Use explicit live fragments or opt-in default/area generation with @live(enabled: false); Configure project query/subscription owners and strict build policies, declare polling reasons; Keep regenerated lists and counts current with list streams and bounded loaded-page refresh; use full/thin stream projections and bounded holder re-reads (minRereadMs); Write components with graphql-orm-client fragments and route roots, page through tables by number (@paged, usePagedQuery), load more (@connection), refetch, run mutations (including one-time secrets with `no-store`) and plain subscriptions, and port Apollo queries without request waterfalls or over-fetching, and test components against a mock network, scripted streams and a controllable clock (graphql-orm-client/test).
 ---
 
 # Fragments, roots, pagination and mutations
@@ -66,7 +66,7 @@ bounded holder re-reads. `liveSelection: "as-written"` preserves legacy stream t
 - `fetchPolicy` → `policy`: `cache-first` is `store-or-network`, `cache-and-network` is
   `store-and-network` (the default), `network-only` is the same. There is no `no-cache` for queries;
   for a mutation use `policy: "no-store"` (see Mutations).
-- `pollInterval` → `pollMs`. `refetch(vars)` merges and switches, as in Apollo.
+- `pollInterval` → `pollMs`, after declaring `@poll(reason: "...")` on the query. `refetch(vars)` merges and switches, as in Apollo.
 - `errorPolicy: "none"` → treat `query.errors.length` as an error; codes are on
   `errors[i].extensions.code`. `useMutation`'s `error` is an `OperationError` with the same codes.
 - `client.query` → `client.query(Query, variables, { policy, signal })`, resolving `{ data, errors }`.
@@ -174,3 +174,27 @@ supports migration (`"error"` by default). `strict.pollWithoutReason` controls e
 at build time; GraphQL still rejects missing or incorrectly typed required directive arguments.
 Automatic live fallback polling is justified by its health reason and needs no `@poll` declaration.
 R11's ephemeral `client.stream` exception is proposed and is not imported or implemented here.
+
+
+## Live generation setting (R1)
+
+Built. The generator and `compile` default to `live: "explicit"`: only `@live` fragments request
+streams. `live: "default"` is opt-in, not recommended by default; the owner must decide before
+the package default changes. It makes object fragments live without a directive.
+`live: { "default": ["src/area/**"] }` enables that behaviour only for matching fragment document
+source files, relative to the config directory. It matches the fragment's file, not a spreading query's.
+Plain-string `compile(schema, sources)` keeps its explicit behaviour; pass `documentPaths` when
+using area mode programmatically. Unknown files do not match area globs.
+
+`@live(enabled: false)` opts a fragment out in every mode; `@live` and `@live(enabled: true)` opt in.
+An implicit live fragment with no usable stream warns, appears in `liveUnavailable`, and uses the
+normal fallback interval (30 seconds unless changed); health reports `no-stream` and polling, or
+unavailable if fallback is disabled. Explicit `@live` on that type follows R5's error policy.
+Only object fragments become implicitly live; abstract fragments still require explicit intent.
+Lists open streams only for types with a live fragment somewhere in the project. Default mode
+widens that set; an opted-out fragment does not disable another live fragment of the same type.
+
+Migration: keep `"explicit"` to retain current stream scope. Opt in per area, regenerate, and inspect
+`liveUnavailable` and `client.liveHealth()`. More live types use more operations: the router's default
+32-operation connection budget still applies; capacity refusals remain visible and uncovered data polls.
+No setting overrides server admission or guarantees every burst event arrives.

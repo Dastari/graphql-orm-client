@@ -1,7 +1,7 @@
 # Live by default: design for requirement groups 1 and 2
 
 Status: **proposed; the owner approved the direction on 2026-11-06. Built so far: the restart of ended
-streams (fact 4), in 0.1.0-alpha.7; R20 and R7, in 0.1.0-alpha.8; R8 and R6, in 0.1.0-alpha.9. R4's client-side overlap and confirming reads are built; true gap closure still needs a server started signal. Group 1, R2 and R3 are built.** Requirement numbers refer to [requirements.md](../requirements.md).
+streams (fact 4), in 0.1.0-alpha.7; R20 and R7, in 0.1.0-alpha.8; R8 and R6, in 0.1.0-alpha.9. R4's client-side overlap and confirming reads are built; true gap closure still needs a server started signal. Group 1, R2, R3, R5 and the opt-in R1 setting are built. The package live default remains explicit.** Requirement numbers refer to [requirements.md](../requirements.md).
 R21's `conformance/` fixture now runs the admission, key delivery, delete, node, version,
 list and router-frame facts against `graphql-orm-v0.90.1` (adfa608d), router 0.8.1 and SQLite.
 Other facts remain source-read from `main` at `9d1a482` unless noted. Recovery assertions
@@ -232,10 +232,11 @@ operation-naming health diagnostic.
 
 ### R1. Live by default
 
+**Setting built. The package default stays `explicit`; `default` is opt-in, not recommended by default.**
+
 A generator setting: `"live": "explicit" | "default" | { "default": ["src/area/**"] }`, the last for moving
 one area at a time. With `default`, a fragment on an object type with a usable stream is live unless it
-says `@live(enabled: false)`. A type with no stream is reported and polls, and health says so. Under
-`default`, `@live` on such a type becomes an error once R5 lands. The setting goes away at 1.0.
+says `@live(enabled: false)`. A type with no stream is reported and polls, and health says so. Explicit `@live` on such a type follows R5’s error policy. Removing the setting at 1.0 remains proposed.
 
 ## Settings and migration
 
@@ -323,3 +324,26 @@ supports migration (`"error"` by default). `strict.pollWithoutReason` controls e
 at build time; GraphQL still rejects missing or incorrectly typed required directive arguments.
 Automatic live fallback polling is justified by its health reason and needs no `@poll` declaration.
 R11's ephemeral `client.stream` exception is proposed and is not imported or implemented here.
+
+## Live generation setting (R1)
+
+Built. The generator and `compile` default to `live: "explicit"`: only `@live` fragments request
+streams. `live: "default"` is opt-in, not recommended by default; the owner must decide before
+the package default changes. It makes object fragments live without a directive.
+`live: { "default": ["src/area/**"] }` enables that behaviour only for matching fragment document
+source files, relative to the config directory. It matches the fragment's file, not a spreading query's.
+Plain-string `compile(schema, sources)` keeps its explicit behaviour; pass `documentPaths` when
+using area mode programmatically. Unknown files do not match area globs.
+
+`@live(enabled: false)` opts a fragment out in every mode; `@live` and `@live(enabled: true)` opt in.
+An implicit live fragment with no usable stream warns, appears in `liveUnavailable`, and uses the
+normal fallback interval (30 seconds unless changed); health reports `no-stream` and polling, or
+unavailable if fallback is disabled. Explicit `@live` on that type follows R5's error policy.
+Only object fragments become implicitly live; abstract fragments still require explicit intent.
+Lists open streams only for types with a live fragment somewhere in the project. Default mode
+widens that set; an opted-out fragment does not disable another live fragment of the same type.
+
+Migration: keep `"explicit"` to retain current stream scope. Opt in per area, regenerate, and inspect
+`liveUnavailable` and `client.liveHealth()`. More live types use more operations: the router's default
+32-operation connection budget still applies; capacity refusals remain visible and uncovered data polls.
+No setting overrides server admission or guarantees every burst event arrives.

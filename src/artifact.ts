@@ -119,7 +119,7 @@ export interface FragmentArtifact<TData = unknown, TName extends string = string
   readonly typeCondition: string
   /** What `readFragment` and `useFragment` return: only this fragment's own fields. */
   readonly selections: readonly Selection[]
-  /** Whether the fragment is marked `@live`. */
+  /** Whether the fragment requests live coverage, explicitly or through the generator live setting. */
   readonly live: boolean
   /** For a `@refetchable` fragment: the query that reads it again by `NodeId`. */
   readonly refetch?: OperationArtifact

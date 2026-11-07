@@ -1,6 +1,6 @@
 ---
 name: graphql-orm-client-live
-description: Configure project query/subscription owners and strict build policies, declare polling reasons; Keep regenerated lists and counts current with list streams and bounded loaded-page refresh; use full/thin stream projections and bounded holder re-reads (minRereadMs); Keep graphql-orm-client data live with @live fragments and generated Changed subscriptions, overlap replacements and confirm first reads (settleMs), back off from refused streams, order writes by record version, use polling fallbacks, draw live status (useLiveHealth, liveHealth), check streams against a real router (doctor) and diagnose stale data.
+description: Use explicit live fragments or opt-in default/area generation with @live(enabled: false); Configure project query/subscription owners and strict build policies, declare polling reasons; Keep regenerated lists and counts current with list streams and bounded loaded-page refresh; use full/thin stream projections and bounded holder re-reads (minRereadMs); Keep graphql-orm-client data live with @live fragments and generated Changed subscriptions, overlap replacements and confirm first reads (settleMs), back off from refused streams, order writes by record version, use polling fallbacks, draw live status (useLiveHealth, liveHealth), check streams against a real router (doctor) and diagnose stale data.
 ---
 
 # Live data and cache policy
@@ -175,3 +175,27 @@ supports migration (`"error"` by default). `strict.pollWithoutReason` controls e
 at build time; GraphQL still rejects missing or incorrectly typed required directive arguments.
 Automatic live fallback polling is justified by its health reason and needs no `@poll` declaration.
 R11's ephemeral `client.stream` exception is proposed and is not imported or implemented here.
+
+
+## Live generation setting (R1)
+
+Built. The generator and `compile` default to `live: "explicit"`: only `@live` fragments request
+streams. `live: "default"` is opt-in, not recommended by default; the owner must decide before
+the package default changes. It makes object fragments live without a directive.
+`live: { "default": ["src/area/**"] }` enables that behaviour only for matching fragment document
+source files, relative to the config directory. It matches the fragment's file, not a spreading query's.
+Plain-string `compile(schema, sources)` keeps its explicit behaviour; pass `documentPaths` when
+using area mode programmatically. Unknown files do not match area globs.
+
+`@live(enabled: false)` opts a fragment out in every mode; `@live` and `@live(enabled: true)` opt in.
+An implicit live fragment with no usable stream warns, appears in `liveUnavailable`, and uses the
+normal fallback interval (30 seconds unless changed); health reports `no-stream` and polling, or
+unavailable if fallback is disabled. Explicit `@live` on that type follows R5's error policy.
+Only object fragments become implicitly live; abstract fragments still require explicit intent.
+Lists open streams only for types with a live fragment somewhere in the project. Default mode
+widens that set; an opted-out fragment does not disable another live fragment of the same type.
+
+Migration: keep `"explicit"` to retain current stream scope. Opt in per area, regenerate, and inspect
+`liveUnavailable` and `client.liveHealth()`. More live types use more operations: the router's default
+32-operation connection budget still applies; capacity refusals remain visible and uncovered data polls.
+No setting overrides server admission or guarantees every burst event arrives.

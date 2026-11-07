@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- R1: opt-in `live: "default"` and `live: { "default": ["src/area/**"] }` generation;
+  the package default stays `"explicit"`. Migration: opt in by area, regenerate and inspect health
+  and socket capacity before widening. `@live(enabled: false)` opts out. Implicit streamless
+  fragments report and poll; explicit streamless `@live` still follows R5.
+
 - R5: generation rejects streamless explicit `@live` and empty polling reasons; optional
   `queryOwners`/`subscriptionPaths` restrict document ownership. Migration: remove unsupported
   `@live` or add `@poll(reason: "...")`; add legitimate owners to the configured globs.
@@ -10,7 +15,6 @@
   runtime callers. Set client `polling.undeclared: "warn"` or `"off"` while migrating old artifacts.
   Generation validates declarations; it cannot detect runtime interval options at build time.
 
-## Unreleased
 
 - R3: generated `OperationArtifact.lists` enables one un-narrowed stream per open list type,
   including empty and count-only lists. Events invalidate membership, order and totals through
