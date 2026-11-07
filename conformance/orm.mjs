@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { installRelationBatching } from '../dist/relations.js'
+import { readAll } from '../dist/read-all.js'
 import { liveSettingCheck } from './live-setting.mjs'
 import { doctorChecks } from './doctor.mjs'
 import { browserRecovery } from './browser.mjs'
@@ -262,9 +263,9 @@ try {
    Widgets(Page: $Page) @connection(key: "bounded") { Edges { Node { Id Name } } PageInfo { TotalCount } }
  }`]).operations.Bounded
  const boundedClient = createClient({ network: createHttpNetwork({ url: routerUrl, headers }) })
- const bounded = await boundedClient.readAll(readAllArtifact, {}, { limit: 1 })
+ const bounded = await readAll(boundedClient, readAllArtifact, {}, { limit: 1 })
  assert.equal(bounded.rows.length, 1); assert(bounded.total > 1); assert.equal(bounded.truncated, true)
- const complete = await boundedClient.readAll(readAllArtifact, {}, { limit: 100, pageSize: 1 })
+ const complete = await readAll(boundedClient, readAllArtifact, {}, { limit: 100, pageSize: 1 })
  assert.equal(complete.rows.length, complete.total); assert.equal(complete.truncated, false)
  boundedClient.dispose(); pass('R14 bounded readAll: real offset pages, exact total and truncation')
  const compiled = compile(schema,[`fragment Row on Widget @live { Name }`,`query One { Widget(Id: "w1") { ...Row } }`])

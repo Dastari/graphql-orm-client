@@ -173,7 +173,7 @@ A query passed `pollMs` declares why: `query Name @poll(reason: "...") { ... }`.
 
 ## Reading everything, counts and deleted rows
 
-- `client.readAll(Query, variables, { limit, pageSize?, signal? })` returns `{ rows, total, truncated }`, for one root `@connection` selecting
+- `readAll(client, Query, variables, { limit, pageSize?, signal? })`, from `graphql-orm-client/read-all`, returns `{ rows, total, truncated }`, for one root `@connection` selecting
   `PageInfo { TotalCount }`. The limit is required, and a missing total throws. It's a one-time read: watch a root for freshness.
 - Aliased counts, several counts in one document, and generated aggregates stay current like lists, on types the project made live. An aggregate whose
   source entity the schema can't establish isn't covered: poll it.

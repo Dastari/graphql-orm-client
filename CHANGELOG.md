@@ -49,7 +49,7 @@
 
 - R15: generated aggregate roots with a unique schema-derived entity now join R3 list refresh. Regenerate to enable this for project-live types. Aliased counts preserve their generated types.
 
-- R14: `client.readAll` traverses a compiled root connection with a required limit, exact last-page total, truncation and abort support. Select TotalCount; unknown totals fail. Pages have no shared snapshot.
+- R14: `readAll(client, ...)` from `graphql-orm-client/read-all` traverses a compiled root connection with a required limit, exact last-page total, truncation and abort support. Select TotalCount; unknown totals fail. Pages have no shared snapshot.
 
 
 

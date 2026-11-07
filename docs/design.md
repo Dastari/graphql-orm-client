@@ -752,8 +752,8 @@ those runs; each timing in each run is itself the median of five samples.
 | 100-event burst wall time (ms) | 32.552 | 750 |
 | 100-event subscriber notifications | 100 | 100 |
 | 45,000-line schema + 250 documents (ms) | 694 | 5,000 |
-| Main standalone raw bundle (bytes) | 55,626 | 65,000 |
-| Main standalone gzip bundle (bytes) | 17,910 | 21,000 |
+| Main standalone raw bundle (bytes) | 59,388 | 65,000 |
+| Main standalone gzip bundle (bytes) | 19,014 | 21,000 |
 | React standalone raw bundle (bytes) | 6,969 | 10,000 |
 | React standalone gzip bundle (bytes) | 2,836 | 4,000 |
 
@@ -1054,7 +1054,7 @@ globs and 40 live types at a simulated 32-operation limit. Router configuration 
 
 ## Bounded read-all (R14)
 
-`client.readAll(Query, variables, { limit, pageSize?, signal? })` returns `{ rows, total, truncated }`.
+`readAll(client, Query, variables, { limit, pageSize?, signal? })`, from `graphql-orm-client/read-all` so it stays out of the main bundle, returns `{ rows, total, truncated }`.
 Use exactly one root `@connection`, a variable page input and select `Edges { Node { ...Row } }`
 and `PageInfo { TotalCount }`. The positive integer limit is required; optional positive `pageSize` caps each request. Missing metadata or
 an absent/null total throws; totals are never inferred. Rows are normalised and deduplicated
