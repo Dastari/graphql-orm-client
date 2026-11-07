@@ -131,6 +131,11 @@ An application coming from Apollo will find `skip`, `refetch(variables)`, fetch 
 abort signals, `client.query`, `client.subscribe`, `useSubscription` and `refetchQueries`; the
 [design](docs/design.md#coming-from-apollo) maps each Apollo option.
 
+For progress, AI text deltas, terminal output and search results, use `client.stream` and React's
+`useEphemeralStream`. A required buffer limit bounds memory; sequence and resume declarations enable
+de-duplication and reconnect replay when the service supports it. Gaps, evictions and unprovable
+continuity are explicit. These values never enter the store. See [ephemeral streams](docs/design.md#ephemeral-streams-r11).
+
 A fragment marked `@refetchable` can read its record again on its own, through the router's
 `node(NodeId)` lookup: `useRefetchableFragment(Fragment, ref)` or
 `client.refetchFragment(Fragment, ref)`. Its type must implement `Node`.
@@ -161,6 +166,7 @@ pnpm exec graphql-orm-client skills install --target claude   # or agents / code
 | `graphql-orm-client-adopt` | Install the client, configure the network, store and identity scope, and wire a router |
 | `graphql-orm-client-data` | Write fragments, route roots, pagination, refetching and mutations |
 | `graphql-orm-client-live` | Live updates, cache policy, expiry and polling fallbacks |
+| `graphql-orm-client-streams` | Ephemeral progress, AI text deltas, terminal output and search results |
 | `graphql-orm-client-server` | What a graphql-orm service must declare so the client works (for backend agents) |
 
 ## Licence

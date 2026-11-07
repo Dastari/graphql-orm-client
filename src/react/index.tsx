@@ -422,3 +422,5 @@ export function useFragmentList<T>(
   )
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
 }
+
+export { useEphemeralStream } from "./ephemeral.js"

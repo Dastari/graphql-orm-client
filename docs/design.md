@@ -890,3 +890,76 @@ The same real run dropped the HTTP socket after a write committed: outcome was u
 reconciliation reread, and a network-only read observed the updated name and version 2.
 No real refused-write signal or committed read-back denial was produced; those classifier
 cases use mocks. The fixture's public mutation succeeded without an authorization header.
+## Ephemeral streams (R11)
+
+`client.stream(subscription, variables, options)` creates a framework-agnostic handle for progress,
+AI text deltas, terminal output and search results. It uses `live.subscribe`, as plain subscriptions
+do, but bypasses normalization entirely. Nothing enters the store or persistence. Call `open()`
+to start and `dispose()` to stop and synchronously erase the buffer and cursor. The client owns
+all handles, including unopened ones, and disposes them on `client.dispose()`. Identity changes
+must dispose the old client before creating the next one, as with query data.
+
+```ts
+const output = client.stream(OutputSubscription, {}, {
+  select: data => data.output,
+  bufferSize: 2000,
+  sequence: {
+    value: item => item.seq,
+    after: 0,
+    cursor: item => item.cursor,
+    resume: (variables, cursor) => ({ ...variables, after: cursor }),
+  },
+})
+output.open()
+// React: useEphemeralStream(output), imported from graphql-orm-client/react.
+// The owner opens and disposes the handle; the hook only reads it.
+```
+
+The application's subscription must select the sequence and cursor fields and declare the resume
+variable. `sequence.value` declares contiguous increasing safe integers; values at or below the
+last accepted sequence are discarded. This assumes ordered delivery within that declared sequence,
+not arbitrary out-of-order events. `after` establishes the initial expected sequence; without it,
+observation starts at the first item and says nothing about earlier items. `cursor` and `resume`
+are a pair, omitted when the service cannot replay. Cursors remain opaque to the client.
+
+State has `connecting`, `open` (an item arrived), `reconnecting`, `ended` (normal completion or
+disposal) and `failed`. `continuity: observed` means only that observed sequences were contiguous;
+it does not prove admission of a quiet stream or delivery of an unseen final item. During reconnect
+continuity is `unprovable` until replay delivers another contiguous sequence. Without replay it
+stays unprovable after an interruption. A forward jump records the first `gap` with `expected` and
+`received`; it remains visible. Without `sequence`, continuity is always `unprovable`, duplicates
+are kept, and gaps cannot be detected. `status: open` alone is never a continuity guarantee.
+
+`bufferSize` is required. Oldest items are evicted and `dropped` counts them; eviction is separate
+from a transport gap. Notifications and immutable snapshots coalesce over 16 ms using the live timer
+seam, so `useSyncExternalStore` does not render for every event. `getState()` returns the last
+published snapshot. Disposal publishes an empty snapshot synchronously and cancels all timers.
+No browser global is accessed at module import time.
+
+Use `graphqlWsTransport(ws)` so socket recovery signals through `live.connection`; the handle cancels
+the transport's stale-variable resubscription and subscribes with the last cursor. Transport errors,
+continuity errors, schema reload and capacity/unavailability errors retry using `live.restart`'s
+minimum and maximum delays, with jitter and a minimum positive delay. `maxRetries` counts retries in a row, since the last item, including socket recoveries, and defaults to eight.
+`live.restart: false` disables automatic retries. Refusals and other GraphQL errors fail immediately;
+normal completion ends without retry. Create a new handle explicitly after a failure. Plain
+`client.subscribe` and `useSubscription` retain their existing store-writing behavior.
+
+The server must implement replay for the application's custom subscription. Neither graphql-orm
+0.90.1 nor 0.91.1 with router 0.8.1 supplies a generic custom-subscription replay protocol.
+
+R11 verification: the test kit drives 1,000 items with overlapping replay across reconnect and fewer
+than ten React renders, plus gaps, unprovable continuity, overflow, disposal and refusal/retry cases.
+A loopback run used the conformance router binary (graphql-orm-router 0.8.1 built from the 0.90.1
+source) with a test-owned Node subgraph declaring `output(after: Int)` and explicit integer replay:
+1,000 items, socket dropped after 500, resume at 500, no missing/duplicate items, 278 notifications.
+The source sent one item every 5 ms. An unpaced burst through the router loses items, and the stream reports the gap. That loss
+is the router's, not the client's: a bare socket with no client received 274 of 1000 frames from the same source, with no error frame
+(router 0.8.1 at `graphql-orm-v0.90.1`, graphql-orm#359). So for a source that bursts, declare a sequence so the loss shows, and don't
+rely on the router delivering every frame.
+
+R11 budget run (`pnpm budgets --skip-window`): main 48,554 raw / 15,767 gzip bytes and React
+7,096 / 2,875, within checked-in limits. Comparing minified source closures with the branch's parent
+adds 3,613 raw / 1,151 gzip bytes to main and 127 / 37 to React (source and built closures differ
+slightly). The command failed the unrelated compiler timing budget: median 41,678.8 ms exceeded
+30,000 ms. Window measurements were explicitly skipped, so that portion is incomplete. No limits
+were raised and this is not a full budget pass.

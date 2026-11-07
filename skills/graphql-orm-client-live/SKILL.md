@@ -150,3 +150,6 @@ may be stale: draw `QueryState.listRefreshTruncated` and health `list-refresh-tr
 No server snapshot across keyset pages is promised. Without a delete preimage grant, the server
 sends no DELETED event; only the next event or poll repairs the list. Do not promise immediate
 delete visibility when polling is disabled. See docs/design.md, List streams (R3), for validation.
+
+For non-entity progress, AI text deltas and terminal output, use the
+[ephemeral streams skill](../graphql-orm-client-streams/SKILL.md).
