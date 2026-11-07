@@ -1,5 +1,4 @@
 import type { ReadCause } from "./health.js"
-import { ephemeral, type EphemeralOptions, type EphemeralStream } from "./ephemeral.js"
 import { withoutErrorNulls } from "./partial.js"
 import { wasNotSent, writeStatus, type WriteOutcome } from "./outcome.js"
 import type { ConnectionSpec, FragmentArtifact, FragmentRefFor, LinkSelection, OperationArtifact, PagedSpec, Selection } from "./artifact.js"
@@ -73,6 +72,10 @@ export type MutationPolicy = "store" | "no-store"
 export type QueryStatus = "idle" | "loading" | "ready" | "refreshing" | "error"
 
 export interface QueryState<T> {
+  /** Restored data has not yet been confirmed by a network read. */
+  readonly stale?: boolean
+  /** Configured lifetime cannot be proved valid, or has expired. */
+  readonly lifetime?: "expired" | "unknown"
   readonly status: QueryStatus
   /** The root's own fields, with child fragments as masked references. */
   readonly data: T | undefined
@@ -151,6 +154,18 @@ export interface WatchedQuery<T> {
   refetch(): Promise<void>
   /** Fetch the next page of the query's `@connection` list and append it. */
   loadMore(): Promise<void>
+}
+
+/** A route read started before mount. Dispose on abandoned navigation; mount with useLoadedQuery. */
+export interface LoadedQuery<T> extends WatchedQuery<T> {
+  /** Resolves after the first read; inspect getState().error for a read failure. Cancellation resolves quietly. */
+  readonly ready: Promise<void>
+  /** Identity owner, checked by the React binding. */
+  readonly client: Client
+  /** Retain while mounted, opening again if the load expired or its last user unmounted. The cleanup tolerates StrictMode effect replay. */
+  mount(): () => void
+  /** End this loader; it can't be mounted again. Idempotent. Without this, an unused loader only pauses. */
+  dispose(): void
 }
 
 /** Receives a plain subscription's events (`client.subscribe`). */
@@ -293,9 +308,12 @@ class QueryResource<T> implements WatchedQuery<T> {
     readonly key: string,
     private readonly policy: FetchPolicy
   ) {
+    client.store.configureLifetimes(artifact.lifetimes)
     const snapshot = client.store.lookup<T>(selectorOf(artifact, variables))
     const complete = !snapshot.missing && policy !== "network-only"
     this.state = {
+      stale: snapshot.stale,
+      lifetime: snapshot.lifetime,
       status: complete ? "ready" : "loading",
       data: complete ? snapshot.data : undefined,
       error: null,
@@ -303,7 +321,6 @@ class QueryResource<T> implements WatchedQuery<T> {
       hasMore: complete ? this.connection()?.hasMore ?? false : false,
       loadingMore: false,
     }
-    if (complete) this.watch(snapshot)
   }
 
   getState = (): QueryState<T> => this.state
@@ -319,9 +336,10 @@ class QueryResource<T> implements WatchedQuery<T> {
   open(): void {
     this.users += 1
     if (this.users > 1) return
+    if (this.state.status === "ready") this.watch(this.client.store.lookup<T>(selectorOf(this.artifact, this.variables)))
     this.release = this.client.store.retain(this.key, selectorOf(this.artifact, this.variables))
     if (this.artifact.lists) this.client.live?.holdLists(this.key, this.artifact.lists)
-    if (this.state.status !== "ready" || this.policy !== "store-or-network") void this.fetch("first")
+    if (this.state.stale || this.state.status !== "ready" || this.policy !== "store-or-network") void this.fetch("first")
     this.holdLive()
     this.schedulePoll()
   }
@@ -364,7 +382,10 @@ class QueryResource<T> implements WatchedQuery<T> {
       })
     this.pollTimer = set(() => {
       const active = this.client.polling.isActive ?? defaultActive
-      if (this.users > 0 && active() && !this.inflight) void this.fetch("poll")
+      if (this.users > 0 && active() && !this.inflight) {
+        this.client.store.refreshRelations?.(selectorOf(this.artifact, this.variables))
+        void this.fetch("poll")
+      }
     }, next)
   }
 
@@ -393,7 +414,10 @@ class QueryResource<T> implements WatchedQuery<T> {
     this.release = null
   }
 
-  refetch = (): Promise<void> => this.fetch()
+  refetch = (): Promise<void> => {
+    this.client.store.refreshRelations?.(selectorOf(this.artifact, this.variables))
+    return this.fetch()
+  }
 
   private loadingMore: Promise<void> | null = null
   private loadedRange = 0
@@ -476,6 +500,8 @@ class QueryResource<T> implements WatchedQuery<T> {
           ...this.state,
           status: "ready",
           data: snapshot.data,
+          stale: snapshot.stale,
+          lifetime: snapshot.lifetime,
           error: null,
           errors,
           hasMore: this.connection()?.hasMore ?? false,
@@ -556,7 +582,7 @@ class QueryResource<T> implements WatchedQuery<T> {
     this.unsubscribeStore?.()
     this.holdLive()
     this.unsubscribeStore = this.client.store.subscribe(snapshot, (next) => {
-      this.set({ ...this.state, data: next.data as T, hasMore: this.connection()?.hasMore ?? false })
+      this.set({ ...this.state, data: next.data as T, stale: next.stale, lifetime: next.lifetime, hasMore: this.connection()?.hasMore ?? false })
       this.holdLive()
       // A record this query shows was deleted or collected: read it again from the server.
       if (next.missing && this.users > 0) {
@@ -755,7 +781,7 @@ export class Client {
   private readonly subscriptions = new Set<() => void>()
   private readonly subscribeTransport: LiveOptions["subscribe"] | null
   private mutationCount = 0
-  private readCounts: Readonly<Record<ReadCause, number>> = { first: 0, manual: 0, poll: 0, stale: 0, confirm: 0, restart: 0, reconnect: 0, burst: 0, pagination: 0 }
+  private readCounts: Readonly<Record<ReadCause, number>> = { first: 0, manual: 0, poll: 0, stale: 0, confirm: 0, restart: 0, reconnect: 0, burst: 0, pagination: 0, relation: 0 }
 
   private countRead(cause: ReadCause): void {
     if (this.live) this.readCounts = { ...this.readCounts, [cause]: this.readCounts[cause] + 1 }
@@ -779,7 +805,10 @@ export class Client {
           options.live,
           (holders, cause, sent, since) => {
             for (const resource of this.resources.values()) {
-              if (resource.users > 0 && holders.has(resource.key)) void resource.readAgain(cause, sent ? request => sent(resource.key, request) : undefined, since)
+              if (resource.users > 0 && holders.has(resource.key)) {
+                this.store.refreshRelations?.(selectorOf(resource.artifact, resource.variables))
+                void resource.readAgain(cause, sent ? request => sent(resource.key, request) : undefined, since)
+              }
             }
           },
           (timing) => this.healthChanged(timing),
@@ -922,7 +951,7 @@ export class Client {
       include === "active" ||
       include.some((entry) => (typeof entry === "string" ? artifact.name === entry : artifact === entry || artifact.hash === entry.hash))
     await Promise.all(
-      [...this.resources.values()].filter((resource) => resource.users > 0 && matches(resource.artifact)).map((resource) => resource.fetch())
+      [...this.resources.values()].filter((resource) => resource.users > 0 && matches(resource.artifact)).map((resource) => resource.refetch())
     )
   }
 
@@ -944,8 +973,9 @@ export class Client {
     }
     const selector = selectorOf(artifact, variables)
     if ((options.policy ?? "store-or-network") === "store-or-network") {
+      this.store.configureLifetimes(artifact.lifetimes)
       const stored = this.store.lookup<T>(selector)
-      if (!stored.missing) return { data: stored.data, errors: [] }
+      if (!stored.missing && !stored.stale) return { data: stored.data, errors: [] }
     }
     const release = this.store.retain(`query:${queryKey(artifact, variables)}`, selector)
     try {
@@ -1019,15 +1049,15 @@ export class Client {
     return stop
   }
 
-  /** Create a bounded, volatile stream. Call open() to subscribe and dispose() to erase it. */
-  stream<D, T, V extends Variables, C = unknown>(
-    artifact: OperationArtifact<D, V>, variables: V, options: EphemeralOptions<D, T, V, C>
-  ): EphemeralStream<T, C> {
+  /**
+   * For optional entry points built on the client: its live options, and a place to register something to end with its identity.
+   * Returns a function to remove that registration.
+   */
+  liveExtension(end: () => void): { readonly live: LiveOptions; remove(): void } {
     if (this.store.isDisposed) throw new Error("This client was disposed with its identity")
-    if (!this.rereadOptions) throw new Error("A stream requires live.subscribe")
-    const stream = ephemeral(artifact, variables, options, this.rereadOptions, () => this.subscriptions.delete(stream.dispose))
-    this.subscriptions.add(stream.dispose)
-    return stream
+    if (!this.rereadOptions) throw new Error("This needs live.subscribe")
+    this.subscriptions.add(end)
+    return { live: this.rereadOptions, remove: () => void this.subscriptions.delete(end) }
   }
 
   /**
@@ -1276,7 +1306,10 @@ export class Client {
         shared.open()
       },
       close: () => {
-        if (!opened) return
+        if (!opened) {
+          if (shared.users === 0 && this.resources.get(key) === shared) this.resources.delete(key)
+          return
+        }
         opened = false
         shared.removePoll(token)
         shared.close()
@@ -1298,6 +1331,75 @@ export class Client {
   ): PagedQuery<T, V> {
     const { pageIndex = 0, pageSize = pageSizeOf(artifact, variables), ...watch } = options
     return new PagedQueryResource<T, V>(this, artifact, variables, pageIndex, pageSize, watch)
+  }
+
+  /**
+   * Start a route read before mount. Shares a store-or-network read for equal artifacts/variables.
+   * Lists open their stream before this read (R3), even before mount; an unused loader closes after timeoutMs (default 30 seconds)
+   * and reopens if it's mounted later. Pass the router's abort signal and dispose on abandonment; a disposed loader can't be mounted.
+   * Mount through useLoadedQuery; do not pass this result to useQuery.
+   */
+  loadQuery<T, V extends Variables>(
+    artifact: OperationArtifact<T, V>, variables: V,
+    options: { signal?: AbortSignal; timeoutMs?: number } = {}
+  ): LoadedQuery<T> {
+    const timeoutMs = options.timeoutMs ?? 30_000
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new RangeError("loadQuery timeoutMs must be positive and finite")
+    const watched = this.watchQuery(artifact, variables, "store-or-network")
+    let disposed = false
+    let open = false
+    let finishCancellation!: () => void
+    const cancelled = new Promise<void>(resolve => { finishCancellation = resolve })
+    let mounts = 0
+    let timer: ReturnType<typeof setTimeout> | undefined
+    // Nobody is using it for now: an expired load, or the last unmount. A later mount opens it again, because a handle can
+    // outlive this, as when a slow route chunk takes longer than timeoutMs or a parent remounts.
+    const idle = () => {
+      if (!open) return
+      open = false
+      clearTimeout(timer)
+      this.subscriptions.delete(dispose)
+      watched.close()
+    }
+    const dispose = () => {
+      if (disposed) return
+      disposed = true
+      finishCancellation()
+      options.signal?.removeEventListener("abort", dispose)
+      idle()
+    }
+    const start = () => {
+      open = true
+      this.subscriptions.add(dispose)
+      watched.open()
+    }
+    const loaded: LoadedQuery<T> = {
+      ...watched, client: this,
+      ready: Promise.resolve(),
+      dispose,
+      mount: () => {
+        if (disposed || this.store.isDisposed) throw new Error(`${artifact.name}: route load was disposed; start a new loadQuery`)
+        clearTimeout(timer)
+        if (!open) start()
+        mounts += 1
+        let released = false
+        return () => {
+          if (released) return
+          released = true
+          mounts -= 1
+          // React replays effects synchronously. Keep the read and stream across that replay.
+          queueMicrotask(() => { if (mounts === 0) idle() })
+        }
+      },
+    }
+    if (options.signal?.aborted || this.store.isDisposed) { dispose(); return loaded }
+    options.signal?.addEventListener("abort", dispose, { once: true })
+    timer = setTimeout(idle, timeoutMs)
+    timer.unref?.()
+    start()
+    // open starts the request; refetch joins it, except for an already complete cached read.
+    if (!disposed) Object.assign(loaded, { ready: watched.getState().status === "ready" ? Promise.resolve() : Promise.race([watched.refetch(), cancelled]) })
+    return loaded
   }
 
   /** Start a query before rendering (from a route loader). Resolves when the data is stored. */

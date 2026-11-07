@@ -30,7 +30,7 @@ served SDL and recomputes protocol fingerprints. Composite placeholder mutations
 also lack catalogue metadata; Slot uses repository writes and is excluded from
 GraphQL mutations. See [conformance](../conformance/README.md) for reproductions
 and recovery coverage. No server fix is
-included and no later server version is claimed as run.
+included; R13’s later runs on both tags are recorded below.
 
 | Need | Why the client needs it | Status |
 | --- | --- | --- |
@@ -54,7 +54,7 @@ included and no later server version is claimed as run.
 | Effective page size in `PageInfo` | `@paged` computes `pageCount` from the page size it asked for | Missing. graphql-orm clamps an explicit `Limit` to `PaginationConfig::DEFAULT_MAX_LIMIT` (100) and a missing one to 50, but `PageInfo` reports neither the limit nor the offset it applied. A page size above the maximum gives a short page and a wrong page count, and the client can't tell. Needed: `PageInfo` fields for the applied `Limit` and `Offset`, or an error for a `Limit` above the maximum. Until then, keep page sizes within the server's maximum |
 | Persisted operations | Smaller requests; an allow-list of compiled operations at the router | Planned. The operation catalogue exists |
 | Shareable shared objects | Two subgraphs must compose | `PageInfo` is shareable. The aggregate result objects are fixed in 0.81.2 |
-| Lifetime metadata in the schema | The compiler can configure expiry without hand-written policy | Planned |
+| Lifetime metadata in the schema | The compiler can configure expiry without hand-written policy | Missing in graphql-orm 0.90.1 and 0.93.0 (entity macro and protocol source read). Requested: opt-in entity lifetime field metadata plus an unambiguous time representation and timezone. Until available the generator requires explicit per-type `lifetimes` field and format configuration; names alone never imply expiry |
 | In-memory server state | Connection and liveness changes reach the client as `Changed` | Not needed as an ORM feature for now: a service persists state *transitions* (connected, delayed, offline), not heartbeats, so the generated `Changed` covers them. A field overlay for exact in-memory values may follow if a consumer needs it (#223) |
 
 ## Rules for services
@@ -112,3 +112,40 @@ Read from tags 0.90.1 and 0.93.0, and run on both with router 0.8.1 and SQLite:
 - **Direct deletes without a preimage grant** send nothing, so a list corrects on its next delivered event or poll.
 - **No tombstone:** a late response can restore a removed row, because the deleted record no longer has a version to compare. The read that follows the
   event corrects it.
+
+### Persistence release identity (R17)
+
+Requested: a stable server deployment/release identifier available to clients, changing whenever
+cursor interpretation may change. No such generic identifier was found in the entity/protocol
+source at graphql-orm 0.90.1 or 0.93.0. Schema hashes alone cannot detect unchanged-SDL releases.
+Until this exists, persistence requires an application-supplied `serverRelease`; an envelope mismatch
+discards all connections and cursors along with records. The client cannot detect an incorrectly
+reused deployment identifier.
+
+## Batched relation lookup (R13)
+
+Source read at **graphql-orm-v0.90.1 (adfa608d)** and
+**graphql-orm-v0.93.0 (f0722a09)**: `graphql-orm-macros/src/relations.rs` binds declared
+`from` source fields to `to` target fields. Served SDL exposes scalar foreign keys and
+relation types but does not encode this mapping. The client requires it explicitly.
+
+In both tags, `graphql-orm-macros/src/entity.rs` emits `<Entity>WhereInput` fields only
+for filterable columns. Generated list roots accept `Where` and `Page`, returning
+`Edges { Node }`. `graphql-orm/src/graphql/filters.rs` supplies scalar `InList` lists;
+String, UUID and Int have no separate list-length cap in that source. Signed64 filters
+limit lists to 256 operands. `graphql-orm/src/graphql/orm/query.rs` defaults to 50 rows,
+with a maximum of 100, on both tags. The client explicitly requests at most 100 keys and
+rows, or a lower declared service limit. It never assumes an Id is filterable or guesses
+a plural root; generated requests are validated against the served schema.
+
+Proposed server metadata: expose complete relation source-to-target mappings and the
+configured effective page maximum through SDL or catalogue. Until then `@batch` supplies
+the mapping and optional lower limit. No server change is included here.
+
+R13 conformance ran against both tags and router 0.8.1: 200 Ticket/Vendor pairs,
+two parent-page requests and two 100-key related reads, counted in the HTTP bridge
+forwarding to the router. Related names were read through masked fragments. The real
+R13 scenario runs in Node; the complete suite also runs its Chromium recovery checks.
+Pending, missing, chunk errors, cross-query deduplication, live foreign-key changes,
+ordering/version conflicts, disposal, collection, polling and reconnect recovery are
+additionally covered by mock tests.

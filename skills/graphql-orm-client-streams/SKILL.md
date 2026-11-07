@@ -1,11 +1,11 @@
 ---
 name: graphql-orm-client-streams
-description: Build ephemeral streams for progress, AI text deltas, terminal output and search results with client.stream, cursor replay, bounded buffers and React useEphemeralStream.
+description: Build ephemeral streams for progress, AI text deltas, terminal output and search results with createStream from graphql-orm-client/streams, cursor replay, bounded buffers and React useEphemeralStream.
 ---
 
 # Ephemeral streams
 
-- Use `client.stream(Subscription, variables, { select, bufferSize, sequence? })` for non-entity
+- Use `createStream(client, Subscription, variables, { select, bufferSize, sequence? })` for non-entity
   data. This is R11's sanctioned subscription path outside record freshness. No value enters the
   store or persistence. `client.subscribe` still writes to the store.
 - Create the handle in its owner, call `open()`, and dispose it when the owner closes. Components

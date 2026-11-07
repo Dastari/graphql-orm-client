@@ -63,7 +63,7 @@ export interface LiveTypeHealth {
 }
 
 /** Explicit cause of a query request. Coalesced marks count only the request sent. */
-export type ReadCause = "first" | "manual" | "poll" | "stale" | "confirm" | "restart" | "reconnect" | "burst" | "pagination"
+export type ReadCause = "first" | "manual" | "poll" | "stale" | "confirm" | "restart" | "reconnect" | "burst" | "pagination" | "relation"
 
 export interface LiveHealth {
   /** Whether managed live delivery and its counters are configured. */

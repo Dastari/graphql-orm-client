@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+- R18: add cancellable `client.loadQuery` handles and non-Suspense `useLoadedQuery`, sharing a read
+  across loader, mount and StrictMode replay. Migration is opt-in: replace `preload`/`useQuery` as a
+  pair, forward the router abort signal and dispose abandoned navigation. Unmounted loads expire
+  after 30 seconds (`timeoutMs`). List streams open before reading and close with the handle.
+- Conditional `@skip`/`@include` selections now fail builds by default: previous readers treated
+  omitted fields as missing and generated types required them; live projections lost conditions.
+  Migration: set generator `conditionalDirectives: "legacy"` temporarily, split conditional route
+  roots, then remove the setting and regenerate. Fragment arguments remain unsupported with a
+  clearer error. Whole-operation hook `skip` is unchanged.
+- Server-shell `useQuery` renders idle without registering a watch or starting I/O. Hydration uses
+  the same idle snapshot. Migration: render an idle placeholder, or temporarily pass
+  `{ serverSnapshot: "legacy" }` to restore the prior snapshot. Server data rendering, result streaming
+  and store handoff remain non-goals.
+
+- Add `graphql-orm-client/persistence`: async adapters, a thin IndexedDB adapter, identity/release
+  envelopes, bounded coalesced writes and stale restoration. Import `persistClient` explicitly and
+  provide identityKey, schemaHash and serverRelease to adopt. Set generator `persistence: true` and regenerate for the exported schemaHash.
+  Dispose the old client before changing identity; disposal also deletes its persisted snapshot.
+
+- Opt-in generated lifetime field and format policies, expiry notifications and holder re-reads.
+  Regenerate with `lifetimes` to adopt; no configuration preserves existing behaviour.
+
+- R13: opt-in `@batch` compiles bounded relation reads with shared caching and masked
+  pending/ready/missing/error states. To adopt, install `installRelationBatching(client)`
+  from `graphql-orm-client/relations`, annotate relations and regenerate. Existing documents
+  keep their request behaviour. With batching installed, mounted fragment subscriptions retain records during collection.
+  With no `document`, as when rendering on a server, nothing is sent and the relation stays `pending`; `withoutDocument: "read"` allows it.
+
 - `live.maxKeyedSubscriptions: 0` now uses one un-narrowed stream in optional `Keys` mode,
   retaining it while held sets change. Required Keys stays narrowed, reported by `keyRequired`.
   Migration: the server now checks row policy per event per subscriber, including unheld rows.
@@ -55,7 +83,7 @@
 - R10: additive write outcome API and explicit retry hook method; no automatic replay. Opt into independent HTTP `writes` and `reads` limits; omitted limits preserve existing behaviour. Supply a reconciliation read for known affected records.
 
 - R9: query and mutation `@sensitive` returns plain expanded data without storing it. Live combinations and watched sensitive queries reject. Existing `no-store` behaviour is unchanged.
-- Add R11 ephemeral streams: `client.stream` and React `useEphemeralStream`, with explicit
+- Add R11 ephemeral streams: `createStream(client, ...)` from `graphql-orm-client/streams`, and React `useEphemeralStream`, with explicit
   sequence/resume contracts, bounded volatile buffers, coalesced notifications, reconnect replay
   and visible gaps/evictions. Additive; no migration. Existing plain subscriptions are unchanged.
 

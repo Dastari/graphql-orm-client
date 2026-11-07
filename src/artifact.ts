@@ -60,6 +60,21 @@ export interface PagedSpec {
   readonly hasPreviousPage: string | null
 }
 
+/** State of an explicitly batched relation. Missing includes unreadable records. */
+export type RelationState<T> =
+  | { readonly status: "pending" }
+  | { readonly status: "ready"; readonly data: T }
+  | { readonly status: "missing" }
+  | { readonly status: "error"; readonly error: unknown }
+
+/** Compiler-validated, single-key relation lookup. */
+export interface BatchSpec {
+  readonly foreignKey: string
+  readonly key: string
+  readonly operation: OperationArtifact
+  readonly limit: number
+}
+
 export interface LinkSelection {
   readonly kind: "link"
   readonly responseKey: string
@@ -69,6 +84,7 @@ export interface LinkSelection {
   /** Concrete types the field can return. */
   readonly types: readonly string[]
   readonly selections: readonly Selection[]
+  readonly batch?: BatchSpec
   /** Selected node response key on schema-derived connection edges, for deleted-node omission. */
   readonly listNode?: string
   readonly connection?: ConnectionSpec
@@ -152,6 +168,8 @@ export interface OperationArtifact<TData = unknown, TVariables = Record<string, 
   /** Key fields per concrete type, in primary-key order. */
   readonly keys: Readonly<Record<string, readonly string[]>>
   /** Record-version field per type, where the type has one. */
+  /** Explicit lifetime policy selected by the generator. */
+  readonly lifetimes?: Readonly<Record<string, import("./store/lifetime.js").LifetimePolicy>>
   readonly versions: Readonly<Record<string, string>>
   /** Fragments referenced anywhere in this operation, by name. */
   readonly fragments: Readonly<Record<string, FragmentArtifact>>

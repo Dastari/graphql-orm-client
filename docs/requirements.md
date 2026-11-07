@@ -139,7 +139,7 @@ retry after step-up authentication, with no queued replay and no credential held
 the store: progress, AI text deltas, terminal output, search results. It has a resume cursor, sequence
 de-duplication, replay after reconnect, a bounded buffer and render coalescing. This replaces the
 consumer-written versions and is the one sanctioned exception in R5.
-*Built:* `client.stream` and React `useEphemeralStream`: explicit sequence/cursor/resume declarations,
+*Built:* `createStream` from `graphql-orm-client/streams` and React `useEphemeralStream`: explicit sequence/cursor/resume declarations,
 bounded volatile buffers, coalesced snapshots, socket reconnect replay and visible gaps/evictions.
 Replay requires a service-provided custom subscription; no sequence means continuity is unprovable.
 *Acceptance:* a high-frequency stream reconnects with no duplicate or missing items and without
@@ -157,6 +157,8 @@ chunked". The compiler should offer this, for example a directive on a relation 
 chunking, de-duplication, a pending state and shared caching.
 *Acceptance:* a 200-row list with a related name makes a bounded number of reads, with no consumer
 code.
+*Built:* opt-in `@batch` with validated mappings and generated state unions; the optional
+`relations` entry point coalesces and chunks lookups. See [R13 design](design.md#batched-relation-reads-r13).
 
 **R14. Bounded read-all.** For roots that only filter on a key, `readAll` pages to a stated limit and
 reports whether it truncated, along with the exact total. Consumers have written this several times.
@@ -180,8 +182,10 @@ Without a server preimage grant, correction waits for another event or poll.
 *Built in 0.1.0-alpha.10:* `DELETED` with change kind `PROPAGATED` (a child deleted under a record that still exists,
 graphql-orm 0.93.0) keeps the record and re-reads its holders.
 
-**R17. Lifetime and persistence.** `AGENTS.md` requires honouring lifetime fields, but the source has
-none of this yet. Build it with the roadmap's persistence phase. Persistence is scoped to identity,
+**R17. Lifetime and persistence.** Lifetime is built, opt-in through explicit generated field and format policies. Expired records
+read as missing and holders re-read; ambiguous values report unknown lifetime with a diagnostic.
+Persistence is built as an opt-in separate entry point with explicit identity, schema and deployment
+release envelopes, stale restoration, bounded coalesced writes and diagnostic-only storage failures. Persistence is scoped to identity,
 excludes R9, and is disposed with the identity. A cursor is never persisted across a server release:
 a stale keyset cursor can be accepted at the wrong place.
 
@@ -189,6 +193,11 @@ a stale keyset cursor can be accepted at the wrong place.
 loader can avoid a waterfall. Suspense is optional. Decide on fragment arguments
 (`@argumentDefinitions`) and support for `@skip`/`@include`. Server rendering stays a non-goal, but
 document how the client behaves inside a framework that renders a shell on the server.
+*Built:* `client.loadQuery` and `useLoadedQuery` share a retained read across loader and mount,
+with abort, unused-load timeout and StrictMode replay cleanup. Non-Suspense. Conditional selections
+are rejected by default (`conditionalDirectives: "legacy"` is migration only); fragment arguments
+are rejected. Node server shells return idle without starting queries; no data streaming or store
+handoff. See [route loading](design.md#route-loading-r18) for lifecycle and migration.
 
 **R19. Several windows.** An application with pop-out windows or several tabs opens one socket and
 store per window. The owner decided to keep that for now; R22 measures the cost, including pop-out tool

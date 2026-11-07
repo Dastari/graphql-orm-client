@@ -52,6 +52,9 @@ export interface CompileOptions {
   readonly subscriptionPaths?: readonly string[]
   /** Source text to all declaring files, relative to the config directory. CLI supplies this. */
   readonly documentPaths?: Readonly<Record<string, readonly string[]>>
+  /** Reject unsupported conditional selections. legacy preserves the previous unsafe behaviour for migration only. */
+  readonly conditionalDirectives?: "reject" | "legacy"
+
   /** Stream projection; as-written preserves legacy fragment spreading. */
   readonly liveSelection?: "full" | "as-written"
   /** Reports fields omitted from generated stream projections. */
@@ -66,6 +69,8 @@ export interface CompileOptions {
    * stored record. Types not listed use graphql-orm's `RecordVersion` when they have it, and the
    * compiler selects it; `null` turns that off for a type.
    */
+  /** Explicit expiry field and representation; no fields are inferred by name. */
+  readonly lifetimes?: Readonly<Record<string, import("../store/lifetime.js").LifetimePolicy>>
   readonly versions?: Readonly<Record<string, string | null>>
   /** The generated subscription field for a type. Default `${typename}Changed`. */
   readonly liveField?: (typename: string) => string
@@ -95,6 +100,7 @@ export class CompileError extends Error {
 }
 
 const CLIENT_DIRECTIVES = parse(`
+  directive @batch(foreignKey: String!, root: String!, key: String!, limit: Int = 100) on FIELD
   directive @live(enabled: Boolean = true) on FRAGMENT_DEFINITION
   directive @poll(reason: String!) on QUERY | FRAGMENT_DEFINITION
   directive @sensitive on QUERY | MUTATION
@@ -115,7 +121,7 @@ function clientSchemaOf(schema: GraphQLSchema): GraphQLSchema {
   return extended
 }
 
-const CLIENT_DIRECTIVE_NAMES = new Set(["live", "poll", "connection", "refetchable", "paged", "sensitive"])
+const CLIENT_DIRECTIVE_NAMES = new Set(["live", "poll", "connection", "refetchable", "paged", "sensitive", "batch"])
 
 /** graphql-orm's connection and keyset field names. */
 const DEFAULT_CONNECTION = {
@@ -154,6 +160,9 @@ function pagedNames(options: CompileOptions): PagedNames {
 /** Remove client-only directives from what is sent to the server. */
 function stripClientDirectives<T extends import("graphql").ASTNode>(node: T): T {
   return visit(node, {
+    Field(node) {
+      if (node.directives?.some(d => d.name.value === "batch")) return null
+    },
     Directive(directive) {
       return CLIENT_DIRECTIVE_NAMES.has(directive.name.value) ? null : undefined
     },
@@ -265,6 +274,15 @@ function compileDocuments(
     kind: Kind.DOCUMENT,
     definitions: [...operationNodes, ...fragmentNodes.values()],
   }
+  visit(combined, {
+    Directive(node) {
+      const name = node.name.value
+      if ((name === "skip" || name === "include") && options.conditionalDirectives !== "legacy")
+        problems.push(`@${name} is unsupported: conditional reads, generated optional types and live projections are not implemented. Split the route query; conditionalDirectives: "legacy" temporarily restores unsafe previous compilation.`)
+      if (name === "argumentDefinitions" || name === "arguments")
+        problems.push(`@${name}: fragment arguments are unsupported; declare variables on the route operation instead`)
+    },
+  })
   // Fragments may be compiled without an operation that uses them.
   const rules = specifiedRules.filter((rule) => rule.name !== "NoUnusedFragmentsRule")
   for (const error of validate(clientSchema, combined, rules)) problems.push(error.message)
@@ -288,7 +306,7 @@ function compileDocuments(
       const allowed = node.operation === "query" ? options.queryOwners : node.operation === "subscription" ? options.subscriptionPaths : undefined
       if (allowed && paths.get(node)?.some((file) => file.startsWith("<document ") || !allowed.some((glob) => matchesPath(file, glob)))) {
         report(node.operation === "query" ? "queryOwnership" : "rawSubscriptions", node,
-          node.operation === "query" ? "query is outside queryOwners; add its file path to queryOwners" : "raw subscription is outside subscriptionPaths; add its path, or use client.stream")
+          node.operation === "query" ? "query is outside queryOwners; add its file path to queryOwners" : "raw subscription is outside subscriptionPaths; add its path, or use createStream from graphql-orm-client/streams")
       }
     }
   }
@@ -338,11 +356,15 @@ function compileDocuments(
     }
     const used = usedFragments(augmented.selectionSet, fragmentNodes)
     const sensitive = node.directives?.some(d => d.name.value === "sensitive") === true
+    if (sensitive && (hasDirective(node.selectionSet, "batch") || [...used].some(name => hasDirective(fragmentNodes.get(name)!.selectionSet, "batch"))))
+      throw new CompileError([`${name}: @sensitive cannot use @batch relations`])
     if (sensitive && [...used].some(name => fragments[name]?.live))
       throw new CompileError([`${name}: @sensitive cannot spread a live fragment; mark it @live(enabled: false) or use a fragment of its own`])
-    const text = [augmented, ...[...used].sort().map((fragment) => augmentedFragments.get(fragment)!)]
-      .map((definition) => print(stripClientDirectives(definition)))
-      .join("\n\n")
+    const wireOperation = stripClientDirectives(augmented)
+    const wireFragments = new Map([...augmentedFragments].map(([name, node]) => [name, stripClientDirectives(node)]))
+    const wireUsed = usedFragments(wireOperation.selectionSet, wireFragments)
+    const text = [wireOperation, ...[...wireUsed].sort().map(fragment => wireFragments.get(fragment)!)]
+      .map(definition => print(definition)).join("\n\n")
     const normalization = convert(schema, augmented.selectionSet, rootType, augmentedFragments, true, options)
     const reachable = reachableTypes(normalization)
     const paged = pagedSpecOf(schema, node, rootType, options)
@@ -353,6 +375,7 @@ function compileDocuments(
       ...(sensitive ? { sensitive: true } : {}),
       keys: pick(metadata.keys, reachable),
       versions: pick(metadata.versions, reachable),
+      ...(options.lifetimes ? { lifetimes: pick(options.lifetimes, reachable) } : {}),
       name,
       text,
       hash: createHash("sha256").update(text).digest("hex"),
@@ -403,7 +426,7 @@ function compileDocuments(
           if (selection.kind === "scalar" && carried && selection.fieldName !== NODE_ID &&
             (selection.args.length || !carried.has(selection.fieldName))) stale.add(typename)
           if (selection.kind === "link") {
-            if (carried) stale.add(typename)
+            if (carried && !selection.batch) stale.add(typename)
             for (const type of selection.types) compare(selection.selections, type)
           }
         }
@@ -412,6 +435,7 @@ function compileDocuments(
       operations[name] = { ...operation, liveReread: [...stale].sort() }
     }
   }
+  shareBatches(schema, operations, fragments, options)
   const refetchable = compileRefetch(schema, fragments, fragmentNodes, operationNames, options)
   return { operations, fragments: { ...fragments, ...refetchable }, live, liveUnavailable }
 }
@@ -554,6 +578,12 @@ function compileLive(
           else {
             const name = selection.name.value
             const def = type.getFields()[name]
+            const batch = selection.directives?.find(d => d.name.value === "batch")
+            if (batch) {
+              const fk = batch.arguments?.find(a => a.name.value === "foreignKey")?.value
+              if (fk?.kind === Kind.STRING) carried.add(fk.value)
+              continue
+            }
             const excluded = name === NODE_ID || !!selection.selectionSet || !!selection.arguments?.length || !!def?.args.length
             if (excluded) {
               if (name !== NODE_ID) rereadFragments.push(fragment)
@@ -569,7 +599,7 @@ function compileLive(
           if (selection.kind === Kind.FRAGMENT_SPREAD) {
             if (!seen.has(selection.name.value)) compare(fragmentNodes.get(selection.name.value)!.selectionSet, fragment, new Set(seen).add(selection.name.value))
           } else if (selection.kind === Kind.INLINE_FRAGMENT) compare(selection.selectionSet, fragment, seen)
-          else if (selection.name.value !== NODE_ID && selection.name.value !== "__typename" &&
+          else if (!selection.directives?.some(d => d.name.value === "batch") && selection.name.value !== NODE_ID && selection.name.value !== "__typename" &&
             (selection.selectionSet || selection.arguments?.length || !carried.has(selection.name.value))) rereadFragments.push(fragment)
         }
       }
@@ -822,9 +852,24 @@ function augmentSelectionSet(
     )
   )
   const additions: FieldNode[] = []
+  for (const node of selections) {
+    if (node.kind !== Kind.FIELD) continue
+    const batch = node.directives?.find(d => d.name.value === "batch")
+    const fk = batch?.arguments?.find(a => a.name.value === "foreignKey")?.value
+    if (fk?.kind === Kind.STRING && !present.has(fk.value)) additions.push(field(fk.value))
+  }
   if (!present.has("__typename")) additions.push(field("__typename"))
   if (!(options as ProjectionOptions).streamProjection && hasNodeId(parent) && !present.has(NODE_ID)) additions.push(field(NODE_ID))
   if (isObjectType(parent)) {
+    const lifetime = options.lifetimes?.[parent.name]
+    if (lifetime) {
+      const definition = parent.getFields()[lifetime.field]
+      if (!definition || definition.args.length || !["String", "Int", "Float"].includes(getNamedType(definition.type).name))
+        throw new CompileError([`Invalid lifetime field ${parent.name}.${lifetime.field}`])
+      if (!["unix-seconds", "rfc3339", "sqlite-utc"].includes(lifetime.format))
+        throw new CompileError([`Invalid lifetime format for ${parent.name}`])
+      if (!present.has(lifetime.field)) additions.push(field(lifetime.field))
+    }
     for (const key of keyFieldsOf(schema, parent.name, options) ?? []) {
       if (!present.has(key)) additions.push(field(key))
     }
@@ -921,6 +966,8 @@ function convert(
       const name = selection.name.value
       const responseKey = selection.alias?.value ?? name
       const args = argumentsOf(selection.arguments)
+      if (!selection.selectionSet && selection.directives?.some(d => d.name.value === "batch"))
+        throw new CompileError([`${parent.name}.${name}: @batch requires a singular relation selection`])
       if (name === "__typename" || !selection.selectionSet) {
         result.push({ kind: "scalar", responseKey, fieldName: name, args })
         continue
@@ -928,6 +975,7 @@ function convert(
       const fieldDef = "getFields" in parent ? parent.getFields()[name] : undefined
       if (!fieldDef) throw new CompileError([`${parent.name}.${name} does not exist`])
       const named = getNamedType(fieldDef.type) as GraphQLCompositeType
+      const batch = batchSpec(schema, parent, selection, named, fragments, options)
       const connectionNames = { ...DEFAULT_CONNECTION, ...options.connection }
       const edgeNode = name === connectionNames.edges && isObjectType(named) && named.getFields()[connectionNames.node]
         ? selection.selectionSet.selections.find((s): s is FieldNode => s.kind === Kind.FIELD && s.name.value === connectionNames.node)
@@ -938,6 +986,7 @@ function convert(
         responseKey,
         fieldName: name,
         args,
+        ...(batch ? { batch } : {}),
         plural: isPlural(fieldDef.type),
         types: possibleTypes(schema, named),
         selections: convert(schema, selection.selectionSet, named, fragments, inlineSpreads, options),
@@ -1017,6 +1066,95 @@ function listTypes(schema: GraphQLSchema, selections: readonly Selection[], pare
     if (isCompositeType(type)) for (const name of listTypes(schema, selection.selections, type, options)) result.add(name)
   }
   return [...result].sort()
+}
+
+function batchSpec(schema: GraphQLSchema, parent: GraphQLCompositeType, node: FieldNode, target: GraphQLCompositeType, fragments: ReadonlyMap<string, FragmentDefinitionNode>, options: CompileOptions): import("../artifact.js").BatchSpec | undefined {
+  const directive = node.directives?.find(d => d.name.value === "batch")
+  if (!directive) return
+  const fail = (why: string): never => { throw new CompileError([`${parent.name}.${node.name.value}: @batch ${why}`]) }
+  const arg = (name: string): string => {
+    const value = directive.arguments?.find(a => a.name.value === name)?.value
+    return value?.kind === Kind.STRING ? value.value : fail(`requires literal ${name}`)
+  }
+  const foreignKey = arg("foreignKey"), root = arg("root"), key = arg("key")
+  const limitNode = directive.arguments?.find(a => a.name.value === "limit")?.value
+  const limit = limitNode?.kind === Kind.INT ? Number(limitNode.value) : 100
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) fail("limit must be 1–100")
+  if (!isObjectType(parent) || !isObjectType(target)) return fail("requires concrete parent and target types")
+  const relation = parent.getFields()[node.name.value]!
+  if (isPlural(relation.type) || node.arguments?.length || node.directives?.some(d => d.name.value !== "batch")) fail("requires an unconditional singular relation without arguments")
+  const keys = keyFieldsOf(schema, target.name, options)
+  if (keys?.length !== 1 || keys[0] !== key) fail(`${target.name}.${key} must be its complete single-field key`)
+  const fk = parent.getFields()[foreignKey], pk = target.getFields()[key]
+  if (!fk || !pk || getNamedType(fk.type) !== getNamedType(pk.type) || isPlural(fk.type)) fail(`foreign key ${foreignKey} must have the target key's scalar type`)
+  const rootField = schema.getQueryType()?.getFields()[root]
+  if (!rootField) return fail(`list root ${root} does not exist`)
+  const where = rootField.args.find(a => a.name === "Where"), page = rootField.args.find(a => a.name === "Page")
+  const whereType = where && getNamedType(where.type)
+  const filter = whereType && isInputObjectType(whereType) && whereType.getFields()[key]
+  const filterType = filter && getNamedType(filter.type)
+  const inList = filterType && isInputObjectType(filterType) && filterType.getFields().InList
+  if (!inList || getNamedType(inList.type) !== getNamedType(pk!.type)) fail(`root ${root} needs Where.${key}.InList with the target key's type`)
+  if (!where || !page) return fail(`root ${root} needs Where and Page inputs`)
+  const pageType = getNamedType(page.type)
+  if (!isInputObjectType(pageType) || !pageType.getFields().Limit || getNamedType(pageType.getFields().Limit!.type).name !== "Int") fail(`root ${root} needs Page.Limit: Int`)
+  const listType = inList && (isNonNullType(inList.type) ? inList.type.ofType : inList.type)
+  if (!listType || !isListType(listType)) fail(`root ${root} needs an InList list input`)
+  const used = usedFragments(node.selectionSet!, fragments)
+  if ([...used].some(n => hasDirective(fragments.get(n)!.selectionSet, "batch")) || hasDirective(node.selectionSet!, "batch")) fail("nested batches are not supported")
+  const selection = print(node.selectionSet!)
+  const sources = [`query Batch_${parent.name}_${node.name.value}($Where: ${where.type}, $Page: ${page.type}) { ${root}(Where: $Where, Page: $Page) { Edges { Node ${selection} } } }`, ...[...used].map(n => print(fragments.get(n)!))]
+  let operation: OperationArtifact
+  try { operation = compileDocuments(schema, sources, options, true).operations[`Batch_${parent.name}_${node.name.value}`]! }
+  catch (error) { return fail(error instanceof Error ? error.message : String(error)) }
+  // Validation above also checks Edges.Node and Page.Limit against the served schema.
+  const rootType = getNamedType(rootField.type)
+  const edges = isObjectType(rootType) && rootType.getFields().Edges
+  const edge = edges && getNamedType(edges.type)
+  const resultNode = edge && isObjectType(edge) && edge.getFields().Node
+  if (!resultNode || getNamedType(resultNode.type) !== target) fail(`root ${root} does not return ${target.name}`)
+  return { foreignKey, key, operation, limit }
+}
+
+// All batch sites for the same declared root share one build-time projection and cache key.
+function shareBatches(schema: GraphQLSchema, operations: Record<string, OperationArtifact>, fragments: Record<string, FragmentArtifact>, options: CompileOptions): void {
+  const groups = new Map<string, import("../artifact.js").BatchSpec[]>()
+  const visited = new Set<Selection>()
+  const walk = (selections: readonly Selection[]) => {
+    for (const selection of selections) {
+      if (visited.has(selection)) continue
+      visited.add(selection)
+      if (selection.kind === "link" && selection.batch) {
+        const spec = selection.batch
+        const root = spec.operation.normalization.find((s): s is import("../artifact.js").LinkSelection => s.kind === "link")!
+        const key = `${root.fieldName}:${spec.key}`
+        const group = groups.get(key) ?? []
+        group.push(spec); groups.set(key, group)
+      }
+      if (selection.kind === "inline" || selection.kind === "link") walk(selection.selections)
+    }
+  }
+  for (const operation of Object.values(operations)) { walk(operation.selections); walk(operation.normalization) }
+  for (const fragment of Object.values(fragments)) walk(fragment.selections)
+  for (const group of groups.values()) {
+    const definitions = group.flatMap(spec => parse(spec.operation.text).definitions)
+    const roots = definitions.filter(d => d.kind === Kind.OPERATION_DEFINITION)
+    const allNodeSelections = roots.flatMap(root => {
+      const connection = root.selectionSet.selections[0] as FieldNode
+      const edges = connection.selectionSet!.selections.find(s => s.kind === Kind.FIELD && s.name.value === "Edges") as FieldNode
+      const node = edges.selectionSet!.selections.find(s => s.kind === Kind.FIELD && s.name.value === "Node") as FieldNode
+      return node.selectionSet!.selections
+    })
+    const nodeSelections = [...new Map(allNodeSelections.map(node => [print(node), node])).values()]
+    const root = roots[0]!
+    const connection = root.selectionSet.selections[0] as FieldNode
+    const edges = connection.selectionSet!.selections.find(s => s.kind === Kind.FIELD && s.name.value === "Edges") as FieldNode
+    const targetNode = edges.selectionSet!.selections.find(s => s.kind === Kind.FIELD && s.name.value === "Node")
+    const combined = visit(root, { Field(node) { if (node === targetNode) return { ...node, selectionSet: { kind: Kind.SELECTION_SET, selections: nodeSelections } } } })
+    const uniqueFragments = new Map(definitions.filter(d => d.kind === Kind.FRAGMENT_DEFINITION).map(d => [d.name.value, d]))
+    const operation = compileDocuments(schema, [{kind: Kind.DOCUMENT, definitions: [combined, ...uniqueFragments.values()]}], options, true).operations[root.name!.value]!
+    for (const spec of group) Object.assign(spec, { operation, limit: Math.min(...group.map(s => s.limit)) })
+  }
 }
 
 /** Match a config-relative POSIX path using *, ** and ? globs (no brace or extglob syntax). */

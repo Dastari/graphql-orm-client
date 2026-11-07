@@ -28,7 +28,7 @@ else {
  *   documents    directories or files to scan for graphql(...) calls (default ["src"])
  *   out          the generated module
  *   extensions   file extensions to scan (default [".ts", ".tsx"])
- *   keys, versions, scalars, importFrom, functionName   see GenerateOptions
+ *   keys, versions, lifetimes, persistence, scalars, importFrom, functionName   see GenerateOptions
  */
 async function generateCommand(args) {
   const { config, base, schema, sources, files, out } = await loadProject(args)

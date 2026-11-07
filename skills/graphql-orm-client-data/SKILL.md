@@ -1,6 +1,6 @@
 ---
 name: graphql-orm-client-data
-description: Keep regenerated lists and counts current with list streams and bounded loaded-page refresh; use full/thin stream projections and bounded holder re-reads (minRereadMs); Write components with graphql-orm-client fragments and route roots, page through tables by number (@paged, usePagedQuery), load more (@connection), refetch, run mutations (including one-time secrets with `no-store`) and plain subscriptions, and port Apollo queries without request waterfalls or over-fetching, and test components against a mock network, scripted streams and a controllable clock (graphql-orm-client/test); declare sensitive operations (@sensitive), get honest write outcomes (mutateOutcome) and show partial results per path (errorsAtPath); read everything up to a limit (readAll), keep aliased counts and aggregates current, and handle deleted records.
+description: Keep regenerated lists and counts current with list streams and bounded loaded-page refresh; use full/thin stream projections and bounded holder re-reads (minRereadMs); Write components with graphql-orm-client fragments and route roots, page through tables by number (@paged, usePagedQuery), load more (@connection), refetch, run mutations (including one-time secrets with `no-store`) and plain subscriptions, and port Apollo queries without request waterfalls or over-fetching, and test components against a mock network, scripted streams and a controllable clock (graphql-orm-client/test); declare sensitive operations (@sensitive), get honest write outcomes (mutateOutcome) and show partial results per path (errorsAtPath); read everything up to a limit (readAll), keep aliased counts and aggregates current, and handle deleted records; start a route's read before mount (loadQuery); honour declared lifetime fields and persist data per identity.
 ---
 
 # Fragments, roots, pagination and mutations
@@ -29,7 +29,12 @@ bounded holder re-reads. `liveSelection: "as-written"` preserves legacy stream t
   supplies variables (`Where`, order, page size).
 - Never fetch inside a child component to fill in missing data. Add the field to the child's
   fragment instead, so the root's query includes it.
-- Start the root in the route loader (`client.preload`) so the request begins before render.
+- Start the root in the browser route loader (`client.loadQuery`) and consume its handle with
+  `useLoadedQuery`; forward the router abort signal and dispose abandoned handles. It does not suspend.
+- `@skip`/`@include` selections and fragment arguments (`@argumentDefinitions`/`@arguments`) are
+  unsupported build errors. Use separate roots and operation variables. For existing conditional
+  documents, `conditionalDirectives: "legacy"` temporarily keeps unsafe old behaviour while migrating;
+  remove it after splitting roots. Whole-query hook `skip` is still supported.
 
 ## Filters and lists
 
@@ -175,3 +180,28 @@ A query passed `pollMs` declares why: `query Name @poll(reason: "...") { ... }`.
 - A record can disappear under a mounted component. `useFragment(Fragment, ref, { deleted: "null" })` types that as `D | null`, so handle null before
   reading fields. `store: { deletedRecords: "omit" }` drops missing rows from lists while the query re-reads. Both are opt-in.
 
+
+### Lifetime
+
+Declare generator `lifetimes` only when the service guarantees the field's meaning and format.
+Regenerate to adopt. Handle `QueryState.lifetime` (`expired` or `unknown`); unknown time values
+are not proved valid. See [lifetime](../../docs/design.md#lifetime-r17) for formats and diagnostics.
+
+### Persistence
+
+Use `persistClient` from `graphql-orm-client/persistence` only with an explicit identity key, generated
+`schemaHash` (enable generator `persistence: true`) and a deployment revision in `serverRelease`. Await `ready` before starting reads; show
+`QueryState.stale` until a network write confirms restored data. Dispose the client before an identity
+change. Sensitive operations and no-store mutation results are excluded automatically.
+See [persistence](../../docs/design.md#persistence-r17) for adapter, budget and failure semantics.
+
+## Batched relation names
+
+For repeated singular relations, use
+`Vendor @batch(foreignKey: "VendorId", root: "Vendors", key: "Id") { ...VendorBadge }`.
+Install `installRelationBatching(client)` from `graphql-orm-client/relations` before opening
+queries and regenerate. With no `document`, as when rendering on a server, nothing is sent and the relation stays
+`pending`. Supply the schema's actual mapping and list root. Keep the limit
+within the service's page maximum (default 100). Render `pending`, `missing`, `error` and
+`ready` separately. In `ready`, pass `.data` to the related fragment reader. Mark related
+fragments `@live` when live delivery is wanted. See the installed design's R13 section.

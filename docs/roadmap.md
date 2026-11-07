@@ -18,8 +18,8 @@ Each phase is usable on its own. Phases 1 to 4 are built except where noted. Pha
 4. **Live layer.** Built: store-driven `Changed` subscriptions, version ordering and recovery from
    a continuity error. Not built: reconnect replay, which needs the server. An application calls
    `client.refetchActive()` after a reconnect.
-5. **Persistence and tooling (proposed).** IndexedDB persistence, a store inspector and persisted-
-   operation enforcement.
+5. **Persistence and tooling (partly built).** Opt-in adapter and IndexedDB persistence are built (R17). A store inspector and persisted-
+   operation enforcement remain proposed.
 
 What is still needed for a complete client, with acceptance tests and a suggested order, is in
 [requirements.md](requirements.md).
