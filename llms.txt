@@ -4,12 +4,19 @@ A GraphQL client for graphql-orm APIs: fragments colocated with components, comp
 queries, a normalised store and live updates from generated Changed subscriptions. Status:
 early alpha; APIs may still change. Read the installed docs, which match the installed version.
 
+Start here, in order:
+
+1. skills/graphql-orm-client-adopt: install it and wire it up.
+2. skills/graphql-orm-client-data: write components, roots and mutations. Mark fragments `@live` if the record can change on screen.
+3. skills/graphql-orm-client-live: keep data current, draw its status, and diagnose stale data.
+
+Also skills/graphql-orm-client-streams for data that isn't an entity, and skills/graphql-orm-client-server for backend changes.
+
+Reference:
+
 - [README](README.md)
 - [Design](docs/design.md)
 - [graphql-orm contract](docs/graphql-orm-contract.md)
-- [Roadmap](docs/roadmap.md)
+- [Changelog](CHANGELOG.md), with migration steps for every version
 - [Requirements](docs/requirements.md): what is still missing, with acceptance lines
-- [Contributor guidance](AGENTS.md)
-- [Changelog](CHANGELOG.md)
-- Skills: skills/graphql-orm-client-adopt, skills/graphql-orm-client-data,
-  skills/graphql-orm-client-live, skills/graphql-orm-client-streams, skills/graphql-orm-client-server
+- [Contributor guidance](AGENTS.md), for changing this package

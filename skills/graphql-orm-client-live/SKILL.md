@@ -1,96 +1,77 @@
 ---
 name: graphql-orm-client-live
-description: Configure live fragments, generated Changed streams, burst repair and read health; diagnose stale data, stream refusals, polling, overlap and version ordering.
+description: Keep data current on screen with graphql-orm-client, using @live fragments and generated Changed streams; draw live status (useLiveHealth); and diagnose stale data, refused streams and polling with the doctor. Use when data must update by itself or looks stale.
 ---
 
-# Live data and cache policy
+# Live data
 
 Status: early alpha. Check the installed `docs/design.md` and `docs/graphql-orm-contract.md`.
 
-## Making data live
+## The default path
 
-- Mark a fragment `@live` when its fields should update while on screen. The live layer
-  subscribes to the type's generated `<Entity>Changed` events for the records that are
-  retained. Do not write subscription operations by hand for this.
-- A `@live` fragment can include relations and computed fields. New generation flattens keys,
-  version and scalars without arguments; it omits relations/composites, argument scalars and NodeId.
-  Full refused with INVALID_INPUT switches to keys-only thin for this client. Health retains
-  `selection-refused`; thin refusal uses normal back-off. Every thin event, and full events for
-  holders selecting omitted fields, schedule re-reads, which catch changed relation links too.
-- `DELETED` removes a record, except with change kind `PROPAGATED`: a child was deleted under a record that still
-  exists (graphql-orm 0.93.0), so the record stays and the queries holding it read again. Regenerate before adopting
-  0.93.0: a module generated before 0.1.0-alpha.10 doesn't select the change kind and removes the parent.
-- Health reason `identity-mismatch` means a server `NodeId` doesn't match the key fields in any order, so no stream
-  opens and holders poll. Check `keys` and the key fields' types. Composite key order needs no configuration.
-- Automatic stale, reconnect and confirming reads share `live.minRereadMs` (default 2000): leading
-  and trailing reads, following an in-flight read and paused while `polling.isActive()` is false.
-  Missing versions remain last-arrival-wins. `liveSelection: "as-written"` preserves legacy stream
-  text; old artifacts have no thin fallback. Doctor reports fallback separately; quiet thin is
-  still uncertain and fails `--strict`.
-- `@live` updates records already held. A new row, a removed row or a changed total needs a refetch
-  (`refetchQueries`) or a poll.
-- Live delivery needs the server to write that state through the ORM. If a type's state is
-  written around the ORM (in-memory registries, raw SQL), no events arrive. Types with no usable
-  `Changed` subscription are in the generated `liveUnavailable`. Queries showing them poll every
-  `polling.liveFallbackMs` (default 30 s), and so do records beyond the per-record cap. Record
-  the gap rather than adding a hand-written subscription.
-- Without a record version, the last write to arrive wins. For a row that is rewritten while
-  users watch it, ask the backend for a managed version (`#[graphql_orm(version = "managed")]`).
-  The client then selects and orders by the generated `RecordVersion` with no configuration.
-  When the version field has a read policy some users fail, or isn't available to
-  subscriptions, set `versions: { Type: null }` so selecting it doesn't fail their reads.
+1. **Mark a fragment `@live` if it shows a record that can change while it's on screen.** If you aren't sure, mark it. Fields can include
+   relations and computed fields. The compiler builds a stream that can carry them, and re-reads what it can't.
+2. **Pass `live` to `createClient`:** `live: { artifacts: live, ...graphqlWsTransport(ws) }`, with `live` from the generated module and
+   `ws` from graphql-ws. Don't write subscription operations, reconnect handling, restarts or refetches around a stream.
+3. **Regenerate.** `@live` on a type with no usable `Changed` stream fails the build, naming the fragment. Remove `@live`, or declare
+   `@poll(reason: "...")` if polling is the honest answer.
+4. **Draw what it says.** `useLiveHealth(typename?)` tells you whether the data is being kept current, so a page can show "live updates
+   unavailable". Unknown is never drawn as healthy: `unconfirmed` means no update yet, not that all is well.
+5. **Run the doctor before a deploy** (below). What a router admits for an identity can't be known at build time.
 
-- A keyed record's first load reads, subscribes, then confirms with one more read after `live.settleMs` (default
-  250 ms). Newly streamed records use the same confirming read; queries already covered do not.
-  This adds a request per query on first load. Set `live: { settleMs: false }` to restore the previous
-  request cost. There is no subscribe acknowledgement: the delay narrows the gap, it cannot close
-  it against a real server. Regenerated list streams open before reads (see below).
-- Stream replacements overlap for the settle delay (250 ms with confirming reads disabled), keeping
-  baseline coverage if the candidate fails. Keys keep stable chunks. Router capacity errors use
-  ordinary restart back-off, never a five-minute refusal window. At full capacity replacements
-  wait for room while old coverage stays and newly uncovered records use the polling fallback.
+With that, a record's fields update from events. A list of a live type also picks up new rows, removed rows, re-sorting and totals, in the
+same order and with loaded pages kept. A count or generated aggregate of a live type does too.
 
-- A subscription document of the application's own (not a `@live` fragment's) runs through
-  `client.subscribe` or `useSubscription`, on the same `live.subscribe` transport. Its events are
-  written into the store, but the client doesn't resubscribe for it: on
-  `SUBSCRIPTION_CONTINUITY_LOST`, subscribe again and refetch.
-- A `@live` stream that ends without the client asking restarts by itself, for any reason: a schema
-  reload, lost events, a failed socket, a plain `complete`, a refusal. The queries that show the type
-  then read again. Repeated ends back off to about once a minute (`live: { restart: { minMs, maxMs } }`).
-  Use `graphqlWsTransport(ws)`, spread into `live`: after a schema reload it closes the retired socket,
-  which a stream needs to come back, and it reads open queries again after a socket recovers by itself. A
-  custom `live.subscribe` must get a fresh connection after `SUBSCRIPTION_SCHEMA_RELOAD`. Don't write your own restart, reconnect or
-  refetch around a stream. `live: { restart: false }` is the old behaviour, where an ended stream stays
-  down until the held records change; it exists for migration and can leave data stale.
-- To draw status, use `useLiveHealth(typename?)` or `client.liveHealth()`. Each type has a `state`: `live`,
-  `unconfirmed`, `connecting`, `polling`, `refused`, `unavailable` or `idle`; plus `reason`, `code`, `pollMs`,
-  `lastEventAt`, `lastReadAt`, `retryAt` and the `fragments` held. Draw `unconfirmed` as "no update yet", not
-  as healthy: a stream with no event can't be told from one nobody answered. A null time means it hasn't
-  happened. The socket is `unknown` without `graphqlWsTransport`.
-- A `@live` fragment that can't stay live warns once in development, naming the fragment. Send these
-  somewhere else with `live: { onDiagnostic }`; `null` turns them off.
-- Lower down, `client.live.status()` shows `restarting`, `restartAttempts` and `lastEnd` (`reason`, `code`,
-  `at`) per type.
-- A stream the server refuses (GraphQL errors answering the subscribe, or an error-only frame then
-  `complete`, before any event) waits five minutes before trying again, varying by 20%, with no setup. Queries
-  holding it poll meanwhile (`polling.liveFallbackMs`, 30 s) and read when the window ends, and it starts
-  working by itself once the server accepts it. `live: { refusalBackoff: { ms, types: { Type: ms | false } } }`
-  changes the window, and `false` means the ordinary back-off instead, for a type or for all. A schema reload,
-  lost events, `SERVICE_UNAVAILABLE`, `SUBGRAPH_UNAVAILABLE`, `SUBSCRIPTION_LIMIT_EXCEEDED` and a transport failure are never refusals. Don't
-  wrap `live.subscribe` to build this.
-- Paged tables (`usePagedQuery`) keep only the visible page live; changing page moves the
-  subscription to the new page's rows.
+## What keeps data current
 
-- Test what happens when streams fail with `graphql-orm-client/test`: see the Testing section of the
-  graphql-orm-client-data skill.
+- **Records:** an event writes what it carries, and the queries holding the record re-read what a stream can't carry, which also catches a
+  changed relation link. Order is by record version. Without a version the last write to arrive wins: for a row rewritten while users watch
+  it, ask the backend for a managed version (`#[graphql_orm(version = "managed")]`). The client then needs no configuration.
+- **Lists:** a list of a live type opens one stream for the type before its first read, even when empty. It needs a regenerated module, and it
+  costs the server a row-policy check per event per subscriber. `live.listStreams: false` makes lists poll instead.
+  - `@paged` keeps its page. `@connection` reads what's loaded, up to `live.maxRereadPages` (10) keyset pages or `live.maxRereadRows` (100)
+    offset rows. Past that it keeps the loaded tail and sets `QueryState.listRefreshTruncated`, so say so on screen.
+- **Rate limit:** automatic reads are limited per query by `live.minRereadMs` (2000): one at the start of a burst and one at the end, a read
+  already running is followed by one more, and they wait while the page is hidden.
+- **After a burst:** the router can drop frames under a burst with no signal (graphql-orm#359), so after at least 32 events on a type settle,
+  the queries holding it read once more. That's one extra read per burst per query, coalesced across types. `live.burstRead` adjusts or turns it off.
+- **First load:** a query reads once more after its records first gain a stream (`live.settleMs`, 250 ms), because nothing acknowledges a
+  subscribe. This narrows the gap between read and subscribe, and can't close it. `settleMs: false` removes the extra read.
+- **Ended streams** restart by themselves and re-read, whatever ended them, backing off to about once a minute. A reconnected socket
+  re-reads as well.
+- **Refused streams** wait about five minutes and poll meanwhile (`polling.liveFallbackMs`, 30 s), then work with no reload once the server
+  accepts them. `live.refusalBackoff` changes this.
 
-## Cache policy
+## Limits to design around
 
-- `store.retainMs` controls how long released records stay. Per-type stale age and `store.scope` remain proposed.
-- `Changed` fires on writes, not clock expiry. Declare generator `lifetimes` with the service's explicit
-  field and time format; handle unknown and expired lifetime states. See the data skill for adoption.
-- Restored persistent data reports `QueryState.stale` until confirmed by a network write; restoration
-  does not confirm stream health. Persistence is an opt-in separate entry point, described in the data skill.
+- **Deletes:** a direct delete reaches subscribers only if the host grants `RowPolicy::can_read_deleted_preimage`. Without it the server sends
+  nothing, so a list corrects on its next event or poll. Don't promise instant deletes where nothing polls.
+- `DELETED` removes the record, except with change kind `PROPAGATED`: a child went, the record stays, and its queries read again.
+- A record can disappear under a mounted component: see "Deleted rows" in the data skill.
+- A write made around the ORM (in-memory state, raw SQL) sends no event. Record the gap instead of adding a hand-written subscription.
+- `Changed` fires on writes, not on clock expiry. For a lifetime field, see the data skill.
+- For data that isn't an entity (progress, AI text, terminal output), use the [streams skill](../graphql-orm-client-streams/SKILL.md).
+
+## Drawing status
+
+`useLiveHealth(typename?)` or `client.liveHealth()`. Each type has a `state`:
+
+| State | Meaning |
+| --- | --- |
+| `live` | An event has arrived on an open stream |
+| `unconfirmed` | Open, with no event yet. A quiet stream looks the same as an unanswered one |
+| `connecting` | Starting, or restarting |
+| `polling` | No stream right now, and a poll keeps it fresh. `pollMs` says how often |
+| `refused`, `unavailable` | Nothing keeps it fresh. `reason` and `code` say why |
+| `idle` | Nothing held |
+
+Each type also has `reason`, `code`, `lastEventAt`, `lastReadAt`, `retryAt`, `burstReads`, `lastBurstReadAt` and the `fragments` held. A null
+time means it hasn't happened, not zero. The socket is `unknown` without `graphqlWsTransport`.
+
+To measure, sample `liveHealth().reads` (sent requests by cause), `streams` (open managed subscriptions, not your own `client.subscribe` ones)
+and `refusedStreams`. These are absent with no live layer.
+
+A `@live` fragment that can't stay live warns once in development, naming it. `live: { onDiagnostic }` sends these elsewhere.
 
 ## Diagnosing stale data
 
@@ -100,120 +81,48 @@ Start with the doctor, which needs no code. Put the credential in an environment
 pnpm exec graphql-orm-client doctor --url https://router.example/graphql --token-env ROUTER_TOKEN
 ```
 
-It checks every document against the served schema and opens each live stream for up to `--stream-ms` (3000), for
-that token's identity. It runs introspection and subscriptions only.
+It checks every document against the served schema and opens each live stream for up to `--stream-ms` (3000), for that token's identity. It runs
+introspection and subscriptions only. `--json` prints the report as JSON.
 
 | Verdict | Meaning | Exit |
 | --- | --- | --- |
 | `admitted` | An event arrived | 0 |
-| `not-refused` | No error and no event. A quiet stream looks the same as an unanswered one | 0; 1 with `--strict` |
-| `refused <code>` | The server said no. Usually a relation or computed field in a `@live` fragment | 1 |
-| `missing` | The type has `@live` fragments and no `Changed` subscription | 1 |
+| `not-refused` | No error and no event | 0; 1 with `--strict` |
+| `fallback-admitted`, `fallback-not-refused` | The full selection was refused, and keys only works. Every event then means a re-read | 0; the second is 1 with `--strict` |
+| `refused <code>` | The server said no | 1 |
+| `missing` | The type has live fragments and no `Changed` subscription | 1 |
 | `invalid` | The document no longer validates against the served schema | 1 |
-| `unknown` | It couldn't be tested: a required `Key`, an outage, or a socket that failed | 1 |
+| `unknown` | It couldn't be tested | 1 |
 
-`--json` prints the report as JSON. Exit 2 means bad usage. Then, in a running application:
+Then, in the running application:
 
-1. Is the fragment marked `@live` and is the record retained?
-2. Does the server emit `Changed` for that write? (Check that the write path goes through the
-   ORM and that the relation propagates `up` if the change is on a child.)
-3. Is an older poll result overwriting a newer event? That requires a record version.
-4. What does `client.liveHealth()` say? `state` and `reason` say what's wrong, and `fragments` which
-   fragments it affects. For detail, `client.live.status()` shows `held` and `subscriptions`, and
-   `lastEnd.reason` says why a stream ended. With `restartAttempts` climbing and `reason: "unavailable"`,
-   the socket is stuck on a retired graph: use `graphqlWsTransport`, or get a fresh connection in your own
-   transport. With
-   `restart: false`, an ended stream stays down until the held records change, and nothing refetches.
-5. Was the stream refused? Common causes: a relation or computed field in a `@live` fragment, or
-   `NodeId` on a graphql-orm older than the release that admits it. `versions: { Type: null }` stops
-   the compiler selecting a version field the stream refuses.
-6. When graphql-ws reconnects by itself, missed events aren't replayed and the stream doesn't end.
-   `graphqlWsTransport` reads again then; with `graphqlWsSubscribe`, the application calls
-   `client.refetchActive()` from the `connected` event. After
-   `SUBSCRIPTION_CONTINUITY_LOST`, the client resubscribes and refetches by itself; if that happens
-   often, a bulk writer is outrunning the server's `event_channel_capacity`.
+1. Is the fragment live, and is the record on screen? Check `client.liveHealth()`: `state` and `reason` say what's wrong, and `fragments` what it affects.
+2. Does the server send `Changed` for that write? It has to go through the ORM, and a change on a child needs `propagate_change = "up"`.
+3. Is an older poll result overwriting a newer event? That needs a record version.
+4. Reasons worth knowing:
+   - `selection-refused`: the server refused the full selection, so this client uses keys only and re-reads on every event.
+   - `over-cap`: too many streams. The router allows 32 operations per connection by default, and open streams stay while the rest poll.
+   - `identity-mismatch`: a server `NodeId` doesn't match the key fields in any order, so no stream opens and the query polls.
+   - `list-key-required`, `list-streams-disabled`: this list polls. `list-refresh-truncated`: its loaded tail may be stale.
+5. `client.live.status()` has more per type: `held`, `subscriptions`, `restartAttempts`, and `lastEnd` for why a stream ended. A climbing
+   `restartAttempts` usually means a custom `live.subscribe` isn't getting a fresh connection after a schema reload: use `graphqlWsTransport`.
+6. Frequent `SUBSCRIPTION_CONTINUITY_LOST` means a bulk writer is outrunning the server's `event_channel_capacity`.
 
-## Regenerated lists
+Test what happens when streams fail with `graphql-orm-client/test`: see Testing in the data skill.
 
-Regenerate to emit operation `lists`: root and nested lists and count-only connections use one
-un-narrowed stream per type, opened before the read even when empty. Every event re-reads lists
-through `live.minRereadMs`; unheld rows are not stored. Server cost: one row-policy check per event
-per subscriber. `live.listStreams: false` makes lists poll; required-key schemas also poll. Old
-artifacts retain keyed behavior. Health names the operation for disabled/required-key list streams;
-a quiet list is unconfirmed, never live. Confirming reads after settleMs narrow, but cannot close,
-the subscribe gap without a server acknowledgement.
+## Settings
 
-`@paged` keeps the shown page. `@connection` refreshes the loaded range: offset in one request up
-to `live.maxRereadRows` (100, match the service maximum); keyset through returned cursors up to
-`live.maxRereadPages` (10). Load-more serializes with refresh. Beyond the bound, a retained tail
-may be stale: draw `QueryState.listRefreshTruncated` and health `list-refresh-truncated` honestly.
-No server snapshot across keyset pages is promised. Without a delete preimage grant, the server
-sends no DELETED event; only the next event or poll repairs the list. Do not promise immediate
-delete visibility when polling is disabled. See docs/design.md, List streams (R3), for validation.
+Each of these changes a default on purpose. Reach for them when you have a reason.
 
-For non-entity progress, AI text deltas and terminal output, use the
-[ephemeral streams skill](../graphql-orm-client-streams/SKILL.md).
+| Setting | Effect |
+| --- | --- |
+| `live: "default"` (generator) | Fragments on keyed object types are live with no directive. `@live(enabled: false)` opts one out. Opt-in, and `{ default: ["src/area/**"] }` limits it to files matching those globs. Each newly live type costs one operation on a connection |
+| `liveSelection: "as-written"` (generator) | Keeps the older stream text. On graphql-orm before 0.92.0 the server refuses it on an entity with `NodeId` |
+| `strict` (generator) | `liveWithoutStream`, `pollWithoutReason`, `rawSubscriptions` and `queryOwnership`, each `"error"`, `"warn"` or `"off"` |
+| `queryOwners`, `subscriptionPaths` (generator) | Globs for where queries and raw subscriptions may be written. Off unless set |
+| `live.maxKeyedSubscriptions` | Per-record streams in `key` mode (50). `0` means one stream per type in `key` and `keys` mode when the argument is optional, at a row-policy check per event per subscriber |
+| `versions: { Type: null }` (generator) | Stops selecting a version field some users can't read |
+| `live.restart: false`, `live.refusalBackoff: false` | Older behaviour, for migration. `restart: false` can leave data stale |
 
-
-## Project build policies (R5)
-
-Built. `strict` in the generator config accepts `liveWithoutStream`, `pollWithoutReason`,
-`rawSubscriptions` and `queryOwnership`, each `"error"` (default), `"warn"` or `"off"`.
-An explicit `@live` fragment with no usable stream must remove `@live` or declare
-`@poll(reason: "why polling is needed")`. Reasons must be non-empty and are recorded on artifacts.
-`liveUnavailable` remains available when a policy is downgraded or polling is declared.
-
-Set `queryOwners: ["src/routes/**", "src/dialogs/**", "src/adapters/**"]` to restrict query documents;
-windows, pickers and other project owners can have their own paths. `subscriptionPaths` similarly
-restricts raw subscription documents. Both checks are disabled when their setting is absent.
-Globs use config-relative source document paths with `/`, `*`, `**` and `?`; brace/extglob syntax
-is unsupported. All files declaring identical text are checked. Programmatic compilation can pass
-`documentPaths` (document text to file paths); without it diagnostics name the GraphQL source or
-`<document N>` and configured path policies cannot match unknown paths.
-
-`pollMs` is a runtime option, including through hooks, so a build can't see it. Declare it instead:
-`query Name @poll(reason: "...") { ... }`. An undeclared `pollMs` throws from `watchQuery` outside production, on a regenerated module, so
-development and tests find it. In production, and on a module generated before this release, it warns and still polls, because a working
-page mustn't crash on upgrade. `polling.undeclared: "warn" | "off"` on the client relaxes this. `strict.pollWithoutReason` covers an empty
-reason at build time. Fallback polling is reported through health and needs no declaration. The escape for a raw subscription is
-`createStream` from `graphql-orm-client/streams` (R11).
-
-
-## Live generation setting (R1)
-
-Built. The generator and `compile` default to `live: "explicit"`: only `@live` fragments request
-streams. `live: "default"` is opt-in, not recommended by default; the owner must decide before
-the package default changes. It makes object fragments live without a directive.
-`live: { "default": ["src/area/**"] }` enables that behaviour only for matching fragment document
-source files, relative to the config directory. It matches the fragment's file, not a spreading query's.
-Plain-string `compile(schema, sources)` keeps its explicit behaviour; pass `documentPaths` when
-using area mode programmatically. Unknown files do not match area globs.
-
-`@live(enabled: false)` opts a fragment out in every mode; `@live` and `@live(enabled: true)` opt in.
-An implicit live fragment with no usable stream warns, appears in `liveUnavailable`, and uses the
-normal fallback interval (30 seconds unless changed); health reports `no-stream` and polling, or
-unavailable if fallback is disabled. Explicit `@live` on that type follows R5's error policy.
-Only fragments on object types with a key become implicitly live. A keyless value type has no identity and no stream, and its data comes with its parent, so it stays as it is. Abstract fragments need explicit intent.
-Lists open streams only for types with a live fragment somewhere in the project. Default mode
-widens that set; an opted-out fragment does not disable another live fragment of the same type.
-
-Migration: keep `"explicit"` to retain current stream scope. Opt in per area, regenerate, and inspect
-`liveUnavailable` and `client.liveHealth()`. More live types use more operations: the router's default
-32-operation connection budget still applies; capacity refusals remain visible and uncovered data polls.
-No setting overrides server admission or guarantees every burst event arrives.
-
-Burst repair is on by default, including with old generated modules. After 32 events it reads
-holders once more after quiet, coalescing types and pending list/thin reads through
-`minRereadMs`. `live.burstRead: false` restores the previous read cost; an object accepts
-`events`, `settleMs`, `maxWaitMs`. Per-type health has `burstReads` and `lastBurstReadAt`.
-Silent loss below the threshold still needs server signalling. See design for scheduling limits.
-
-For read rates, sample `liveHealth().reads` twice and divide differences by elapsed minutes.
-`streams` counts managed operations now; `refusedStreams` counts failed/refused operations
-cumulatively. These fields are absent without a live layer. Counts alone do not notify
-health subscribers; sample on the application's reporting interval. See design for causes.
-
-`live.maxKeyedSubscriptions: 0` uses one whole-type stream with optional Key or Keys,
-keeping it when held rows change. Required Keys stays narrowed (`keyRequired` in health).
-Other values in keys mode are ignored. Server cost is a row-policy check per event per
-subscriber; remove the zero setting to retain narrowing. Applies to both live generation modes.
+`pollMs` needs `query Name @poll(reason: "...") { ... }`. An undeclared one throws outside production on a regenerated module, and warns and
+still polls otherwise. `polling.undeclared` relaxes this. Fallback polling needs no declaration.

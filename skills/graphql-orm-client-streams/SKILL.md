@@ -1,12 +1,12 @@
 ---
 name: graphql-orm-client-streams
-description: Build ephemeral streams for progress, AI text deltas, terminal output and search results with createStream from graphql-orm-client/streams, cursor replay, bounded buffers and React useEphemeralStream.
+description: Show data that isn't an entity and doesn't belong in the store, such as progress, AI text deltas, terminal output and search results, using createStream from graphql-orm-client/streams: cursor replay, bounded buffers, gap reporting and React useEphemeralStream.
 ---
 
 # Ephemeral streams
 
 - Use `createStream(client, Subscription, variables, { select, bufferSize, sequence? })` for non-entity
-  data. This is R11's sanctioned subscription path outside record freshness. No value enters the
+  data. This is the sanctioned subscription path outside record freshness. No value enters the
   store or persistence. `client.subscribe` still writes to the store.
 - Create the handle in its owner, call `open()`, and dispose it when the owner closes. Components
   call `useEphemeralStream(handle)` from the React entry point; it uses coalesced external-store
@@ -27,4 +27,4 @@ description: Build ephemeral streams for progress, AI text deltas, terminal outp
   sequence makes that visible, as `state.gap`.
 - Test bursts with `createMockStreams` and `createTestClock`: send raw `next` frames, then fail or
   signal socket reconnect, replay overlap, and assert gaps, buffer drops and empty state on disposal.
-  Read the design's R11 section for full state semantics.
+  Read the design's section on ephemeral streams for full state semantics.

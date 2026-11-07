@@ -1,6 +1,6 @@
 ---
 name: graphql-orm-client-adopt
-description: Install graphql-orm-client, configure transports and identity scope, generate artifacts, wire cancellable browser route loaders, and migrate an application route by route.
+description: Install graphql-orm-client in an application: pin a version, pull the schema, generate, configure the network and one client per signed-in identity, wire route loaders, and move an Apollo application across route by route.
 ---
 
 # Adopt graphql-orm-client
@@ -8,7 +8,7 @@ description: Install graphql-orm-client, configure transports and identity scope
 Status: early alpha. Check the installed package's `docs/design.md` and changelog before
 writing code, and do not invent APIs it does not list.
 
-Install a versioned GitHub release archive (`pnpm add https://github.com/Dastari/graphql-orm-client/releases/download/v<version>/graphql-orm-client-<version>.tgz`), and keep the lockfile. Then read the installed `README.md`, `docs/design.md` and `docs/graphql-orm-contract.md`.
+Install a versioned GitHub release archive (`pnpm add https://github.com/Dastari/graphql-orm-client/releases/download/v<version>/graphql-orm-client-<version>.tgz`), pin that exact version, and keep the lockfile. While the package is pre-1.0, read the changelog's migration steps for each version you move to. Then read the installed `README.md`, `docs/design.md` and `docs/graphql-orm-contract.md`.
 The client only works against graphql-orm services and their router.
 
 1. **Schema snapshot.** Keep the router's SDL in the repository (for example
@@ -32,7 +32,7 @@ The client only works against graphql-orm services and their router.
    `live: { artifacts: live, ...graphqlWsTransport(ws) }`. It reads open queries again after a
    reconnect, because missed events aren't replayed yet.
    Write a custom `Network` only when the project needs something these don't do.
-5. **Provider.** Wrap the application in the React provider from `graphql-orm-client/react`.
+5. **Provider.** Wrap the application in `ClientProvider` from `graphql-orm-client/react`.
 6. **Routes.** Each route that shows data owns one root query. Start it in the route loader
    with `client.loadQuery(Query, variables, { signal })`, return the handle and read it with
    `useLoadedQuery(handle)`. Forward router cancellation; dispose abandoned handles. An unused
@@ -49,7 +49,7 @@ The client only works against graphql-orm services and their router.
 Verify: the route makes one request on first load, a second visit within the retention
 period makes none, and signing out clears every record.
 
-### Network bounds
+## Network bounds
 
 `createHttpNetwork({ url, reads, writes })` takes `{ deadlineMs, maxResponseBytes }` for each. Both are off unless set, and a write past
 its deadline is `unconfirmed`, not retried. See the data skill for `@sensitive`, write outcomes and partial results.
