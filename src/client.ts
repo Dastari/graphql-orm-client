@@ -1163,8 +1163,9 @@ export class Client {
       const refreshSelection = options.refreshConnection && firstConnection(artifact.normalization)
       const refreshSpec = refreshSelection && refreshSelection.connection
       const refreshArg = refreshSelection && refreshSelection.args.find(arg => arg.name === refreshSpec?.paging[0])
+      // At least the page the query asks for: asking only for what's loaded would let a new row push one out of a page with room.
       if (options.refreshConnection && refreshSpec?.offset && refreshSpec.limit && refreshArg?.kind === "variable" && options.refreshConnection.loaded > 0) {
-        networkVariables = { ...variables, [refreshArg.variable]: { ...(variables[refreshArg.variable] as object), [refreshSpec.offset]: (variables[refreshArg.variable] as Record<string, unknown> | undefined)?.[refreshSpec.offset] ?? 0, [refreshSpec.limit]: Math.min(options.refreshConnection.loaded, options.refreshConnection.rows) } }
+        networkVariables = { ...variables, [refreshArg.variable]: { ...(variables[refreshArg.variable] as object), [refreshSpec.offset]: (variables[refreshArg.variable] as Record<string, unknown> | undefined)?.[refreshSpec.offset] ?? 0, [refreshSpec.limit]: Math.max(Math.min(options.refreshConnection.loaded, options.refreshConnection.rows), Number((variables[refreshArg.variable] as Record<string, unknown> | undefined)?.[refreshSpec.limit]) || 0) } }
       }
       options.beforeSend?.()
       if (artifact.kind === "query") this.countRead(options.readCause ?? "manual")
