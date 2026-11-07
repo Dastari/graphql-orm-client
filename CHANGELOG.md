@@ -1,115 +1,53 @@
 # Changelog
 
-## Unreleased
+## 0.1.0-alpha.11 (2026-11-07)
 
-- Fix, from an acceptance test against a real router: on a regenerated `@connection` list with room on its page, a new row pushed the last row out of the list until it was loaded again, because a re-read asked only for the rows loaded rather than the page the query asks for.
-- `generate` warns when a fragment on a keyed type with a `Changed` stream isn't live, because it won't update on screen and nothing says so at run time. It's one line naming the fragments, and it changes no output. Mark them `@live`, or `@live(enabled: false)` if that's meant. `strict: { fragmentNotLive: "off" }` silences it, and `"error"` fails the build.
-- R18: add cancellable `client.loadQuery` handles and non-Suspense `useLoadedQuery`, sharing a read
-  across loader, mount and StrictMode replay. Migration is opt-in: replace `preload`/`useQuery` as a
-  pair, forward the router abort signal and dispose abandoned navigation. Unmounted loads expire
-  after 30 seconds (`timeoutMs`). List streams open before reading and close with the handle.
-- Conditional `@skip`/`@include` selections now fail builds by default: previous readers treated
-  omitted fields as missing and generated types required them; live projections lost conditions.
-  Migration: set generator `conditionalDirectives: "legacy"` temporarily, split conditional route
-  roots, then remove the setting and regenerate. Fragment arguments remain unsupported with a
-  clearer error. Whole-operation hook `skip` is unchanged.
-- Server-shell `useQuery` renders idle without registering a watch or starting I/O. Hydration uses
-  the same idle snapshot. Migration: render an idle placeholder, or temporarily pass
-  `{ serverSnapshot: "legacy" }` to restore the prior snapshot. Server data rendering, result streaming
-  and store handoff remain non-goals.
+Install from the GitHub release archive:
+`pnpm add https://github.com/Dastari/graphql-orm-client/releases/download/v0.1.0-alpha.11/graphql-orm-client-0.1.0-alpha.11.tgz`.
 
-- Add `graphql-orm-client/persistence`: async adapters, a thin IndexedDB adapter, identity/release
-  envelopes, bounded coalesced writes and stale restoration. Import `persistClient` explicitly and
-  provide identityKey, schemaHash and serverRelease to adopt. Set generator `persistence: true` and regenerate for the exported schemaHash.
-  Dispose the old client before changing identity; disposal also deletes its persisted snapshot.
+Regenerate. Most of what's new turns on when you do, and a module generated earlier keeps working as it did, apart from the burst read and the settings marked below.
 
-- Opt-in generated lifetime field and format policies, expiry notifications and holder re-reads.
-  Regenerate with `lifetimes` to adopt; no configuration preserves existing behaviour.
+### Build errors after regenerating
 
-- R13: opt-in `@batch` compiles bounded relation reads with shared caching and masked
-  pending/ready/missing/error states. To adopt, install `installRelationBatching(client)`
-  from `graphql-orm-client/relations`, annotate relations and regenerate. Existing documents
-  keep their request behaviour. With batching installed, mounted fragment subscriptions retain records during collection.
-  With no `document`, as when rendering on a server, nothing is sent and the relation stays `pending`; `withoutDocument: "read"` allows it.
+Each of these can be relaxed while you migrate:
 
-- `live.maxKeyedSubscriptions: 0` now uses one un-narrowed stream in optional `Keys` mode,
-  retaining it while held sets change. Required Keys stays narrowed, reported by `keyRequired`.
-  Migration: the server now checks row policy per event per subscriber, including unheld rows.
-  Remove the zero setting to keep narrowing. Other values in keys mode remain ignored;
-  no regeneration is required. Optional Key and unkeyed streams also retain stable whole-type coverage.
+- **`@live` on a type with no usable `Changed` stream fails the build,** including on an interface or union fragment, which used to be silently not live. Remove it, use `@live(enabled: false)`, or declare `@poll(reason: "...")`. `strict: { liveWithoutStream: "warn" }` relaxes it.
+- **`@skip` and `@include` fail the build.** An omitted field used to read as missing, generated types marked it required, and streams lost the condition. Split the query. `conditionalDirectives: "legacy"` keeps the old behaviour while you do.
+- **`@poll` needs a reason.** `strict: { pollWithoutReason: "warn" }` relaxes it.
+- Fragment arguments stay unsupported, now with a clear error.
+- **New warning, no error:** `generate` names any fragment on a keyed type with a `Changed` stream that isn't live, because it won't update on screen and nothing says so at run time. Mark it `@live`, or `@live(enabled: false)` if that's meant. `strict: { fragmentNotLive: "off" }` silences it, and `"error"` fails the build.
 
+### Changed at run time
 
-- Live health adds cumulative sent-query counts by cause (`reads`), open managed `streams`
-  and cumulative `refusedStreams`. They are absent without a live layer. Sample health for
-  rates; count changes alone do not trigger health notifications. No regeneration required.
+- **Lists stay correct (R3).** After regenerating, a list of a live type opens one stream for the type before its first read, even when empty. New rows, removed rows, re-sorting and totals then follow, in the same order, with loaded pages kept. It costs the server a row-policy check per event per subscriber, and `live: { listStreams: false }` makes lists poll instead. A list opens a stream only for a type with a `@live` fragment somewhere in the project. `refetch()` and polls on a regenerated `@connection` read the loaded range, not only the first page, up to `live.maxRereadPages` (10) and `live.maxRereadRows` (100). Past that they keep the tail and set `QueryState.listRefreshTruncated`. Set `maxRereadRows` to your service's maximum.
+- **Burst read, on by default, with no regeneration needed.** The router can drop subscription frames under a burst with no signal (graphql-orm#359). So when a type gets at least 32 events, the queries holding it read once more after they settle. **Cost per burst:** one extra read per query holding the type, coalesced across types and at most one per `live.minRereadMs`. `live: { burstRead: false }` turns it off. A burst under 32 events, or one where every frame is lost, still can't be noticed.
+- **`live.maxKeyedSubscriptions: 0` now means one stream per type in `keys` mode too, with no regeneration needed.** It used to be ignored there, so a project setting it got a narrowed stream replaced whenever its held set changed. The server now does a row-policy check per event per subscriber, including rows nobody holds. Remove the setting to keep narrowing. Where the argument is required it stays narrowed, and health shows `keyRequired`.
+- **An undeclared `pollMs` throws from `watchQuery` outside production, on a regenerated module.** Declare `@poll(reason: "...")` on the query. In production, and on a module generated earlier, it warns and still polls. `polling.undeclared: "warn" | "off"` relaxes this.
+- **`useQuery` renders idle on the server,** starting no watch or I/O. `{ serverSnapshot: "legacy" }` restores the previous snapshot.
 
+### Added, all opt-in
 
-- Burst repair reads are on by default: one extra read per query holding the type, per burst
-  of at least 32 events, coalesced across types and at most one per `minRereadMs`.
-  Migration: set `live: { burstRead: false }` to restore the previous read cost.
-  Modules generated earlier get this too; no regeneration is needed. Per-type health reports
-  `burstReads` and nullable `lastBurstReadAt`. Entirely lost or small bursts remain a server gap.
+- `client.loadQuery` and `useLoadedQuery`: start a route's read before mount, with no second request. Forward the router's abort signal. Unused loads close after 30 s (`timeoutMs`) and open again if mounted later.
+- `@sensitive` on a query or mutation: the result stays out of the store, and it's a plain value. `client.mutateOutcome` and `commitOutcome`: `confirmed`, `refused`, `failed` or `unconfirmed`, never retried. No graphql-orm version sends a refusal signal yet, so a write refused during execution reads as `unconfirmed`. `createHttpNetwork` gets separate `reads` and `writes` bounds. `errorsAtPath` and `partialResults: "preserve-errors"`.
+- `live: "default"` or `{ default: ["src/area/**"] }` in the generator (R1), and `@live(enabled: false)`. The default stays `"explicit"`. Each newly live type costs an operation on a connection, and the router allows 32 by default.
+- `strict`, `queryOwners` and `subscriptionPaths` in the generator (R5).
+- Entry points: `graphql-orm-client/streams` (`createStream`, for progress, AI text deltas, terminal output), `/read-all` (`readAll`), `/relations` (`@batch`, `installRelationBatching`), `/persistence` (`persistClient`, `indexedDBAdapter`). `@batch` sends nothing when rendering on a server.
+- `{ deleted: "null" }` on `useFragment` and `readFragment` types a removed record as null, and `store: { deletedRecords: "omit" }` drops missing rows from lists during the re-read. Generated aggregates and aliased counts of live types stay current. Generator `lifetimes` declares a lifetime field and its format.
+- `liveHealth()` gains `reads` by cause, `streams` and `refusedStreams`, and each type gains `burstReads` and `lastBurstReadAt`. They're absent with no live layer.
 
+### Fixed
 
-- Compile a large schema far faster. After 0.1.0-alpha.10's stream selections, each live type re-extended the whole schema: 250 documents on a
-  45,000-line schema took about 24 s and now take under a second.
-- R1: opt-in `live: "default"` and `live: { "default": ["src/area/**"] }` generation;
-  the package default stays `"explicit"`. Migration: opt in by area, regenerate and inspect health
-  and socket capacity before widening. `@live(enabled: false)` opts out. Implicit streamless
-  fragments report and poll; explicit streamless `@live` still follows R5.
+- A generated `@connection` list with room on its page lost its last row when one was created above it. Found by running an agent's page against a real router.
+- A compile on a large schema took about 24 s since alpha.10, re-extending the schema per live type. It now takes under a second on the budget's 45,000-line schema.
 
-- R5: generation rejects streamless explicit `@live` and empty polling reasons; optional
-  `queryOwners`/`subscriptionPaths` restrict document ownership. Migration: remove unsupported
-  `@live` or add `@poll(reason: "...")`; add legitimate owners to the configured globs.
-  Each policy has `strict.<rule>: "warn" | "off"` to stage adoption (see design).
-- `pollMs` needs `@poll(reason: "...")` on its query. A build can't see a runtime option, so an undeclared one throws from `watchQuery`
-  outside production on a regenerated module. In production, and on a module generated earlier, it warns and still polls.
-  `polling.undeclared: "warn" | "off"` relaxes this.
-- `@live` on an interface or union fragment is now reported rather than silently not live, under `strict.liveWithoutStream`.
-- R16: opt in to typed missing/deleted fragments with `readFragment(Fragment, ref, { deleted: "null" })` and the matching `useFragment` option. Handle null before reading fields. Runtime already returned null for removed references; old non-null signatures remain for migration. Set `store: { deletedRecords: "omit" }` and regenerate to omit missing nodes during list refresh. This can remove a row before the network reread completes. Live-record data keeps its existing shape.
+### Migration from alpha.10
 
-- R15: generated aggregate roots with a unique schema-derived entity now join R3 list refresh. Regenerate to enable this for project-live types. Aliased counts preserve their generated types.
-
-- R14: `readAll(client, ...)` from `graphql-orm-client/read-all` traverses a compiled root connection with a required limit, exact last-page total, truncation and abort support. Select TotalCount; unknown totals fail. Pages have no shared snapshot.
-
-
-
-- R3: generated `OperationArtifact.lists` enables one un-narrowed stream per open list type,
-  including empty and count-only lists. Events invalidate membership, order and totals through
-  the existing re-read limiter. Unheld rows are not stored. List interest opens before the read;
-  confirming reads narrow the subscribe gap without eliminating it.
-- Regenerated `@connection` queries refresh the loaded range and serialize load-more with refresh.
-  Bounded refresh retains the tail and reports `listRefreshTruncated` and degraded health.
-- R12: add `errorsAtPath` and opt-in `partialResults: "preserve-errors"`. Migration: enable the setting and render path errors alongside retained (potentially stale) values. Legacy null overwrite remains the default.
-
-- R10: additive write outcome API and explicit retry hook method; no automatic replay. Opt into independent HTTP `writes` and `reads` limits; omitted limits preserve existing behaviour. Supply a reconciliation read for known affected records.
-
-- R9: query and mutation `@sensitive` returns plain expanded data without storing it. Live combinations and watched sensitive queries reject. Existing `no-store` behaviour is unchanged.
-- Add R11 ephemeral streams: `createStream(client, ...)` from `graphql-orm-client/streams`, and React `useEphemeralStream`, with explicit
-  sequence/resume contracts, bounded volatile buffers, coalesced notifications, reconnect replay
-  and visible gaps/evictions. Additive; no migration. Existing plain subscriptions are unchanged.
-
-- Generate flattened full/thin live projections. Unsupported full selections fall back to keys only;
-  events re-read holders for omitted fields and changed relation links. Health retains
-  `selection-refused`, and doctor distinguishes admitted/quiet fallback. Quiet fallback fails strict
-  mode; working fallback otherwise passes.
-- Automatic stale, restart and R4 confirming reads share `live.minRereadMs` (default 2000). Repeated
-  confirmations from changing query membership are bounded, and inactive queries catch up on return.
-- Infer composite keys from `<Type>KeyInput` and build key arguments from stored fields.
-
-R3 migration: regenerate to turn list behavior on; previously generated modules without `lists`
-keep today's keyed behavior. A list opens a stream only for a type with a `@live` fragment somewhere in
-the project, so regenerating gives no new type a stream. `refetch()` and polls on a regenerated
-`@connection` query read the loaded range, not just the first page. Set `live.listStreams: false` to opt out and poll lists. An un-narrowed
-stream costs the server one row-policy check per event per subscriber. Review
-`live.maxRereadPages` (default 10) and `live.maxRereadRows` (default 100, set to the server maximum),
-and render `QueryState.listRefreshTruncated` when a loaded tail cannot be refreshed. Required-key
-schemas poll with `list-key-required`; disabling streams reports `list-streams-disabled`.
-Without a delete preimage grant no event is sent: correction waits for the next event or poll.
-- Add `pnpm conformance` and a CI version matrix for a SQLite graphql-orm example service
-  behind the real router, in this repository only. The suite checks admission, events, NodeIds, versions,
-  pagination, doctor verdicts and repeated Node and Chromium recovery, on graphql-orm-v0.90.1 and
-  graphql-orm-v0.93.0. No runtime API or migration change.
+1. Regenerate, and deal with any build errors above. Read the warnings: each names a fragment that won't update.
+2. If you set `maxKeyedSubscriptions: 0`, decide whether you want the un-narrowed stream, since it costs the server more.
+3. If you set `pollMs`, add `@poll(reason: "...")` to those queries.
+4. If you render a shell on a server, check it renders idle as you expect.
+5. Set `live.maxRereadRows` to your service's maximum page size.
+6. Run `doctor` against the deployed identity.
 
 ## 0.1.0-alpha.10 (2026-11-06)
 
