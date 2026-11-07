@@ -38,6 +38,10 @@ admitted and resolved per event; the NodeId-key variant follows NodeId's admissi
 
 R18 also preloads a query and mounts its handle later, asserting one HTTP read through the real router.
 
+R13 seeds 200 Ticket/Vendor pairs and reads their related names through masked fragments.
+The HTTP bridge counts requests forwarded to the real router: two parent pages and two
+100-key relation chunks. Fixture rows are removed before the other list assertions.
+
 Assertions cover empty Keys, keys/key/unkeyed streams, creation outside the held
 keys, scalar admission, NodeId and computed/relation refusals, federation fetch
 admission, delete preimage grants, managed versions, delayed server snapshots,

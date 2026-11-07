@@ -1,5 +1,6 @@
 export type {
   Artifact,
+  RelationState,
   ArgumentSpec,
   FragmentArtifact,
   FragmentRefFor,

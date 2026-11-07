@@ -24,6 +24,12 @@
 - Opt-in generated lifetime field and format policies, expiry notifications and holder re-reads.
   Regenerate with `lifetimes` to adopt; no configuration preserves existing behaviour.
 
+- R13: opt-in `@batch` compiles bounded relation reads with shared caching and masked
+  pending/ready/missing/error states. To adopt, install `installRelationBatching(client)`
+  from `graphql-orm-client/relations`, annotate relations and regenerate. Existing documents
+  keep their request behaviour. With batching installed, mounted fragment subscriptions retain records during collection.
+  With no `document`, as when rendering on a server, nothing is sent and the relation stays `pending`; `withoutDocument: "read"` allows it.
+
 - Compile a large schema far faster. After 0.1.0-alpha.10's stream selections, each live type re-extended the whole schema: 250 documents on a
   45,000-line schema took about 24 s and now take under a second.
 - R1: opt-in `live: "default"` and `live: { "default": ["src/area/**"] }` generation;

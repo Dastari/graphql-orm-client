@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { installRelationBatching } from '../dist/relations.js'
 import { liveSettingCheck } from './live-setting.mjs'
 import { doctorChecks } from './doctor.mjs'
 import { browserRecovery } from './browser.mjs'
@@ -40,6 +41,7 @@ const b64 = x => Buffer.from(JSON.stringify(x)).toString('base64url')
 const unsigned = `${b64({alg:'RS256',kid:'test'})}.${b64({sub:'conformance',iss:'https://conformance.local',aud:['graphql-router'],exp:Math.floor(Date.now()/1000)+3600})}`
 const token = `${unsigned}.${createSign('RSA-SHA256').update(unsigned).sign(privateKey).toString('base64url')}`
 const headers = {'content-type':'application/json',authorization:`Bearer ${token}`}
+const batchRouterReads = []
 let revision = 0, originalSdl, originalDescriptor
 async function post(query, variables={}, url=routerUrl, allowErrors=false) {
   const result = await (await fetch(url,{method:'POST',headers,body:JSON.stringify({query,variables})})).json()
@@ -49,6 +51,14 @@ async function post(query, variables={}, url=routerUrl, allowErrors=false) {
 const front = createServer(async(req,res)=>{
   try {
     if(req.url==='/jwks') { res.setHeader('content-type','application/json'); return res.end(JSON.stringify({keys:[jwk]})) }
+    if(req.url==='/batch') {
+      let body=''; for await(const chunk of req) body+=chunk
+      const request=JSON.parse(body)
+      const response=await fetch(routerUrl,{method:'POST',headers,body})
+      batchRouterReads.push({name:request.operationName,variables:request.variables})
+      res.statusCode=response.status;res.setHeader('content-type','application/json')
+      return res.end(await response.text())
+    }
     if(req.url==='/page') return res.end('<!doctype html><title>Conformance</title>')
     const sdl = originalSdl + (revision ? `\nextend type Widget { Revision${revision}: String }\n` : '')
     if(req.url==='/sdl') return res.end(sdl)
@@ -126,6 +136,39 @@ try {
  await writeFile(`${scratch}/introspection.json`,JSON.stringify((await post(getIntrospectionQuery())).data))
  await writeFile(`${scratch}/served.graphql`,originalSdl)
  console.log('Service SDL saved in scratch')
+ // R13: 200 Ticket rows, two parent pages, two bounded Vendor reads.
+ for (let i=0;i<200;i++) {
+  await post('mutation($Input: CreateVendorInput!) { CreateVendor(Input: $Input) { Success } }',{Input:{Id:`batch-v${i}`,Name:`Vendor ${i}`}})
+  await post('mutation($Input: CreateTicketInput!) { CreateTicket(Input: $Input) { Success } }',{Input:{Id:`batch-t${i}`,VendorId:`batch-v${i}`,Title:'Batch'}})
+ }
+ const batched=compile(schema,[
+  'fragment BatchBadge on Vendor { Name }',
+  'fragment BatchRow on Ticket { Vendor @batch(foreignKey: "VendorId", root: "Vendors", key: "Id") { ...BatchBadge } }',
+  'query BatchTickets($Page: PageInput, $Where: TicketWhereInput) { Tickets(Page: $Page, Where: $Where) { Edges { Node { ...BatchRow } } } }',
+ ])
+ const routerReads=batchRouterReads
+ const batchNetwork=createHttpNetwork({url:`${frontUrl}/batch`,headers})
+ const batchClient=createClient({network:batchNetwork})
+ installRelationBatching(batchClient, { withoutDocument: "read" })
+ const batchRefs=[]
+ for(const Offset of [0,100]) {
+  const result=await batchClient.execute(batched.operations.BatchTickets,{Page:{Limit:100,Offset},Where:{Id:{InList:Array.from({length:200},(_,i)=>`batch-t${i}`)}}})
+  batchRefs.push(...result.snapshot.data.Tickets.Edges.map(edge=>edge.Node))
+ }
+ assert.equal(batchRefs.length,200)
+ assert.equal(readFragment(batched.fragments.BatchRow,batchRefs[0]).Vendor.status,'pending')
+ batchRefs.forEach(ref=>readFragment(batched.fragments.BatchRow,ref))
+ await until('batched related names',()=>batchRefs.every(ref=>readFragment(batched.fragments.BatchRow,ref).Vendor.status==='ready'))
+ assert.equal(routerReads.length,4)
+ assert.deepEqual(routerReads.filter(r=>r.name.startsWith('Batch_')).map(r=>r.variables.Where.Id.InList.length),[100,100])
+ for(const ref of batchRefs) assert.match(readFragment(batched.fragments.BatchBadge,readFragment(batched.fragments.BatchRow,ref).Vendor.data).Name,/^Vendor /)
+ batchClient.dispose()
+ // Restore fixture cardinality for the existing list assertions.
+ for(let i=0;i<200;i++) {
+  await post(`mutation { DeleteTicket(Id: "batch-t${i}") { Success } }`)
+  await post(`mutation { DeleteVendor(Id: "batch-v${i}") { Success } }`)
+ }
+ pass('R13: 200 rows, two parent pages and two batched relation reads through the router')
  const a=await raw()
  const all=a.subscribe(stream()), empty=a.subscribe(stream('(Keys: [])')), keys=a.subscribe(stream('(Keys: ["w1"])')), key=a.subscribe(stream('(Key: "w1")'))
  await sleep(300)

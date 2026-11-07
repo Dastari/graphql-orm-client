@@ -157,6 +157,8 @@ chunked". The compiler should offer this, for example a directive on a relation 
 chunking, de-duplication, a pending state and shared caching.
 *Acceptance:* a 200-row list with a related name makes a bounded number of reads, with no consumer
 code.
+*Built:* opt-in `@batch` with validated mappings and generated state unions; the optional
+`relations` entry point coalesces and chunks lookups. See [R13 design](design.md#batched-relation-reads-r13).
 
 **R14. Bounded read-all.** For roots that only filter on a key, `readAll` pages to a stated limit and
 reports whether it truncated, along with the exact total. Consumers have written this several times.

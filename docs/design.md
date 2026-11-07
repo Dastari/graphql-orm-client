@@ -1184,3 +1184,60 @@ R17 bundle measurement (minified standalone ESM closure, external peers, gzip le
 main 59,593 bytes / 19,175 gzip, versus 55,720 / 17,995 before R17 (+3,873 / +1,180).
 The separate persistence entry is 3,354 / 1,562 bytes and imports no runtime code from main.
 The main growth is lifetime evaluation plus store hooks for stale restoration and optimistic safety.
+
+## Batched relation reads (R13)
+
+Install `installRelationBatching(client)` from `graphql-orm-client/relations` before
+opening queries, annotate singular relations and regenerate:
+
+```graphql
+fragment TicketRow on Ticket @live {
+  Title
+  Vendor @batch(foreignKey: "VendorId", root: "Vendors", key: "Id", limit: 100) {
+    ...VendorBadge
+  }
+}
+fragment VendorBadge on Vendor @live { Name }
+```
+
+The compiler validates the declared foreign key and complete single target key, their scalar
+types, `Where.<key>.InList`, `Page.Limit` and `Edges.Node`. It selects the foreign key and
+removes the relation and unused child fragments from the parent request. The SDL does not
+attest the mapping; the directive author supplies it. Unsupported mappings fail the build
+with the parent field and reason. Composite target keys, plural relations, relation arguments,
+conditional relation directives, operation variables in the related projection and nested
+batches are unsupported.
+
+The generated relation is a discriminated union. Render each state explicitly:
+
+- `{ status: "pending" }`: queued or in flight; render loading.
+- `{ status: "ready", data }`: only the selected fields and masked child references.
+  Pass `data` to `useFragment(VendorBadge, data)` to read the badge.
+- `{ status: "missing" }`: null foreign key or no readable record returned. The server
+  cannot distinguish absent from denied records here.
+- `{ status: "error", error }`: a failed chunk, reported per requested record. The parent
+  query remains usable. Explicit refetch retries missing and failed lookups.
+
+A five-millisecond window coalesces keys across open queries. Batch sites for the same declared
+root and key share a build-time union projection, including different fragments. Requests
+contain at most `limit` distinct keys (default and maximum 100), and explicitly request that
+many rows. Use a lower limit for services configured below the default page maximum. The
+smallest declared limit for a shared root wins. No offset or cursor is guessed.
+
+Related records use normal identity and version ordering. Complete stored records are reused;
+lifetime expiry is still proposed under R17. Without a version, the last arrival wins. Related
+types get streams only when the project marks their fragments `@live`; otherwise use query
+polling or refetch. Parent foreign-key events queue the new target. Polling, refetch and reconnect
+invalidate batched dependencies and coalesce reads again. Router burst loss remains a server
+gap (graphql-orm#359), so streams alone cannot prove continuity.
+
+Readers track lookup states and related records for notification and collection. Mounted
+fragment subscriptions retain their graph even after a query closes. Released subscriptions
+and queries no longer retain targets. Identity disposal aborts client requests; queued work
+checks disposal before sending or writing. The scheduler is in an optional entry point. On the R13 implementation base, the main
+minified browser closure changes from 55,720 to 56,492 bytes; level-9 gzip changes from
+17,995 to 18,191 bytes (limits: 60,000 and 20,000).
+Documents without the directive keep their existing request behaviour; adoption requires
+installation, annotation and regeneration only.
+
+Reading a relation can queue a request, so a read during render can too. That queue only reads, sends each id once however many renders ask, including under StrictMode, and writes to the store only after render, so a render React discards leaves at most a read whose result the next render uses. Tests pin each of these. With no `document`, as when rendering on a server, nothing is sent and the relation stays `pending`, because private reads must never run in server rendering; `withoutDocument: "read"` allows it for a non-browser client that means to.

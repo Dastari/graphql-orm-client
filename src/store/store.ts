@@ -69,6 +69,23 @@ interface Retention {
  * subscribers whose snapshot read a changed record are re-read and notified once.
  */
 export class Store {
+  /** Refresh batched dependencies after refetch or reconnect. */
+  refreshRelations?: (selector: Selector) => void
+  /** Resolve a compiler-declared relation; installed by the optional relations entry point. */
+  relation?: (selection: import("../artifact.js").LinkSelection, parent: string, variables: Variables) => { status: string; id?: string; stateId?: string; error?: unknown }
+
+  /** A collection is reading to see what's reachable, so a relation read mustn't start a request. */
+  collecting = false
+
+  /** Notify readers after a derived relation changes state. */
+  touch(id: string): void {
+    if (this.disposed) return
+    this.changed.add(id)
+    this.touched.add(id)
+  }
+
+  private readonly touched = new Set<string>()
+
   /** Whether readers omit removed nodes from lists. */
   readonly deletedRecords: "omit" | undefined
   private readonly records = new Map<string, StoredRecord>()
@@ -168,7 +185,8 @@ export class Store {
   /** Snapshot confirmed data only. Active optimistic layers postpone persistence. */
   persistenceSnapshot(): readonly { id: string; typename: string; fields: readonly (readonly [string, unknown])[] }[] | null {
     if (this.layers.size || this.journal || this.disposed) return null
-    return [...this.records.values()].map(r => ({ id: r.__id, typename: r.__typename, fields: [...r.fields] }))
+    // Relation states are derived, and an error in one isn't data to keep.
+    return [...this.records.values()].filter(r => r.__typename !== "BatchState").map(r => ({ id: r.__id, typename: r.__typename, fields: [...r.fields] }))
   }
 
   private restoreBlocked: Set<string> | null = null
@@ -309,13 +327,17 @@ export class Store {
     for (const observer of this.observers) observer()
     const changed = new Set(this.changed)
     this.changed.clear()
+    const touched = new Set(this.touched)
+    this.touched.clear()
     for (const subscription of [...this.subscriptions]) {
       if (!this.subscriptions.has(subscription)) continue
       const previous = subscription.snapshot
       if (![...previous.seen].some((id) => changed.has(id))) continue
       const next = this.lookup(previous.selector)
       const data = recycle(previous.data, next.data)
-      if (data === previous.data && next.missing === previous.missing && next.lifetime === previous.lifetime && next.stale === previous.stale) {
+      // A resolved relation can leave a query's masked data the same while it comes to show more records, and the query has to hear that,
+      // to hold them. Any other unchanged read notifies nobody.
+      if (data === previous.data && next.missing === previous.missing && next.lifetime === previous.lifetime && next.stale === previous.stale && ![...previous.seen].some((id) => touched.has(id))) {
         subscription.snapshot = { ...next, data: previous.data }
         continue
       }
@@ -364,11 +386,24 @@ export class Store {
 
   /** Delete every record no retained operation reaches. */
   collect(): void {
+    this.collecting = true
+    try {
+      this.sweep()
+    } finally {
+      this.collecting = false
+    }
+  }
+
+  private sweep(): void {
     if (this.disposed) return
     const reachable = new Set<string>([ROOT_ID])
     const rootKeys = new Set<string>()
     for (const retention of this.retained.values()) {
       const result = readSelections(this, retention.selector, { inlineSpreads: true, rootKeys })
+      for (const id of result.seen) reachable.add(id)
+    }
+    for (const subscription of this.relation ? this.subscriptions : []) {
+      const result = readSelections(this, subscription.snapshot.selector, { inlineSpreads: true, rootKeys })
       for (const id of result.seen) reachable.add(id)
     }
     for (const id of [...this.records.keys()]) {
@@ -401,6 +436,8 @@ export class Store {
     this.retained.clear()
     this.subscriptions.clear()
     this.records.clear()
+    this.relation = undefined
+    this.refreshRelations = undefined
     this.changed.clear()
   }
 

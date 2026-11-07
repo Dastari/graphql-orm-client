@@ -379,7 +379,7 @@ class QueryResource<T> implements WatchedQuery<T> {
       })
     this.pollTimer = set(() => {
       const active = this.client.polling.isActive ?? defaultActive
-      if (this.users > 0 && active() && !this.inflight) void this.fetch()
+      if (this.users > 0 && active() && !this.inflight) void this.refetch()
     }, next)
   }
 
@@ -408,7 +408,10 @@ class QueryResource<T> implements WatchedQuery<T> {
     this.release = null
   }
 
-  refetch = (): Promise<void> => this.fetch()
+  refetch = (): Promise<void> => {
+    this.client.store.refreshRelations?.(selectorOf(this.artifact, this.variables))
+    return this.fetch()
+  }
 
   private loadingMore: Promise<void> | null = null
   private loadedRange = 0
@@ -780,7 +783,10 @@ export class Client {
           options.live,
           (holders) => {
             for (const resource of this.resources.values()) {
-              if (resource.users > 0 && holders.has(resource.key)) void resource.readAgain()
+              if (resource.users > 0 && holders.has(resource.key)) {
+                this.store.refreshRelations?.(selectorOf(resource.artifact, resource.variables))
+                void resource.readAgain()
+              }
             }
           },
           (timing) => this.healthChanged(timing),
@@ -923,7 +929,7 @@ export class Client {
       include === "active" ||
       include.some((entry) => (typeof entry === "string" ? artifact.name === entry : artifact === entry || artifact.hash === entry.hash))
     await Promise.all(
-      [...this.resources.values()].filter((resource) => resource.users > 0 && matches(resource.artifact)).map((resource) => resource.fetch())
+      [...this.resources.values()].filter((resource) => resource.users > 0 && matches(resource.artifact)).map((resource) => resource.refetch())
     )
   }
 
