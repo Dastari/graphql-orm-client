@@ -49,3 +49,7 @@ period makes none, and signing out clears every record.
 `createHttpNetwork({ url, reads, writes })` takes `{ deadlineMs, maxResponseBytes }` for each. Both are off unless set, and a write past
 its deadline is `unconfirmed`, not retried. See the data skill for `@sensitive`, write outcomes and partial results.
 
+
+## Build policies and the live setting
+
+Generator settings `strict`, `queryOwners`, `subscriptionPaths` and `live`: see the live skill.

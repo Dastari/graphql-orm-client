@@ -4,6 +4,21 @@
 
 - Compile a large schema far faster. After 0.1.0-alpha.10's stream selections, each live type re-extended the whole schema: 250 documents on a
   45,000-line schema took about 24 s and now take under a second.
+- R1: opt-in `live: "default"` and `live: { "default": ["src/area/**"] }` generation;
+  the package default stays `"explicit"`. Migration: opt in by area, regenerate and inspect health
+  and socket capacity before widening. `@live(enabled: false)` opts out. Implicit streamless
+  fragments report and poll; explicit streamless `@live` still follows R5.
+
+- R5: generation rejects streamless explicit `@live` and empty polling reasons; optional
+  `queryOwners`/`subscriptionPaths` restrict document ownership. Migration: remove unsupported
+  `@live` or add `@poll(reason: "...")`; add legitimate owners to the configured globs.
+  Each policy has `strict.<rule>: "warn" | "off"` to stage adoption (see design).
+- `pollMs` needs `@poll(reason: "...")` on its query. A build can't see a runtime option, so an undeclared one throws from `watchQuery`
+  outside production on a regenerated module. In production, and on a module generated earlier, it warns and still polls.
+  `polling.undeclared: "warn" | "off"` relaxes this.
+- `@live` on an interface or union fragment is now reported rather than silently not live, under `strict.liveWithoutStream`.
+
+
 - R3: generated `OperationArtifact.lists` enables one un-narrowed stream per open list type,
   including empty and count-only lists. Events invalidate membership, order and totals through
   the existing re-read limiter. Unheld rows are not stored. List interest opens before the read;

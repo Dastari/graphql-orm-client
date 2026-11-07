@@ -66,7 +66,7 @@ bounded holder re-reads. `liveSelection: "as-written"` preserves legacy stream t
 - `fetchPolicy` → `policy`: `cache-first` is `store-or-network`, `cache-and-network` is
   `store-and-network` (the default), `network-only` is the same. There is no `no-cache` for queries;
   for a mutation use `policy: "no-store"` (see Mutations).
-- `pollInterval` → `pollMs`. `refetch(vars)` merges and switches, as in Apollo.
+- `pollInterval` → `pollMs`, after declaring `@poll(reason: "...")` on the query. `refetch(vars)` merges and switches, as in Apollo.
 - `errorPolicy: "none"` → treat `query.errors.length` as an error; codes are on
   `errors[i].extensions.code`. `useMutation`'s `error` is an `OperationError` with the same codes.
 - `client.query` → `client.query(Query, variables, { policy, signal })`, resolving `{ data, errors }`.
@@ -161,3 +161,7 @@ delete visibility when polling is disabled. See docs/design.md, List streams (R3
 - Use `errorsAtPath(errors, ["alias"])` to show one refused root or alias beside the rest of the response. Set
   `partialResults: "preserve-errors"` on the client so a refused field doesn't overwrite a good stored value with null.
 
+
+## Polling and query owners
+
+A query passed `pollMs` declares why: `query Name @poll(reason: "...") { ... }`. `queryOwners` globs say where queries may be written. See the live skill.

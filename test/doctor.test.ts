@@ -30,7 +30,7 @@ const documents = [
   `fragment SlotState on Slot @live { State }`,
   `fragment VendorName on Vendor @live { Name }`,
   `fragment OrderTotal on Order @live { Total }`,
-  `fragment NoteBody on Note @live { Body }`,
+  `fragment NoteBody on Note @live @poll(reason: "No stream") { Body }`,
   `query TicketPage($Id: ID!) { Ticket(Id: $Id) { ...TicketTitle } }`,
   `query SlotPage { Slot(Site: "a", Name: "b") { ...SlotState } }`,
   `query VendorPage($Id: ID!) { Vendor(Id: $Id) { ...VendorName } }`,

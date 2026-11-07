@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { liveSettingCheck } from './live-setting.mjs'
 import { doctorChecks } from './doctor.mjs'
 import { browserRecovery } from './browser.mjs'
 import { spawn, execFile } from 'node:child_process'
@@ -15,7 +16,7 @@ import { createClient, createHttpNetwork, graphqlWsTransport, encodeNodeId } fro
 
 const scratch = process.env.CONFORMANCE_SCRATCH
 const base = Number(process.env.PORT_BASE ?? 42000)
-assert(base >= 42000 && base + 4 <= 42099)
+assert((base >= 42000 && base + 4 <= 42099) || (base >= 41600 && base + 4 <= 41699))
 const serviceUrl = `http://127.0.0.1:${base+1}`
 const routerUrl = `http://127.0.0.1:${base+2}/graphql`
 const frontUrl = `http://127.0.0.1:${base+3}`
@@ -334,6 +335,7 @@ try {
   }
   if(!failures.some(f=>f.startsWith(`ws synchronous=${synchronous}`)))pass(`8 reload + 8 router-kill + 8 refusal recoveries, ws allowSynchronousEvents=${synchronous}`)
  }
+ await liveSettingCheck({schema,scratch,routerUrl,token,post,until,sleep})
  await doctorChecks({schema,scratch,routerUrl,token,post})
  try {await browserRecovery({scratch,compiled,query,routerUrl,frontUrl,token,reload:()=>revision++,stopRouter,startRouter,updateDirect,update,until,sleep})}catch(e){failures.push(`Chromium: ${e.message}`);console.error(e)}
  if(failures.length)throw Error(`Conformance failures:\n${failures.join('\n')}`)

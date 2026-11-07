@@ -280,7 +280,7 @@ how to narrow it:
 
 The payload's entity field is found by type (`Widget` in `WidgetChangedEvent`), and its action
 by name. Types with `@live` fragments but no usable subscription are listed in
-`compile(...).liveUnavailable`, and their holders must poll. `client.live.status()` reports
+`compile(...).liveUnavailable` when compilation succeeds (R5 requires an explicit polling reason or lowered strictness); their holders poll. `client.live.status()` reports
 per-type counts, including overflow beyond the `key`-mode limit. A `DELETED` event removes the
 record, and any query that showed it reads again, unless its change kind is `PROPAGATED` (see above).
 
@@ -507,7 +507,8 @@ await client.mutate(RenameWidgetMutation, { Id: id, Name: name }, {
 ## Polling
 
 - **Fixed intervals.** `watchQuery(..., { pollMs })` and `useQuery(..., { pollMs })` refetch on
-  an interval while that handle is open. Each handle's interval lasts until it closes, and the
+  an interval while that handle is open. The query must declare `@poll(reason: "...")`;
+  undeclared intervals fail unless `polling.undeclared` is `"warn"` or `"off"`. Each handle's interval lasts until it closes, and the
   shortest open interval wins; in React, a new `pollMs` (or none) replaces the old one.
 - **Live fallback.** A query that shows `@live` records no subscription covers polls every
   `polling.liveFallbackMs` (default 30 s; `null` turns it off). That covers types with no usable
@@ -963,3 +964,55 @@ adds 3,613 raw / 1,151 gzip bytes to main and 127 / 37 to React (source and buil
 slightly). The command failed the unrelated compiler timing budget: median 41,678.8 ms exceeded
 30,000 ms. Window measurements were explicitly skipped, so that portion is incomplete. No limits
 were raised and this is not a full budget pass.
+
+## Project build policies (R5)
+
+Built. `strict` in the generator config accepts `liveWithoutStream`, `pollWithoutReason`,
+`rawSubscriptions` and `queryOwnership`, each `"error"` (default), `"warn"` or `"off"`.
+An explicit `@live` fragment with no usable stream must remove `@live` or declare
+`@poll(reason: "why polling is needed")`. Reasons must be non-empty and are recorded on artifacts.
+`liveUnavailable` remains available when a policy is downgraded or polling is declared.
+
+Set `queryOwners: ["src/routes/**", "src/dialogs/**", "src/adapters/**"]` to restrict query documents;
+windows, pickers and other project owners can have their own paths. `subscriptionPaths` similarly
+restricts raw subscription documents. Both checks are disabled when their setting is absent.
+Globs use config-relative source document paths with `/`, `*`, `**` and `?`; brace/extglob syntax
+is unsupported. All files declaring identical text are checked. Programmatic compilation can pass
+`documentPaths` (document text to file paths); without it diagnostics name the GraphQL source or
+`<document N>` and configured path policies cannot match unknown paths.
+
+`pollMs` is a runtime option, including through hooks, so a build can't see it. Declare it instead:
+`query Name @poll(reason: "...") { ... }`. An undeclared `pollMs` throws from `watchQuery` outside production, on a regenerated module, so
+development and tests find it. In production, and on a module generated before this release, it warns and still polls, because a working
+page mustn't crash on upgrade. `polling.undeclared: "warn" | "off"` on the client relaxes this. `strict.pollWithoutReason` covers an empty
+reason at build time. Fallback polling is reported through health and needs no declaration. The escape for a raw subscription is
+`client.stream` (R11).
+
+## Live generation setting (R1)
+
+Built. The generator and `compile` default to `live: "explicit"`: only `@live` fragments request
+streams. `live: "default"` is opt-in, not recommended by default; the owner must decide before
+the package default changes. It makes object fragments live without a directive.
+`live: { "default": ["src/area/**"] }` enables that behaviour only for matching fragment document
+source files, relative to the config directory. It matches the fragment's file, not a spreading query's.
+Plain-string `compile(schema, sources)` keeps its explicit behaviour; pass `documentPaths` when
+using area mode programmatically. Unknown files do not match area globs.
+
+`@live(enabled: false)` opts a fragment out in every mode; `@live` and `@live(enabled: true)` opt in.
+An implicit live fragment with no usable stream warns, appears in `liveUnavailable`, and uses the
+normal fallback interval (30 seconds unless changed); health reports `no-stream` and polling, or
+unavailable if fallback is disabled. Explicit `@live` on that type follows R5's error policy.
+Only fragments on object types with a key become implicitly live. A keyless value type has no identity and no stream, and its data comes with its parent, so it stays as it is. Abstract fragments need explicit intent.
+Lists open streams only for types with a live fragment somewhere in the project. Default mode
+widens that set; an opted-out fragment does not disable another live fragment of the same type.
+
+Migration: keep `"explicit"` to retain current stream scope. Opt in per area, regenerate, and inspect
+`liveUnavailable` and `client.liveHealth()`. More live types use more operations: the router's default
+32-operation connection budget still applies; capacity refusals remain visible and uncovered data polls.
+No setting overrides server admission or guarantees every burst event arrives.
+
+R1 validation: the generated default-mode project updates a directive-free Widget fragment from
+a real stream and reports PageInfo polling with `no-stream`, against graphql-orm 0.90.1/router
+0.8.1. Mock tests cover versions, reconnect refetch, collection, identity disposal, source-area
+globs and 40 live types at a simulated 32-operation limit. Router configuration source at both
+0.90.1 and 0.93.0 sets that default limit to 32; this change did not run conformance on 0.93.0.
