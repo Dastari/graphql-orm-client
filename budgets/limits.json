@@ -145,12 +145,8 @@
     },
     "windowMarginalHeapBytes": {
       "max": 25000000,
-      "measured": 7017366,
-      "margin": "Maximum marginal JS heap across 1\u21923 and 3\u21926 windows; browser variance allowance.",
-      "localRunRange": [
-        7017090,
-        7017858
-      ]
+      "measured": 7131454,
+      "margin": "Maximum marginal JS heap across 1\u21923 and 3\u21926 windows; browser variance allowance."
     }
   },
   "machine": {

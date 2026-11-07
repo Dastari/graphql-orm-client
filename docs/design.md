@@ -751,8 +751,7 @@ memory, browser RSS, GPU memory and server cost. It does not establish a bound o
 application or on other devices.
 
 The compile, main and react rows were measured again on 2026-11-07 after R2, R3 and R4; the rest are from the first run. Those three
-changes took the main bundle from 39,582 to 49,423 bytes. They also took the marginal JS heap per window on a CI runner from about 7.0 MB to
-about 11.5 MB, with 10,000 rows per window. That is within its limit and not yet explained.
+changes took the main bundle from 39,582 to 49,423 bytes. The marginal JS heap per window is unchanged, at about 7.1 MB with 10,000 rows per window. It looked like 11.5 MB for a while, because the budget measured with R4's confirming read still in flight; it now waits for that to finish.
 
 A nested compile for each live type used to re-extend the whole schema, which took the compile from 7.6 s to about 24 s while staying under
 the then limit of 30 s. The extended schema is now cached per schema, and the 5 s limit is what guards it.
