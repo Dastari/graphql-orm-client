@@ -100,6 +100,9 @@ Live queries read once more after their records gain a stream (default `live.set
 This adds a request on first load and narrows the read/subscribe gap; without a server subscribe
 acknowledgement it cannot eliminate it. `live: { settleMs: false }` restores the previous request cost.
 
+Burst repair reads are on by default after 32 events; `live: { burstRead: false }` disables them.
+See [scheduling and read cost](docs/design.md#burst-repair-reads).
+
 `client.liveHealth()` and `useLiveHealth()` say what keeps the data fresh per type and for the socket, so
 a page can draw "live updates unavailable". A stream with no event yet is `unconfirmed`, not `live`.
 

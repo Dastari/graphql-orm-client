@@ -456,15 +456,15 @@ class QueryResource<T> implements WatchedQuery<T> {
     }
   }
 
-  fetch(): Promise<void> {
+  fetch(beforeSend?: () => void): Promise<void> {
     if (this.inflight) return this.inflight
-    if (this.loadingMore) return this.loadingMore.then(() => (this.users > 0 ? this.fetch() : undefined))
+    if (this.loadingMore) return this.loadingMore.then(() => (this.users > 0 ? this.fetch(beforeSend) : undefined))
     if (this.state.data !== undefined) this.set({ ...this.state, status: "refreshing" })
     const controller = new AbortController()
     this.controller = controller
     const connection = this.artifact.lists ? this.connection() : null
     this.inflight = this.client
-      .execute<T>(this.artifact, this.variables, { signal: controller.signal, ...(connection && connection.variable && connection.spec.limit ? { refreshConnection: { loaded: Math.max(connection.loaded, this.loadedRange), ...this.client.connectionRereadLimits, onTruncated: (value: boolean) => this.set({ ...this.state, listRefreshTruncated: value }) } } : {}) })
+      .execute<T>(this.artifact, this.variables, { beforeSend, signal: controller.signal, ...(connection && connection.variable && connection.spec.limit ? { refreshConnection: { loaded: Math.max(connection.loaded, this.loadedRange), ...this.client.connectionRereadLimits, onTruncated: (value: boolean) => this.set({ ...this.state, listRefreshTruncated: value }) } } : {}) })
       .then(({ snapshot, errors }) => {
         if (controller.signal.aborted) return
         this.lastReadAt = this.client.now()
@@ -490,6 +490,7 @@ class QueryResource<T> implements WatchedQuery<T> {
     return this.inflight
   }
 
+  private readonly rereadSent = new Set<() => void>()
   private rereadWaiting = false
   private rereadPending = false
   private rereadTimer: unknown = null
@@ -500,10 +501,12 @@ class QueryResource<T> implements WatchedQuery<T> {
     if (this.rereadTimer !== null) this.client.cancelReread(this.rereadTimer)
     this.rereadTimer = null
     this.rereadPending = false
+    this.rereadSent.clear()
   }
 
   /** Mark stale, coalescing bursts and following an in-flight read with one more. */
-  readAgain(): void {
+  readAgain(sent?: () => void): void {
+    if (sent) this.rereadSent.add(sent)
     this.rereadPending = true
     this.drainReread()
   }
@@ -530,7 +533,9 @@ class QueryResource<T> implements WatchedQuery<T> {
     }
     this.rereadPending = false
     this.rereadAt = this.client.now()
-    void this.fetch()
+    const callbacks = [...this.rereadSent]
+    this.rereadSent.clear()
+    void this.fetch(() => { for (const sent of callbacks) sent() })
   }
 
   /** Whether a projection omits something selected by this query's held fragments. */
@@ -758,9 +763,9 @@ export class Client {
       ? new LiveManager(
           this.store,
           options.live,
-          (holders) => {
+          (holders, cause, sent) => {
             for (const resource of this.resources.values()) {
-              if (resource.users > 0 && holders.has(resource.key)) void resource.readAgain()
+              if (resource.users > 0 && holders.has(resource.key)) void resource.readAgain(sent ? () => sent(resource.key) : undefined)
             }
           },
           (timing) => this.healthChanged(timing),
@@ -864,7 +869,7 @@ export class Client {
       this.healthQueued = false
       if (this.store.isDisposed) return
       const health = this.liveHealth()
-      const key = JSON.stringify(health, (name, value) => (name === "lastEventAt" ? undefined : value))
+      const key = JSON.stringify(health, (name, value) => (["lastEventAt", "lastReadAt", "burstReads", "lastBurstReadAt"].includes(name) ? undefined : value))
       const forced = this.healthForced
       this.healthForced = false
       if (key === this.healthKey && !forced) return

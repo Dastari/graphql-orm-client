@@ -302,7 +302,7 @@ warns, naming each fragment and field the new projection would exclude. Old arti
 Automatic stale, reconnect and R4 confirming reads share one per-query scheduler. It runs a leading
 read and one trailing read when more marks arrive, no faster than `live.minRereadMs` (default 2000).
 A mark during a read follows it with one more, respecting the interval. While `polling.isActive()`
-is false it waits, checking every 100 ms, then runs once on return. Closing the query cancels pending
+is false it waits, checking every 1000 ms, then runs once on return. Closing the query cancels pending
 work. Manual refetch and interval polls retain their own behavior. List invalidation shares this limiter (R3 below).
 
 In graphql-orm 0.90.1 and main `9d1a482`, `validate_subscription_selection` maps generated
@@ -1068,3 +1068,27 @@ instant delete visibility. Pages have no shared snapshot. Deletes carry no retai
 response can restore a removed row, even when that response carries a record version,
 because the deleted record no longer supplies a version to compare. Re-reading after
 reconnect remains necessary. Without a version, ordinary writes use last-arrival-wins.
+
+## Burst repair reads
+
+Router 0.8.1 at graphql-orm 0.90.1 and 0.93.0 can drop frames silently (#359).
+`live.burstRead` is enabled by default: `{ events: 32, settleMs: 500, maxWaitMs: 10000 }`.
+The threshold matches the router's default broadcast capacity: fewer than 32 events cannot
+fill that buffer. Events count while less than 500 ms apart. One manager-wide window waits
+until every participating type is quiet, or 10000 ms passes, then reads the union of record
+and list holders once per query. Sustained streams start a fresh window after each deadline.
+This repairs dropped final frames when enough preceding frames arrive; it cannot detect an
+entirely lost or below-threshold burst. Server continuity signalling is still needed.
+
+Reads use `QueryResource.readAgain`: pending R3 or thin invalidations absorb the burst mark;
+a read already in flight is followed by one more because it may predate the last event.
+The shared `minRereadMs` limiter bounds request frequency; hidden pages wait and read once
+on return through `polling.isActive()`. A list burst with a trailing invalidation pending
+adds zero requests; other timing can add at most one per window. Disposal cancels all timers.
+Restart clears that type's window; reconnect clears the whole window before recovery reads.
+Per-type `burstReads` counts actual repair requests (including a shared pending invalidation)
+and `lastBurstReadAt` is null until one is sent. Several queries can increment a type's count.
+
+Migration: one extra read per query holding the type per burst of at least 32 events,
+coalesced across types and at most one per `minRereadMs`. Set `live: { burstRead: false }`
+to restore the old read cost. Modules generated earlier get this without regeneration.

@@ -100,3 +100,13 @@ The fixture opts Widget into generated aggregates; its existing row policy decla
 read visibility. R16 enables preimage delivery, holds a fragment reference, deletes its row
 through the router, and checks the store, nullable fragment read and refreshed list.
 React's still-mounted-row case runs in the unit suite; the router case uses the core reader.
+
+## Burst repair
+
+A held Widget receives a burst of 1000 generated updates from eight concurrent workers,
+with its Changed stream going through the real router. The fixture service uses an 8192-event
+channel so this load tests the router buffer rather than overflowing the service bus; router
+capacity is unchanged. The run logs delivered frame counts
+and waits for a counted burst repair read and the final server version in the store. Loss is
+timing-dependent, so the test does not require missing frames. Dropped-final-frame repair is
+also exercised deterministically with the test kit.

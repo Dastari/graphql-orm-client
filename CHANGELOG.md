@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Burst repair reads are on by default: one extra read per query holding the type, per burst
+  of at least 32 events, coalesced across types and at most one per `minRereadMs`.
+  Migration: set `live: { burstRead: false }` to restore the previous read cost.
+  Modules generated earlier get this too; no regeneration is needed. Per-type health reports
+  `burstReads` and nullable `lastBurstReadAt`. Entirely lost or small bursts remain a server gap.
+
+
 - Compile a large schema far faster. After 0.1.0-alpha.10's stream selections, each live type re-extended the whole schema: 250 documents on a
   45,000-line schema took about 24 s and now take under a second.
 - R1: opt-in `live: "default"` and `live: { "default": ["src/area/**"] }` generation;

@@ -35,6 +35,11 @@ export type LiveReason = "list-refresh-truncated" | "list-streams-disabled" | "l
 export type LiveSocketState = "connected" | "connecting" | "closed" | "unknown"
 
 export interface LiveTypeHealth {
+  /** Burst repair requests; absent without a live layer for this type. */
+  readonly burstReads?: number
+  /** Last burst repair request; null means never. Absent without a live layer. */
+  readonly lastBurstReadAt?: number | null
+
   readonly state: LiveState
   /** Null when coverage has no known limitation, or when idle/starting. Thin retains selection-refused. */
   readonly reason: LiveReason | null
@@ -118,6 +123,7 @@ export function typeHealth(status: LiveTypeStatus | undefined, holdings: readonl
   const reads = holdings.map((holding) => holding.lastReadAt).filter((value): value is number => value !== null)
   const held = status ? status.held : new Set(holdings.flatMap((holding) => holding.held)).size
   const base = {
+    ...(status ? { burstReads: status.burstReads, lastBurstReadAt: status.lastBurstReadAt } : {}),
     held,
     pollMs,
     fragments,

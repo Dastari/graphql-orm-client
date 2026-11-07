@@ -75,6 +75,14 @@ export interface LiveConnection {
 }
 
 export interface LiveOptions {
+  /**
+   * Repair silent router frame loss after bursts. On by default: 32 events, 500 ms quiet,
+   * 10000 ms maximum wait. Below 32 events the router's default broadcast_capacity (32)
+   * cannot overflow. Types share one window and holders share one limited read.
+   * `false` disables this extra read; no generated artifact changes are required.
+   */
+  readonly burstRead?: false | { readonly events?: number; readonly settleMs?: number; readonly maxWaitMs?: number }
+
   /** Use one un-narrowed stream per open list type. Default true; false makes lists poll. */
   readonly listStreams?: boolean
   /** Maximum keyset pages refreshed automatically. Default 10. */
@@ -151,6 +159,11 @@ export interface LiveOptions {
 }
 
 export interface LiveTypeStatus {
+  /** Requests sent to repair bursts for this type. */
+  readonly burstReads: number
+  /** Last burst repair request time; null means never. */
+  readonly lastBurstReadAt: number | null
+
   /** Full projection was refused; this client uses keys only. */
   readonly selectionRefused?: boolean
   /**
@@ -255,6 +268,11 @@ interface RestartState {
  * `@live` fragments currently hold, and writes each event's entity into the store.
  */
 export class LiveManager {
+  private readonly bursts = new Map<string, { count: number; last: number }>()
+  private burstTimer: unknown = null
+  private burstStarted = 0
+  private readonly burstTotals = new Map<string, { count: number; at: number }>()
+
   private readonly thin = new Set<string>()
   private readonly mismatched = new Set<string>()
   private readonly keyOrder = new Map<string, readonly string[]>()
@@ -277,7 +295,7 @@ export class LiveManager {
   constructor(
     private readonly store: Store,
     private readonly options: LiveOptions,
-    private readonly resync: (holders: ReadonlySet<string>) => void = () => {},
+    private readonly resync: (holders: ReadonlySet<string>, cause?: "burst" | "confirm" | "restart" | "reconnect", sent?: (holder: string) => void) => void = () => {},
     private readonly onChange: (timing?: boolean) => void = () => {},
     private readonly onRefusalChange: () => void = () => {},
     /** `stale` means the event carried nothing the holders can use, so they always read again. */
@@ -287,7 +305,10 @@ export class LiveManager {
     this.disconnect =
       options.connection?.subscribe(({ reconnected }) => {
         this.onChange()
-        if (reconnected && !this.disposed) this.resync(new Set([...this.holders.keys(), ...this.lists.keys()]))
+        if (reconnected && !this.disposed) {
+          this.clearBursts()
+          this.resync(new Set([...this.holders.keys(), ...this.lists.keys()]), "reconnect")
+        }
       }) ?? null
   }
 
@@ -364,6 +385,8 @@ export class LiveManager {
         return [
           artifact.typename,
           {
+            burstReads: this.burstTotals.get(artifact.typename)?.count ?? 0,
+            lastBurstReadAt: this.burstTotals.get(artifact.typename)?.at ?? null,
             selectionRefused: this.thin.has(artifact.typename),
             identityMismatch: this.mismatched.has(artifact.typename),
             mode: artifact.mode,
@@ -393,6 +416,7 @@ export class LiveManager {
 
   dispose(): void {
     this.disposed = true
+    this.clearBursts()
     this.disconnect?.()
     if (this.confirmationTimer !== null) this.cancelTimer(this.confirmationTimer)
     this.confirmations.clear()
@@ -601,7 +625,7 @@ export class LiveManager {
       this.confirmationTimer = null
       const current = new Set([...this.confirmations].filter((holder) => this.holders.has(holder) || this.lists.has(holder)))
       this.confirmations.clear()
-      if (!this.disposed && current.size) this.resync(current)
+      if (!this.disposed && current.size) this.resync(current, "confirm")
     }, 0)
   }
 
@@ -761,11 +785,60 @@ export class LiveManager {
 
   /** Start the type's missing streams, then read what shows the type. */
   private restartNow(typename: string): void {
+    this.bursts.delete(typename)
+    this.scheduleBurst()
     this.reconcile(typename)
     const holders = new Set<string>(this.listHolders(typename))
     for (const [holder, targets] of this.holders) if (targets.get(typename)?.size) holders.add(holder)
-    if (holders.size) this.resync(holders)
+    if (holders.size) this.resync(holders, "restart")
     else this.restarts.delete(typename)
+  }
+
+  private clearBursts(): void {
+    if (this.burstTimer !== null) this.cancelTimer(this.burstTimer)
+    this.burstTimer = null
+    this.bursts.clear()
+  }
+
+  private noteBurst(typename: string): void {
+    if (this.options.burstRead === false) return
+    const config = this.options.burstRead
+    const now = this.now()
+    if (!this.bursts.size) this.burstStarted = now
+    const previous = this.bursts.get(typename)
+    const count = previous && now - previous.last < (config?.settleMs ?? 500) ? previous.count + 1 : 1
+    // Once qualified, keep the type until the shared window drains.
+    const threshold = Math.max(1, config?.events ?? 32)
+    this.bursts.set(typename, { count: previous && previous.count >= threshold ? Math.max(threshold, count) : count, last: now })
+    this.scheduleBurst()
+  }
+
+  private scheduleBurst(): void {
+    if (this.burstTimer !== null) this.cancelTimer(this.burstTimer)
+    this.burstTimer = null
+    if (!this.bursts.size || this.options.burstRead === false) return
+    const config = this.options.burstRead
+    const quietAt = Math.max(...[...this.bursts.values()].map(entry => entry.last)) + Math.max(1, config?.settleMs ?? 500)
+    const due = Math.min(quietAt, this.burstStarted + Math.max(1, config?.maxWaitMs ?? 10000))
+    this.burstTimer = this.after(() => {
+      this.burstTimer = null
+      const types = [...this.bursts].filter(([, entry]) => entry.count >= Math.max(1, config?.events ?? 32)).map(([type]) => type)
+      this.bursts.clear()
+      const holders = new Set<string>()
+      for (const type of types) {
+        for (const holder of this.listHolders(type)) holders.add(holder)
+        for (const [holder, targets] of this.holders) if (targets.get(type)?.size) holders.add(holder)
+      }
+      // One callback per request, even if several types share that request.
+      if (holders.size) this.resync(holders, "burst", (holder) => {
+        for (const type of types) {
+          if (!this.lists.get(holder)?.includes(type) && !this.holders.get(holder)?.get(type)?.size) continue
+          const previous = this.burstTotals.get(type)
+          this.burstTotals.set(type, { count: (previous?.count ?? 0) + 1, at: this.now() })
+        }
+        this.onChange()
+      })
+    }, Math.max(0, due - this.now()))
   }
 
   /** A timer that must not keep a Node process (SSR, tests) alive. */
@@ -797,6 +870,7 @@ export class LiveManager {
     if (id === null) return
     // A stream without keys carries every record of the type; only held records are written.
     this.noteEvent(artifact.typename)
+    this.noteBurst(artifact.typename)
     const listHolders = new Set(this.listHolders(artifact.typename))
     if (!this.held().get(artifact.typename)?.has(id)) {
       this.onEvent(listHolders, artifact.typename, thin, artifact.rereadFragments ?? [])
