@@ -30,13 +30,17 @@ catalogue. This client is built on those guarantees.
 | Stage | What happens |
 | --- | --- |
 | Component | Declares a fragment on the type it renders and reads it with `useFragment`. It only sees the fields it asked for (data masking). |
-| Route root | Owns one query that spreads its children's fragments. A route loader can prefetch it before rendering, so there is no request waterfall. |
+| Route root | Owns one query that spreads its children's fragments. A browser route loader starts it with `client.loadQuery`; `useLoadedQuery` consumes the same read. |
 | Compiler | `graphql-orm-client generate` turns every root into a flattened query, a sha256 hash of its text, a normalisation map, per-fragment readers and, for fragments marked `@live`, a subscription document. |
 | Store | Keeps records by `NodeId` (type name plus complete key), orders writes by record version and retains by reference count. |
 | Live layer | Subscribes to the generated `Changed` events for the records held through `@live` fragments and writes each event's entity into the store. Polling is a fallback for records no subscription covers. |
 
 Read [the design](docs/design.md) for the full model and [the graphql-orm
 contract](docs/graphql-orm-contract.md) for what the server must provide.
+
+Browser route loaders return `client.loadQuery(Query, variables, { signal })`; components read the
+handle with `useLoadedQuery` from the React subpath. Dispose abandoned navigations. Unmounted
+loads expire after 30 seconds. See [route loading and server shells](docs/design.md#route-loading-r18).
 
 ## Generate
 

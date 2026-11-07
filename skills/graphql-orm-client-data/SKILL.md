@@ -1,6 +1,6 @@
 ---
 name: graphql-orm-client-data
-description: Keep regenerated lists and counts current with list streams and bounded loaded-page refresh; use full/thin stream projections and bounded holder re-reads (minRereadMs); Write components with graphql-orm-client fragments and route roots, page through tables by number (@paged, usePagedQuery), load more (@connection), refetch, run mutations (including one-time secrets with `no-store`) and plain subscriptions, and port Apollo queries without request waterfalls or over-fetching, and test components against a mock network, scripted streams and a controllable clock (graphql-orm-client/test); declare sensitive operations (@sensitive), get honest write outcomes (mutateOutcome) and show partial results per path (errorsAtPath).
+description: Write fragments and route roots, load routes before mount, paginate, refetch, mutate, handle sensitive and partial results, and test data flows with the mock network and streams.
 ---
 
 # Fragments, roots, pagination and mutations
@@ -29,7 +29,12 @@ bounded holder re-reads. `liveSelection: "as-written"` preserves legacy stream t
   supplies variables (`Where`, order, page size).
 - Never fetch inside a child component to fill in missing data. Add the field to the child's
   fragment instead, so the root's query includes it.
-- Start the root in the route loader (`client.preload`) so the request begins before render.
+- Start the root in the browser route loader (`client.loadQuery`) and consume its handle with
+  `useLoadedQuery`; forward the router abort signal and dispose abandoned handles. It does not suspend.
+- `@skip`/`@include` selections and fragment arguments (`@argumentDefinitions`/`@arguments`) are
+  unsupported build errors. Use separate roots and operation variables. For existing conditional
+  documents, `conditionalDirectives: "legacy"` temporarily keeps unsafe old behaviour while migrating;
+  remove it after splitting roots. Whole-query hook `skip` is still supported.
 
 ## Filters and lists
 

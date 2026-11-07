@@ -1,6 +1,6 @@
 ---
 name: graphql-orm-client-adopt
-description: Install graphql-orm-client in an application, configure network read/write bounds, partial-result policy and one client per signed-in identity, pull and check schema snapshots, run the generator, wire route loaders and move an Apollo application across route by route.
+description: Install graphql-orm-client, configure transports and identity scope, generate artifacts, wire cancellable browser route loaders, and migrate an application route by route.
 ---
 
 # Adopt graphql-orm-client
@@ -34,7 +34,12 @@ The client only works against graphql-orm services and their router.
    Write a custom `Network` only when the project needs something these don't do.
 5. **Provider.** Wrap the application in the React provider from `graphql-orm-client/react`.
 6. **Routes.** Each route that shows data owns one root query. Start it in the route loader
-   with `client.preload(Query, variables)` and read it in the component with `useQuery`.
+   with `client.loadQuery(Query, variables, { signal })`, return the handle and read it with
+   `useLoadedQuery(handle)`. Forward router cancellation; dispose abandoned handles. An unused
+   handle expires after 30 seconds (`timeoutMs` adjusts this). Mount under the same identity client.
+   Server shells render idle; run loaders in the browser. No server data/store handoff is supported.
+   To migrate, replace the paired `preload`/`useQuery` calls; keeping them retains the older warm-up
+   and mount refetch behaviour.
 7. **Migrate gradually.** An application already on Apollo can move one route at a time.
    Move the fragments next to their components first (see `graphql-orm-client-data`, which maps
    Apollo's options). The installed `docs/design.md` has a table under "Coming from Apollo".

@@ -4,12 +4,12 @@ Status: partly built. Implemented and tested:
 - the compiler (`compile` from `graphql-orm-client/compiler`);
 - NodeId;
 - the store: normalisation, version ordering, masked reads, subscriptions, retention and garbage collection, disposal;
-- `Client`: `execute`, `watchQuery`, `watchPagedQuery`, `preload`, `query`, `mutate`, `subscribe`
+- `Client`: `execute`, `watchQuery`, `watchPagedQuery`, `preload`, `loadQuery`, `query`, `mutate`, `subscribe`
   and `refetchQueries`;
 - transport: `createHttpNetwork` (GraphQL over HTTP) and `graphqlWsTransport` (a graphql-ws
   client for the live layer);
 - `readFragment`;
-- React: `ClientProvider`, `useQuery`, `usePagedQuery`, `useFragment`, `useFragmentList`,
+- React: `ClientProvider`, `useQuery`, `useLoadedQuery`, `usePagedQuery`, `useFragment`, `useFragmentList`,
   `useMutation` and `useSubscription`;
 - the live layer: `compile(...).live`, `LiveManager`, `createClient({ live })`, and opt-in back-off for refused streams;
 - the generator: `graphql-orm-client generate` with `--check`. It emits typed artifacts, masked
@@ -68,17 +68,80 @@ const CatalogPageQuery = graphql(`
   }
 `)
 
-// Route loader: start the request before rendering.
-loader: ({ context, deps }) => context.client.preload(CatalogPageQuery, { Where: deps.where })
+// Browser route loader: return the handle without awaiting ready.
+loader: ({ context, deps, signal }) =>
+  context.client.loadQuery(CatalogPageQuery, { Where: deps.where }, { signal })
 
 function CatalogPage() {
-  const { data } = useQuery(CatalogPageQuery, useLoaderDeps())
+  const { data } = useLoadedQuery(useLoaderData())
   return data?.Widgets.Edges.map((edge) => <WidgetRow key={edge.Node.Id} widget={edge.Node} />)
 }
 ```
 
 `useFragment` returns only the fragment's own fields. A child's fields are hidden behind its
 fragment reference (data masking), so a parent cannot come to depend on them by accident.
+
+### Route loading (R18)
+
+`client.loadQuery(Query, variables, { signal?, timeoutMs? })` starts a retained read immediately,
+with no component mounted. Return its handle from the browser router loader and pass it to
+`useLoadedQuery(handle)` under the same `ClientProvider`. This hook returns `QueryState` and does
+not suspend. `handle.ready` resolves after the first read; inspect the state for errors. Equal query
+hashes and variables share a `store-or-network` resource. Mounting a completed or in-flight handle
+sends no additional request. The same handle can serve several components. Effect cleanup waits one
+microtask, so StrictMode's synchronous cleanup/setup replay neither aborts the read nor churns streams.
+A real unmount closes after that microtask. A disposed handle cannot mount again: start a new load.
+
+Pass the router's cancellation signal and call `handle.dispose()` when abandoning a navigation.
+Cancellation is quiet, including transports that return after abort; identity disposal clears the store
+synchronously and rejects late responses. An unmounted loader expires after 30 seconds by default;
+`timeoutMs` must be positive and finite. Adjust it for slow navigation. Mount cancels that deadline.
+Disposal releases retention; records then follow the configured store retention/garbage collection.
+The handle itself should be dropped by the router when the navigation ends.
+
+R3 list interest opens **before** the loader's first read, even if nobody mounts. Deferring the stream
+until mount would create a new read/subscribe gap for the preloaded list. Cancellation or the unused-load
+deadline closes this interest automatically. R4 confirming reads, reconnect recovery and live events
+may still cause additional requests; "one read" means no duplicate caused by mounting, not disabling
+freshness. There is still no server subscribe acknowledgement, and the router can drop frames (#359).
+`@sensitive` reads reject before loading because a watch retains results; use `client.query` instead.
+
+Migration is opt-in per route: replace `preload` plus `useQuery` with `loadQuery` plus
+`useLoadedQuery`, forward cancellation, and handle `idle`, `loading` and `error` states. The old
+`preload` remains an awaitable warm-up that closes on completion. A subsequent default `useQuery`
+uses `store-and-network` and may read again. Its legacy StrictMode effect replay can restart a request;
+the loader hook avoids that. Suspense is not implemented.
+
+### Conditional selections and fragment arguments
+
+Fragment-local `@argumentDefinitions`/`@arguments` are not implemented and fail compilation with a
+specific error. Route operations already own their variables and build-time composition; introducing
+local defaults and argument substitution would require distinct fragment reference identities and
+reader variable scopes. Use operation variables rather than silently losing those scopes.
+
+`@skip` and `@include` are rejected at build time by default, on fields, spreads and inline fragments,
+including live fragments. Previously the wire query preserved the directive, but normalisation and
+read selections did not represent its condition: an omitted field read as missing, generated types
+required it, and flattened live projections could select it unconditionally. This is unsafe and is
+not conditional-selection support. `conditionalDirectives: "legacy"` in generator config (or compile
+options) temporarily preserves that previous behaviour for migration. Split conditional selections
+into separate route roots, remove the setting and regenerate. Proper variable-aware conditional
+readers, optional generated fields and stream projections remain proposed. The hook's `skip` option
+skips a whole operation and is unaffected.
+
+### Framework server shells
+
+Server rendering data is a non-goal: no result streaming and no serialised store handoff.
+Entry points import in Node without `window` or `document`. A server shell may render
+`ClientProvider` and `useQuery`; it returns `idle` and starts no read, retention, stream or timer.
+The query server snapshot is also `idle` during hydration, so the browser first hydrates the same
+shell, then observes/loads client data. Create the browser client and invoke browser loaders there;
+do not invoke `loadQuery` from a server loader (it deliberately starts I/O). Do not share identity
+clients between server requests. `useLoadedQuery` also supplies an idle server snapshot, but creating
+its handle is an explicit I/O action. Fragment hooks require real fragment references; omit data
+subtrees from the server shell. No per-render query resources are registered by default shell rendering. Migration: render an idle
+placeholder on server and browser; `useQuery(..., { serverSnapshot: "legacy" })` temporarily restores
+the old server snapshot and resource registration. Remove it after adopting the idle shell.
 
 ### View-model fragments
 
@@ -818,7 +881,7 @@ the directive from the wire document. Results are plain values with fragment sel
 they carry no fragment references and cannot be opened by `readFragment`. No store (including
 a private store), retention or inspector receives the result. Existing matching entities remain
 unchanged, just as with mutation `policy: "no-store"`. That older option still supports private
-fragment reads. Sensitive queries use imperative `client.query`; watched queries and preload
+fragment reads. Sensitive queries use imperative `client.query`; watched queries, preload and loadQuery
 reject them because those retain results. Sensitive mutations reject optimistic responses.
 Live fragments anywhere in a sensitive operation, and operation-level `@live`, fail the build.
 Persistence is proposed (R17); it must exclude these results. Callers own the returned values

@@ -15,7 +15,7 @@ import { createClient, createHttpNetwork, graphqlWsTransport, encodeNodeId } fro
 
 const scratch = process.env.CONFORMANCE_SCRATCH
 const base = Number(process.env.PORT_BASE ?? 42000)
-assert(base >= 42000 && base + 4 <= 42099)
+assert(base >= 42000 && base + 4 <= 42199)
 const serviceUrl = `http://127.0.0.1:${base+1}`
 const routerUrl = `http://127.0.0.1:${base+2}/graphql`
 const frontUrl = `http://127.0.0.1:${base+3}`
@@ -201,6 +201,20 @@ try {
  assert.equal(generated.frames.filter(f=>f.id===generatedId).length,0)
  generated.ws.close()
  pass('generated stream selection is admitted on an entity with NodeId and a managed version')
+ // R18: the loader and later mount use one real router read; no stream/settle read is enabled here.
+ {
+  let reads = 0
+  const http = createHttpNetwork({url:routerUrl,headers})
+  const loaderClient = createClient({network:{execute:(r,o)=>{ reads++; return http.execute(r,o) }}})
+  const loaded = loaderClient.loadQuery(compiled.operations.One,{})
+  await loaded.ready
+  assert.equal(loaded.getState().status,'ready')
+  const release = loaded.mount()
+  assert.equal(reads,1)
+  assert.equal(loaderClient.store.get(encodeNodeId('Widget',['w1']))?.fields.get('Name'),'Newest')
+  release(); await Promise.resolve(); loaderClient.dispose()
+  pass('route preload mounted later: one HTTP request reaches the real router')
+ }
  const query = compiled.operations.One
  // Deliver older server data after the newer snapshot through the network.
  const sequence=[newer,old]
