@@ -106,28 +106,43 @@ export class Store {
     return time === null ? "unknown" : time <= this.now() ? "expired" : "valid"
   }
 
-  private scheduleExpiry(): void {
-    if (this.expiryTimer !== null) this.clearTimer(this.expiryTimer)
-    this.expiryTimer = null
-    let next = Infinity
-    for (const record of this.records.values()) {
-      const policy = this.policies.get(record.__typename)
-      if (!policy) continue
-      const state = this.lifetime(record.__id)!
-      if (state !== this.lifetimeStates.get(record.__id)) {
-        this.changed.add(record.__id)
+  private nextExpiry = Infinity
+
+  /** Note what these records' lifetimes say now. A publish looks only at what changed, so a large store isn't scanned per event. */
+  private checkLifetimes(ids: Iterable<string>): void {
+    for (const id of ids) {
+      const record = this.records.get(id)
+      const policy = record && this.policies.get(record.__typename)
+      if (!record || !policy) continue
+      const state = this.lifetime(id)!
+      if (state !== this.lifetimeStates.get(id)) {
+        this.changed.add(id)
         if (state === "unknown") {
-          try { this.diagnostic?.({ code: "LIFETIME_UNKNOWN", message: `Cannot determine lifetime of ${record.__typename}.${policy.field}` }) } catch { /* diagnostics must not interrupt writes */ }
+          try { this.diagnostic?.({ code: "LIFETIME_UNKNOWN", message: `Cannot determine lifetime of ${record.__typename}.${policy.field}` }) } catch { /* diagnostics must not affect reads */ }
         }
       }
-      this.lifetimeStates.set(record.__id, state)
+      this.lifetimeStates.set(id, state)
       const time = lifetimeTime(record.fields.get(policy.field), policy.format)
-      if (time !== null && time > this.now()) next = Math.min(next, time)
+      if (time !== null && time > this.now()) this.nextExpiry = Math.min(this.nextExpiry, time)
     }
-    if (next !== Infinity && !this.disposed) this.expiryTimer = this.setTimer(() => {
+  }
+
+  /** One timer per store. It can fire early, after a record's expiry moved; the full scan then finds the real next one. */
+  private armExpiry(): void {
+    if (this.expiryTimer !== null) this.clearTimer(this.expiryTimer)
+    this.expiryTimer = null
+    if (this.nextExpiry === Infinity || this.disposed) return
+    this.expiryTimer = this.setTimer(() => {
       this.expiryTimer = null
+      this.scheduleExpiry()
       this.publish()
-    }, Math.min(2147483647, Math.max(1, next - this.now())))
+    }, Math.min(2147483647, Math.max(1, this.nextExpiry - this.now())))
+  }
+
+  private scheduleExpiry(): void {
+    this.nextExpiry = Infinity
+    this.checkLifetimes([...this.records.keys()])
+    this.armExpiry()
   }
 
   private readonly observers = new Set<() => void>()
@@ -280,7 +295,11 @@ export class Store {
   /** Notify subscribers affected by the writes since the last publish. */
   publish(): void {
     if (this.disposed) return
-    if (this.policies.size) this.scheduleExpiry()
+    if (this.policies.size) {
+      const before = this.nextExpiry
+      this.checkLifetimes([...this.changed])
+      if (this.nextExpiry !== before || (this.expiryTimer === null && this.nextExpiry !== Infinity)) this.armExpiry()
+    }
     if (this.changed.size === 0) return
     for (const observer of this.observers) observer()
     const changed = new Set(this.changed)

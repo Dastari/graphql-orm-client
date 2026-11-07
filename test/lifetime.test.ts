@@ -4,6 +4,7 @@ import { compile } from "../src/compiler/index.js"
 import { createClient } from "../src/client.js"
 import { Store, ROOT_ID } from "../src/store/store.js"
 import { lifetimeTime } from "../src/store/lifetime.js"
+import { createMockNetwork, createTestClock } from "../src/test/index.js"
 const schema = buildSchema(`type Query { Widget: Widget } type Widget { Id: ID! Name: String Expires: String RecordVersion: Int! }`)
 const artifact = compile(schema, [`query One { Widget { Name } }`], { lifetimes: { Widget: { field: "Expires", format: "unix-seconds" } } }).operations.One!
 afterEach(() => vi.useRealTimers())
@@ -54,4 +55,47 @@ it("shares a timer across records and wakes safely for far-future expiries",asyn
  await vi.advanceTimersByTimeAsync(2147483647)
  expect(store.lifetime('later')).toBe('valid');expect(vi.getTimerCount()).toBe(1)
  store.dispose();expect(vi.getTimerCount()).toBe(0)
+})
+
+it("a server that keeps returning an expired row causes one read, not a loop", async () => {
+  const clock = createTestClock()
+  let now = 1_000_000
+  const schema = buildSchema(`type Query { Token: Token } type Token { Id: ID! ExpiresAt: Int! }`)
+  const { operations } = compile(schema, [`query One { Token { Id } }`], { lifetimes: { Token: { field: "ExpiresAt", format: "unix-seconds" } } })
+  const network = createMockNetwork({ respond: () => ({ data: { Token: { __typename: "Token", Id: "t1", ExpiresAt: 1001 } } }) })
+  const client = createClient({ network, store: { ...clock.store, now: () => now } })
+  const query = client.watchQuery(operations.One!, {})
+  query.open()
+  await clock.tick()
+  expect(network.requests).toHaveLength(1)
+  expect(query.getState().lifetime).toBeUndefined()
+  now = 1_002_000
+  await clock.tick(1000)
+  await clock.tick(5000)
+  expect(query.getState().lifetime).toBe("expired")
+  expect(network.requests.length).toBeLessThanOrEqual(2)
+  await clock.tick(60_000)
+  expect(network.requests.length).toBeLessThanOrEqual(2)
+  client.dispose()
+})
+
+it("a publish looks only at what changed, and the timer still finds the next expiry", async () => {
+  vi.useFakeTimers(); vi.setSystemTime(0)
+  const store = new Store({ lifetimes: { Widget: { field: "Expires", format: "unix-seconds" } } })
+  const write = (id: string, expires: string) => { const record = store.getOrCreate(id, "Widget"); store.setField(record, "Expires", expires) }
+  for (let index = 0; index < 1000; index++) write(`w${index}`, "1000")
+  store.publish()
+  const spy = vi.spyOn(store, "lifetime")
+  write("w0", "2000")
+  store.publish()
+  expect(spy.mock.calls.length).toBeLessThan(10)
+  expect(vi.getTimerCount()).toBeGreaterThan(0)
+  spy.mockClear()
+  await vi.advanceTimersByTimeAsync(1_000_000)
+  expect(store.lifetime("w1")).toBe("expired")
+  expect(store.lifetime("w0")).toBe("valid")
+  await vi.advanceTimersByTimeAsync(1_000_000)
+  expect(store.lifetime("w0")).toBe("expired")
+  store.dispose()
+  expect(vi.getTimerCount()).toBe(0)
 })

@@ -979,6 +979,8 @@ authorization scope in that key. To change identity, dispose the old client sync
 creating a new client; changing an application variable does not change an existing client's identity.
 Do not attach two persistence controllers to the same client. The adapter must make writes atomic.
 
+Windows of one identity share a key, because each has its own store (R19). The last write wins, which costs only staleness, since restored data is re-read. But disposing a client deletes the key, so a pop-out window calling `dispose()` on close deletes what the main window saved, until its next write. Dispose on an identity change, not on window close.
+
 Envelopes contain format version, package version, schema hash, server release and identity.
 Any mismatch is diagnosed and deleted, with no migration. Generator setting `persistence: true` exports `schemaHash`, a
 SHA-256 of printed schema SDL; a consumer can also supply its tracked R23 snapshot hash consistently.
