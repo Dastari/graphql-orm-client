@@ -16,11 +16,12 @@ Status: early alpha. Check the installed `docs/design.md` for the current API.
 4. Change data with `useMutation`. Spread the affected fragments into the mutation so the response updates the store.
 
 ```tsx
+import type { FragmentRefs, LoadedQuery } from "graphql-orm-client"
 import { useFragment, useLoadedQuery } from "graphql-orm-client/react"
-import { graphql } from "./graphql/generated"
+import { graphql, type TicketsPageQuery } from "./graphql/generated"
 
 const TicketRow = graphql(`fragment TicketRow on Ticket @live { Title State }`)
-function Row({ ticket }) {
+function Row({ ticket }: { ticket: FragmentRefs<"TicketRow"> }) {
   const { Title, State } = useFragment(TicketRow, ticket)
   return <li>{Title}: {State}</li>
 }
@@ -31,7 +32,7 @@ const TicketsPage = graphql(`
   }
 `)
 // In the route's loader: return client.loadQuery(TicketsPage, { Where: where }, { signal })
-function Page({ loaded }) {
+function Page({ loaded }: { loaded: LoadedQuery<TicketsPageQuery> }) {
   const { data } = useLoadedQuery(loaded)
   return <ul>{data?.Tickets.Edges.map(({ Node }) => <Row key={Node.Id} ticket={Node} />)}</ul>
 }
@@ -42,7 +43,7 @@ function Page({ loaded }) {
 - Give every component that renders server data its own fragment, in the same file, on the
   type it renders. Name it after the component (`WidgetRow` → `fragment WidgetRow on Widget`).
 - Read it with `useFragment(Fragment, ref)`. The component receives a fragment reference,
-  never a raw result object.
+  never a raw result object. Type the prop `FragmentRefs<"WidgetRow">`, from `graphql-orm-client`.
 - Select only the fields the component renders. To render a child component, spread the
   child's fragment (`...WidgetHealth`) and pass the reference down. Do not select the child's
   fields in the parent.

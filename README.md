@@ -46,11 +46,12 @@ export const client = createClient({
 counts of that type, to stay current.
 
 ```tsx
+import type { FragmentRefs, LoadedQuery } from "graphql-orm-client"
 import { useFragment, useLoadedQuery } from "graphql-orm-client/react"
-import { graphql } from "./graphql/generated"
+import { graphql, type TicketsPageQuery } from "./graphql/generated"
 
 const TicketRow = graphql(`fragment TicketRow on Ticket @live { Title State }`)
-function Row({ ticket }) {
+function Row({ ticket }: { ticket: FragmentRefs<"TicketRow"> }) {
   const { Title, State } = useFragment(TicketRow, ticket)
   return <li>{Title}: {State}</li>
 }
@@ -65,7 +66,7 @@ const TicketsPage = graphql(`
   }
 `)
 // In the loader: return client.loadQuery(TicketsPage, { Where: where }, { signal })
-function Page({ loaded }) {
+function Page({ loaded }: { loaded: LoadedQuery<TicketsPageQuery> }) {
   const { data } = useLoadedQuery(loaded)
   return <ul>{data?.Tickets.Edges.map(({ Node }) => <Row key={Node.Id} ticket={Node} />)}</ul>
 }
