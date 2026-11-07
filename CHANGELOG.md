@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Compile a large schema far faster. After 0.1.0-alpha.10's stream selections, each live type re-extended the whole schema: 250 documents on a
+  45,000-line schema took about 24 s and now take under a second.
 - R3: generated `OperationArtifact.lists` enables one un-narrowed stream per open list type,
   including empty and count-only lists. Events invalidate membership, order and totals through
   the existing re-read limiter. Unheld rows are not stored. List interest opens before the read;
