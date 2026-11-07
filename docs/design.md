@@ -1081,7 +1081,8 @@ This repairs dropped final frames when enough preceding frames arrive; it cannot
 entirely lost or below-threshold burst. Server continuity signalling is still needed.
 
 Reads use `QueryResource.readAgain`: pending R3 or thin invalidations absorb the burst mark;
-a read already in flight is followed by one more because it may predate the last event.
+an automatic read already sent after the last burst event absorbs the mark, including
+timers due together. A read predating that event is followed by one more.
 The shared `minRereadMs` limiter bounds request frequency; hidden pages wait and read once
 on return through `polling.isActive()`. A list burst with a trailing invalidation pending
 adds zero requests; other timing can add at most one per window. Disposal cancels all timers.
@@ -1092,3 +1093,24 @@ and `lastBurstReadAt` is null until one is sent. Several queries can increment a
 Migration: one extra read per query holding the type per burst of at least 32 events,
 coalesced across types and at most one per `minRereadMs`. Set `live: { burstRead: false }`
 to restore the old read cost. Modules generated earlier get this without regeneration.
+
+## Read and stream counters
+
+With a live layer, `liveHealth().reads` is an immutable snapshot of monotonic request
+counts for this client: `first` (opened query fetch), `manual` (refetch, execute, query and
+imperative reads), `poll` (interval including fallback), `stale` (event, missing record or
+list invalidation), `confirm` (new coverage), `restart` (ended stream), `reconnect` (socket
+recovery), `burst` (burst repair), and `pagination` (load-more). Loaded keyset refresh pages
+count individually under the initiating cause. A request which fails still counts; one
+cancelled before sending, absorbed by an in-flight read, or coalesced in the limiter does
+not. The first pending cause owns a coalesced request; per-type `burstReads` can additionally
+identify its participation in burst repair. Counters never double-count a shared request.
+
+`streams` counts open managed subscriptions across types, including overlap candidates;
+it excludes plain subscriptions and ephemeral streams. `refusedStreams` counts failed or
+refused managed operations, including full selections refused before a thin fallback and
+synchronous transport failures. Normal completion, reload and continuity-loss ends do not
+count as subscribe failures. `hasLiveLayer` explicitly reports configuration. These fields are absent without a live layer: zero means
+measured and none. Take two health samples and divide count differences by elapsed minutes.
+Counter and read-time changes alone do not notify health listeners. Event timing follows
+the existing at-most-once-per-second notification path; state changes still notify promptly.

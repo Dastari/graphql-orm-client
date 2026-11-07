@@ -207,3 +207,8 @@ holders once more after quiet, coalescing types and pending list/thin reads thro
 `minRereadMs`. `live.burstRead: false` restores the previous read cost; an object accepts
 `events`, `settleMs`, `maxWaitMs`. Per-type health has `burstReads` and `lastBurstReadAt`.
 Silent loss below the threshold still needs server signalling. See design for scheduling limits.
+
+For read rates, sample `liveHealth().reads` twice and divide differences by elapsed minutes.
+`streams` counts managed operations now; `refusedStreams` counts failed/refused operations
+cumulatively. These fields are absent without a live layer. Counts alone do not notify
+health subscribers; sample on the application's reporting interval. See design for causes.

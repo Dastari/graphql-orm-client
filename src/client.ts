@@ -1,3 +1,4 @@
+import type { ReadCause } from "./health.js"
 import { ephemeral, type EphemeralOptions, type EphemeralStream } from "./ephemeral.js"
 import { withoutErrorNulls } from "./partial.js"
 import { wasNotSent, writeStatus, type WriteOutcome } from "./outcome.js"
@@ -91,6 +92,8 @@ export type ReadAllRow<T> = T extends object ? { [K in keyof T]: T[K] extends { 
 
 /** Options for `Client.execute`. */
 export interface ExecuteOptions {
+  /** Cause counted when a query request is sent. Defaults to manual. */
+  readCause?: ReadCause
   signal?: AbortSignal
   beforeWrite?: () => void
   /** Internal loaded-range refresh; driven by the compiled connection and returned PageInfo. */
@@ -318,7 +321,7 @@ class QueryResource<T> implements WatchedQuery<T> {
     if (this.users > 1) return
     this.release = this.client.store.retain(this.key, selectorOf(this.artifact, this.variables))
     if (this.artifact.lists) this.client.live?.holdLists(this.key, this.artifact.lists)
-    if (this.state.status !== "ready" || this.policy !== "store-or-network") void this.fetch()
+    if (this.state.status !== "ready" || this.policy !== "store-or-network") void this.fetch("first")
     this.holdLive()
     this.schedulePoll()
   }
@@ -361,7 +364,7 @@ class QueryResource<T> implements WatchedQuery<T> {
       })
     this.pollTimer = set(() => {
       const active = this.client.polling.isActive ?? defaultActive
-      if (this.users > 0 && active() && !this.inflight) void this.fetch()
+      if (this.users > 0 && active() && !this.inflight) void this.fetch("poll")
     }, next)
   }
 
@@ -414,7 +417,7 @@ class QueryResource<T> implements WatchedQuery<T> {
     if (typeof size === "number") this.loadedRange = Math.max(this.loadedRange, connection.loaded + size)
     this.set({ ...this.state, loadingMore: true })
     this.loadingMore = this.client
-      .execute<T>(this.artifact, next)
+      .execute<T>(this.artifact, next, { readCause: "pagination" })
       .then(() => this.set({ ...this.state, loadingMore: false, hasMore: this.connection()?.hasMore ?? false }))
       .catch((error: unknown) => {
         this.set({ ...this.state, loadingMore: false, error: error instanceof Error ? error : new Error(String(error)) })
@@ -456,15 +459,15 @@ class QueryResource<T> implements WatchedQuery<T> {
     }
   }
 
-  fetch(beforeSend?: () => void): Promise<void> {
+  fetch(cause: ReadCause = "manual", beforeSend?: () => void): Promise<void> {
     if (this.inflight) return this.inflight
-    if (this.loadingMore) return this.loadingMore.then(() => (this.users > 0 ? this.fetch(beforeSend) : undefined))
+    if (this.loadingMore) return this.loadingMore.then(() => (this.users > 0 ? this.fetch(cause, beforeSend) : undefined))
     if (this.state.data !== undefined) this.set({ ...this.state, status: "refreshing" })
     const controller = new AbortController()
     this.controller = controller
     const connection = this.artifact.lists ? this.connection() : null
     this.inflight = this.client
-      .execute<T>(this.artifact, this.variables, { beforeSend, signal: controller.signal, ...(connection && connection.variable && connection.spec.limit ? { refreshConnection: { loaded: Math.max(connection.loaded, this.loadedRange), ...this.client.connectionRereadLimits, onTruncated: (value: boolean) => this.set({ ...this.state, listRefreshTruncated: value }) } } : {}) })
+      .execute<T>(this.artifact, this.variables, { readCause: cause, beforeSend, signal: controller.signal, ...(connection && connection.variable && connection.spec.limit ? { refreshConnection: { loaded: Math.max(connection.loaded, this.loadedRange), ...this.client.connectionRereadLimits, onTruncated: (value: boolean) => this.set({ ...this.state, listRefreshTruncated: value }) } } : {}) })
       .then(({ snapshot, errors }) => {
         if (controller.signal.aborted) return
         this.lastReadAt = this.client.now()
@@ -490,7 +493,8 @@ class QueryResource<T> implements WatchedQuery<T> {
     return this.inflight
   }
 
-  private readonly rereadSent = new Set<() => void>()
+  private rereadCause: ReadCause = "stale"
+  private readonly rereadSent = new Set<(request: object) => void>()
   private rereadWaiting = false
   private rereadPending = false
   private rereadTimer: unknown = null
@@ -505,7 +509,11 @@ class QueryResource<T> implements WatchedQuery<T> {
   }
 
   /** Mark stale, coalescing bursts and following an in-flight read with one more. */
-  readAgain(sent?: () => void): void {
+  readAgain(cause: ReadCause = "stale", sent?: (request: object) => void, since?: number): void {
+    // A pending automatic read still coalesces. One already sent after the last burst event
+    // absorbs this mark, including timers due together; a read predating that event follows up.
+    if (cause === "burst" && since !== undefined && !this.rereadPending && this.rereadAt > since) return
+    if (!this.rereadPending) this.rereadCause = cause
     if (sent) this.rereadSent.add(sent)
     this.rereadPending = true
     this.drainReread()
@@ -535,7 +543,7 @@ class QueryResource<T> implements WatchedQuery<T> {
     this.rereadAt = this.client.now()
     const callbacks = [...this.rereadSent]
     this.rereadSent.clear()
-    void this.fetch(() => { for (const sent of callbacks) sent() })
+    void this.fetch(this.rereadCause, () => { const request = {}; for (const sent of callbacks) sent(request) })
   }
 
   /** Whether a projection omits something selected by this query's held fragments. */
@@ -553,7 +561,7 @@ class QueryResource<T> implements WatchedQuery<T> {
       // A record this query shows was deleted or collected: read it again from the server.
       if (next.missing && this.users > 0) {
         if (this.artifact.lists) this.readAgain()
-        else void this.fetch()
+        else void this.fetch("stale")
       }
     })
   }
@@ -747,6 +755,12 @@ export class Client {
   private readonly subscriptions = new Set<() => void>()
   private readonly subscribeTransport: LiveOptions["subscribe"] | null
   private mutationCount = 0
+  private readCounts: Readonly<Record<ReadCause, number>> = { first: 0, manual: 0, poll: 0, stale: 0, confirm: 0, restart: 0, reconnect: 0, burst: 0, pagination: 0 }
+
+  private countRead(cause: ReadCause): void {
+    if (this.live) this.readCounts = { ...this.readCounts, [cause]: this.readCounts[cause] + 1 }
+  }
+
 
   readonly polling: PollingOptions
 
@@ -763,9 +777,9 @@ export class Client {
       ? new LiveManager(
           this.store,
           options.live,
-          (holders, cause, sent) => {
+          (holders, cause, sent, since) => {
             for (const resource of this.resources.values()) {
-              if (resource.users > 0 && holders.has(resource.key)) void resource.readAgain(sent ? () => sent(resource.key) : undefined)
+              if (resource.users > 0 && holders.has(resource.key)) void resource.readAgain(cause, sent ? request => sent(resource.key, request) : undefined, since)
             }
           },
           (timing) => this.healthChanged(timing),
@@ -838,7 +852,7 @@ export class Client {
     for (const typename of new Set([...Object.keys(statuses), ...holdings.keys()])) {
       types[typename] = typeHealth(statuses[typename], holdings.get(typename) ?? [], { socket, hasLiveLayer: this.live !== null })
     }
-    const next: LiveHealth = { socket, worst: worstOf(Object.values(types).map((entry) => entry.state)), types }
+    const next: LiveHealth = { hasLiveLayer: this.live !== null, ...(this.live ? { reads: this.readCounts, streams: Object.values(statuses).reduce((sum, type) => sum + type.subscriptions, 0), refusedStreams: this.live.refusedStreams } : {}), socket, worst: worstOf(Object.values(types).map((entry) => entry.state)), types }
     const snapshot = this.healthSnapshot ? recycle(this.healthSnapshot, next) : next
     this.healthSnapshot = snapshot
     return snapshot
@@ -869,7 +883,7 @@ export class Client {
       this.healthQueued = false
       if (this.store.isDisposed) return
       const health = this.liveHealth()
-      const key = JSON.stringify(health, (name, value) => (["lastEventAt", "lastReadAt", "burstReads", "lastBurstReadAt"].includes(name) ? undefined : value))
+      const key = JSON.stringify(health, (name, value) => (["lastEventAt", "lastReadAt", "burstReads", "lastBurstReadAt", "reads", "refusedStreams"].includes(name) ? undefined : value))
       const forced = this.healthForced
       this.healthForced = false
       if (key === this.healthKey && !forced) return
@@ -1025,7 +1039,8 @@ export class Client {
     variables: Variables,
     data: Record<string, unknown>,
     refresh: { loaded: number; pages: number; rows: number; onTruncated(value: boolean): void },
-    signal: AbortSignal
+    signal: AbortSignal,
+    cause: ReadCause
   ): Promise<number | undefined> {
     let connectionTailFrom: number | undefined
     const locate = (selections: readonly Selection[], data: Record<string, unknown>): { selection: LinkSelection; data: Record<string, unknown> } | null => {
@@ -1054,6 +1069,7 @@ export class Client {
             const info = found.data[infoKey] as Record<string, unknown>
             if (info[spec.hasNextPage] !== true || typeof info[spec.endCursor] !== "string") break
             const next = { ...variables, [arg.variable]: { ...page, [spec.after]: info[spec.endCursor] } }
+            this.countRead(cause)
             const extra = await this.network.execute({ kind: artifact.kind, name: artifact.name, text: artifact.text, hash: artifact.hash, variables: next }, { signal })
             if (extra.errors?.length || !extra.data) throw new OperationError(artifact.name, extra.errors ?? [])
             const part = locate(artifact.normalization, extra.data)
@@ -1185,6 +1201,7 @@ export class Client {
         networkVariables = { ...variables, [refreshArg.variable]: { ...(variables[refreshArg.variable] as object), [refreshSpec.offset]: (variables[refreshArg.variable] as Record<string, unknown> | undefined)?.[refreshSpec.offset] ?? 0, [refreshSpec.limit]: Math.min(options.refreshConnection.loaded, options.refreshConnection.rows) } }
       }
       options.beforeSend?.()
+      if (artifact.kind === "query") this.countRead(options.readCause ?? "manual")
       const response = await this.network.execute(
         { kind: artifact.kind, name: artifact.name, text: artifact.text, hash: artifact.hash, variables: networkVariables },
         { signal: controller.signal }
@@ -1193,7 +1210,7 @@ export class Client {
         throw new DOMException("The request was cancelled", "AbortError")
       options.observeResponse?.(response)
       const connectionTailFrom = options.refreshConnection && response.data
-        ? await this.readLoadedRange(artifact, variables as Variables, response.data, options.refreshConnection, controller.signal)
+        ? await this.readLoadedRange(artifact, variables as Variables, response.data, options.refreshConnection, controller.signal, options.readCause ?? "manual")
         : undefined
       if (this.store.isDisposed || controller.signal.aborted) throw new DOMException("The request was cancelled", "AbortError")
       const errors = response.errors ?? []

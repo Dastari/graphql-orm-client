@@ -59,7 +59,19 @@ export interface LiveTypeHealth {
   readonly fragments: readonly string[]
 }
 
+/** Explicit cause of a query request. Coalesced marks count only the request sent. */
+export type ReadCause = "first" | "manual" | "poll" | "stale" | "confirm" | "restart" | "reconnect" | "burst" | "pagination"
+
 export interface LiveHealth {
+  /** Whether managed live delivery and its counters are configured. */
+  readonly hasLiveLayer: boolean
+  /** Monotonic sent query requests by cause; absent without a live layer. */
+  readonly reads?: Readonly<Record<ReadCause, number>>
+  /** Open managed subscriptions across types; absent without a live layer. */
+  readonly streams?: number
+  /** Failed/refused subscribe attempts, cumulative; absent without a live layer. */
+  readonly refusedStreams?: number
+
   /** `unknown` unless the transport reports it: see `graphqlWsTransport`. */
   readonly socket: LiveSocketState
   /** The worst state of any type. */

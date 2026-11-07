@@ -271,6 +271,7 @@ export class LiveManager {
   private readonly bursts = new Map<string, { count: number; last: number }>()
   private burstTimer: unknown = null
   private burstStarted = 0
+  private readonly burstRequests = new Map<string, object>()
   private readonly burstTotals = new Map<string, { count: number; at: number }>()
 
   private readonly thin = new Set<string>()
@@ -282,6 +283,11 @@ export class LiveManager {
   private timer: unknown = null
   private disposed = false
   private subscriptionCount = 0
+  private failedSubscriptions = 0
+
+  /** Cumulative failed/refused subscribe attempts, including full projection refusals. */
+  get refusedStreams(): number { return this.failedSubscriptions }
+
   private readonly restarts = new Map<string, RestartState>()
   /** Streams waiting out a refusal window, by identity, with the timer that ends the wait. */
   private readonly refused = new Map<string, { readonly typename: string; readonly handle: unknown; readonly until: number }>()
@@ -295,7 +301,7 @@ export class LiveManager {
   constructor(
     private readonly store: Store,
     private readonly options: LiveOptions,
-    private readonly resync: (holders: ReadonlySet<string>, cause?: "burst" | "confirm" | "restart" | "reconnect", sent?: (holder: string) => void) => void = () => {},
+    private readonly resync: (holders: ReadonlySet<string>, cause?: "burst" | "confirm" | "restart" | "reconnect", sent?: (holder: string, request: object) => void, since?: number) => void = () => {},
     private readonly onChange: (timing?: boolean) => void = () => {},
     private readonly onRefusalChange: () => void = () => {},
     /** `stale` means the event carried nothing the holders can use, so they always read again. */
@@ -651,6 +657,7 @@ export class LiveManager {
     const end = (reason: LiveEndReason, code: string | null) => {
       if (ended || stopped || this.disposed) return
       ended = true
+      if (reason !== "completed" && reason !== "lost" && reason !== "reload") this.failedSubscriptions++
       if (active.subscriptions.get(key) === stop) {
         active.subscriptions.delete(key)
         active.coverage.delete(key)
@@ -664,25 +671,29 @@ export class LiveManager {
       this.onChange()
     }
     active.subscriptions.set(key, stop)
-    dispose = this.options.subscribe(
-      { kind: "subscription", name: operation.name, text: operation.text, hash: operation.hash, variables },
-      {
-        next: (response) => {
-          if (stopped || this.disposed) return
-          const errors = response.errors ?? []
-          if (hasCode(errors, CONTINUITY_CODES) || hasCode(errors, RELOAD_CODES)) return end(reasonFor(errors, delivered), firstCode(errors))
-          if (response.data) delivered = true
-          else if (errors.length) answered = errors
-          this.receive(selected, response, variables, isThin)
-        },
-        error: (failure) => {
-          const errors = graphQLErrorsOf(failure)
-          end(reasonFor(errors, delivered), firstCode(errors))
-        },
-        complete: () => end(answered ? reasonFor(answered, delivered) : "completed", firstCode(answered)),
-      }
-    )
-    if (ended) dispose()
+    try {
+      dispose = this.options.subscribe(
+        { kind: "subscription", name: operation.name, text: operation.text, hash: operation.hash, variables },
+        {
+          next: (response) => {
+            if (stopped || this.disposed) return
+            const errors = response.errors ?? []
+            if (hasCode(errors, CONTINUITY_CODES) || hasCode(errors, RELOAD_CODES)) return end(reasonFor(errors, delivered), firstCode(errors))
+            if (response.data) delivered = true
+            else if (errors.length) answered = errors
+            this.receive(selected, response, variables, isThin)
+          },
+          error: (failure) => {
+            const errors = graphQLErrorsOf(failure)
+            end(reasonFor(errors, delivered), firstCode(errors))
+          },
+          complete: () => end(answered ? reasonFor(answered, delivered) : "completed", firstCode(answered)),
+        }
+      )
+      if (ended) dispose()
+    } catch {
+      end("transport", null)
+    }
   }
 
   /** A stream ended and nothing asked it to: remember a refusal, or restart the type. */
@@ -822,6 +833,7 @@ export class LiveManager {
     const due = Math.min(quietAt, this.burstStarted + Math.max(1, config?.maxWaitMs ?? 10000))
     this.burstTimer = this.after(() => {
       this.burstTimer = null
+      const since = Math.max(...[...this.bursts.values()].map(entry => entry.last))
       const types = [...this.bursts].filter(([, entry]) => entry.count >= Math.max(1, config?.events ?? 32)).map(([type]) => type)
       this.bursts.clear()
       const holders = new Set<string>()
@@ -830,14 +842,16 @@ export class LiveManager {
         for (const [holder, targets] of this.holders) if (targets.get(type)?.size) holders.add(holder)
       }
       // One callback per request, even if several types share that request.
-      if (holders.size) this.resync(holders, "burst", (holder) => {
+      if (holders.size) this.resync(holders, "burst", (holder, request) => {
         for (const type of types) {
           if (!this.lists.get(holder)?.includes(type) && !this.holders.get(holder)?.get(type)?.size) continue
+          if (this.burstRequests.get(type) === request) continue
+          this.burstRequests.set(type, request)
           const previous = this.burstTotals.get(type)
           this.burstTotals.set(type, { count: (previous?.count ?? 0) + 1, at: this.now() })
         }
         this.onChange()
-      })
+      }, since)
     }, Math.max(0, due - this.now()))
   }
 

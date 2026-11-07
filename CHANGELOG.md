@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Live health adds cumulative sent-query counts by cause (`reads`), open managed `streams`
+  and cumulative `refusedStreams`. They are absent without a live layer. Sample health for
+  rates; count changes alone do not trigger health notifications. No regeneration required.
+
+
 - Burst repair reads are on by default: one extra read per query holding the type, per burst
   of at least 32 events, coalesced across types and at most one per `minRereadMs`.
   Migration: set `live: { burstRead: false }` to restore the previous read cost.

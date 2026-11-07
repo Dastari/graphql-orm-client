@@ -43,7 +43,7 @@ export type {
   WatchedQuery,
 } from "./client.js"
 export { HttpError, createHttpNetwork, graphqlWsSubscribe, graphqlWsTransport } from "./transport.js"
-export type { LiveDiagnostic, LiveHealth, LiveReason, LiveSocketState, LiveState, LiveTypeHealth } from "./health.js"
+export type { ReadCause, LiveDiagnostic, LiveHealth, LiveReason, LiveSocketState, LiveState, LiveTypeHealth } from "./health.js"
 export type { GraphQLWsClientLike, HttpNetworkOptions } from "./transport.js"
 export { decodeNodeId, encodeNodeId } from "./node-id.js"
 export type { KeyPart, NodeId } from "./node-id.js"

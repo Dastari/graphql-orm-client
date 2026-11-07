@@ -266,3 +266,7 @@ burst, record and list holders re-read through the shared limiter, coalesced acr
 Health distinguishes these reads. This bounds silent router loss repair after qualifying
 bursts; below-threshold or entirely lost bursts still need server continuity signalling.
 See [burst repair](design.md#burst-repair-reads) for cost and opt-out.
+
+Read measurement is built: live-layer health exposes cumulative request counts by explicit
+cause, open managed stream count and cumulative refused/failed operations. Without a live
+layer these counts are absent. Counter changes alone do not notify health subscribers.
