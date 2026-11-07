@@ -779,8 +779,8 @@ those runs; each timing in each run is itself the median of five samples.
 | 100-event burst wall time (ms) | 32.552 | 750 |
 | 100-event subscriber notifications | 100 | 100 |
 | 45,000-line schema + 250 documents (ms) | 694 | 5,000 |
-| Main standalone raw bundle (bytes) | 49,423 | 60,000 |
-| Main standalone gzip bundle (bytes) | 15,889 | 20,000 |
+| Main standalone raw bundle (bytes) | 55,626 | 65,000 |
+| Main standalone gzip bundle (bytes) | 17,910 | 21,000 |
 | React standalone raw bundle (bytes) | 6,969 | 10,000 |
 | React standalone gzip bundle (bytes) | 2,836 | 4,000 |
 
@@ -814,8 +814,7 @@ memory, browser RSS, GPU memory and server cost. It does not establish a bound o
 application or on other devices.
 
 The compile, main and react rows were measured again on 2026-11-07 after R2, R3 and R4; the rest are from the first run. Those three
-changes took the main bundle from 39,582 to 49,423 bytes. They also took the marginal JS heap per window on a CI runner from about 7.0 MB to
-about 11.5 MB, with 10,000 rows per window. That is within its limit and not yet explained.
+changes took the main bundle from 39,582 to 49,423 bytes. The marginal JS heap per window is unchanged, at about 7.1 MB with 10,000 rows per window. It looked like 11.5 MB for a while, because the budget measured with R4's confirming read still in flight; it now waits for that to finish.
 
 A nested compile for each live type used to re-extend the whole schema, which took the compile from 7.6 s to about 24 s while staying under
 the then limit of 30 s. The extended schema is now cached per schema, and the 5 s limit is what guards it.
@@ -956,7 +955,7 @@ No real refused-write signal or committed read-back denial was produced; those c
 cases use mocks. The fixture's public mutation succeeded without an authorization header.
 ## Ephemeral streams (R11)
 
-`client.stream(subscription, variables, options)` creates a framework-agnostic handle for progress,
+`createStream(client, subscription, variables, options)`, from `graphql-orm-client/streams` so it stays out of the main bundle, creates a framework-agnostic handle for progress,
 AI text deltas, terminal output and search results. It uses `live.subscribe`, as plain subscriptions
 do, but bypasses normalization entirely. Nothing enters the store or persistence. Call `open()`
 to start and `dispose()` to stop and synchronously erase the buffer and cursor. The client owns
@@ -964,7 +963,7 @@ all handles, including unopened ones, and disposes them on `client.dispose()`. I
 must dispose the old client before creating the next one, as with query data.
 
 ```ts
-const output = client.stream(OutputSubscription, {}, {
+const output = createStream(client, OutputSubscription, {}, {
   select: data => data.output,
   bufferSize: 2000,
   sequence: {
@@ -1049,7 +1048,7 @@ is unsupported. All files declaring identical text are checked. Programmatic com
 development and tests find it. In production, and on a module generated before this release, it warns and still polls, because a working
 page mustn't crash on upgrade. `polling.undeclared: "warn" | "off"` on the client relaxes this. `strict.pollWithoutReason` covers an empty
 reason at build time. Fallback polling is reported through health and needs no declaration. The escape for a raw subscription is
-`client.stream` (R11).
+`createStream` from `graphql-orm-client/streams` (R11).
 
 ## Live generation setting (R1)
 

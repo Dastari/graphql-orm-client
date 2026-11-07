@@ -1,4 +1,3 @@
-import { ephemeral, type EphemeralOptions, type EphemeralStream } from "./ephemeral.js"
 import { withoutErrorNulls } from "./partial.js"
 import { wasNotSent, writeStatus, type WriteOutcome } from "./outcome.js"
 import type { ConnectionSpec, FragmentArtifact, FragmentRefFor, LinkSelection, OperationArtifact, PagedSpec, Selection } from "./artifact.js"
@@ -1012,15 +1011,15 @@ export class Client {
     return stop
   }
 
-  /** Create a bounded, volatile stream. Call open() to subscribe and dispose() to erase it. */
-  stream<D, T, V extends Variables, C = unknown>(
-    artifact: OperationArtifact<D, V>, variables: V, options: EphemeralOptions<D, T, V, C>
-  ): EphemeralStream<T, C> {
+  /**
+   * For optional entry points built on the client: its live options, and a place to register something to end with its identity.
+   * Returns a function to remove that registration.
+   */
+  liveExtension(end: () => void): { readonly live: LiveOptions; remove(): void } {
     if (this.store.isDisposed) throw new Error("This client was disposed with its identity")
-    if (!this.rereadOptions) throw new Error("A stream requires live.subscribe")
-    const stream = ephemeral(artifact, variables, options, this.rereadOptions, () => this.subscriptions.delete(stream.dispose))
-    this.subscriptions.add(stream.dispose)
-    return stream
+    if (!this.rereadOptions) throw new Error("This needs live.subscribe")
+    this.subscriptions.add(end)
+    return { live: this.rereadOptions, remove: () => void this.subscriptions.delete(end) }
   }
 
   /**

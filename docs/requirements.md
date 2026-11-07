@@ -139,7 +139,7 @@ retry after step-up authentication, with no queued replay and no credential held
 the store: progress, AI text deltas, terminal output, search results. It has a resume cursor, sequence
 de-duplication, replay after reconnect, a bounded buffer and render coalescing. This replaces the
 consumer-written versions and is the one sanctioned exception in R5.
-*Built:* `client.stream` and React `useEphemeralStream`: explicit sequence/cursor/resume declarations,
+*Built:* `createStream` from `graphql-orm-client/streams` and React `useEphemeralStream`: explicit sequence/cursor/resume declarations,
 bounded volatile buffers, coalesced snapshots, socket reconnect replay and visible gaps/evictions.
 Replay requires a service-provided custom subscription; no sequence means continuity is unprovable.
 *Acceptance:* a high-frequency stream reconnects with no duplicate or missing items and without
