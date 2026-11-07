@@ -714,11 +714,11 @@ those runs; each timing in each run is itself the median of five samples.
 | Heap after collection (bytes) | 14,960 | 4,000,000 |
 | 100-event burst wall time (ms) | 32.552 | 750 |
 | 100-event subscriber notifications | 100 | 100 |
-| 45,000-line schema + 250 documents (ms) | 7,580.862 | 30,000 |
-| Main standalone raw bundle (bytes) | 39,582 | 50,000 |
-| Main standalone gzip bundle (bytes) | 13,077 | 17,000 |
+| 45,000-line schema + 250 documents (ms) | 694 | 5,000 |
+| Main standalone raw bundle (bytes) | 49,423 | 60,000 |
+| Main standalone gzip bundle (bytes) | 15,889 | 20,000 |
 | React standalone raw bundle (bytes) | 6,969 | 10,000 |
-| React standalone gzip bundle (bytes) | 2,834 | 4,000 |
+| React standalone gzip bundle (bytes) | 2,836 | 4,000 |
 
 Bundles come from the actual built ESM entries, bundled and minified with esbuild; raw means
 uncompressed bundle bytes, gzip uses level 9. React and GraphQL peers are external.
@@ -749,9 +749,12 @@ It includes page/runtime, query snapshots and store allocations; it excludes nat
 memory, browser RSS, GPU memory and server cost. It does not establish a bound on a full
 application or on other devices.
 
-The compiler is the largest time cost: local run medians ranged from
-7,542.151 to 8,122.624 ms.
-The 30 s limit allows about four times the local median on shared runners.
+The compile, main and react rows were measured again on 2026-11-07 after R2, R3 and R4; the rest are from the first run. Those three
+changes took the main bundle from 39,582 to 49,423 bytes. They also took the marginal JS heap per window on a CI runner from about 7.0 MB to
+about 11.5 MB, with 10,000 rows per window. That is within its limit and not yet explained.
+
+A nested compile for each live type used to re-extend the whole schema, which took the compile from 7.6 s to about 24 s while staying under
+the then limit of 30 s. The extended schema is now cached per schema, and the 5 s limit is what guards it.
 A missing browser fails with "window budget not run"; an explicit `--skip-window` reports
 incomplete and never counts as a pass. CI installs Chromium and does not skip.
 

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Compile a large schema far faster. After 0.1.0-alpha.10's stream selections, each live type re-extended the whole schema: 250 documents on a
+  45,000-line schema took about 24 s and now take under a second.
 - R3: generated `OperationArtifact.lists` enables one un-narrowed stream per open list type,
   including empty and count-only lists. Events invalidate membership, order and totals through
   the existing re-read limiter. Unheld rows are not stored. List interest opens before the read;
@@ -31,8 +33,8 @@ schemas poll with `list-key-required`; disabling streams reports `list-streams-d
 Without a delete preimage grant no event is sent: correction waits for the next event or poll.
 - Add `pnpm conformance` and a CI version matrix for a SQLite graphql-orm example service
   behind the real router, in this repository only. The suite checks admission, events, NodeIds, versions,
-  pagination, doctor verdicts and repeated Node and Chromium recovery. The default is
-  graphql-orm-v0.90.1 / router 0.8.1. No runtime API or migration change.
+  pagination, doctor verdicts and repeated Node and Chromium recovery, on graphql-orm-v0.90.1 and
+  graphql-orm-v0.93.0. No runtime API or migration change.
 
 ## 0.1.0-alpha.10 (2026-11-06)
 
@@ -94,7 +96,8 @@ the server refuses that selection with `INVALID_INPUT`, the client uses keys onl
 1. Regenerate, then read the generator's warnings. Each names a fragment and field the stream now excludes, which that fragment's
    queries will re-read on an event.
 2. To regenerate without the new stream selection, set `liveSelection: "as-written"` in the generator config. The change-kind
-   fix still applies.
+   fix still applies. An as-written stream selects `NodeId`, which a server before graphql-orm 0.92.0 refuses on an entity that has it, so
+   those types get no live events there: use the default selection on those versions. Run on 0.90.1 (refused) and 0.93.0 (admitted).
 3. To keep the old read count, set `live: { settleMs: false }`. Overlap stays on either way, at 250 ms.
 4. If a re-read's timing matters, set `live.minRereadMs`.
 5. Run `doctor` against the deployed identity to see which types fall back to keys only.

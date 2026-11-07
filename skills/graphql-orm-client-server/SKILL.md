@@ -26,7 +26,7 @@ change that breaks one of these leaves the client with stale or duplicated data.
 - Grant `RowPolicy::can_read_deleted_preimage` where clients must see deletes: without it, `DELETED`
   doesn't reach subscribers.
 - Keep fields that must update live as persisted scalars. A `Changed` payload refuses relations and
-  computed fields, and `node_id` and generated `RecordVersion` don't yet work on an entity with
+  computed fields. Before graphql-orm 0.92.0, `node_id` and generated `RecordVersion` don't work on an entity with
   relation fields (#270, #288).
 - Write live state through the ORM's write paths (generated mutations, repository writes,
   transaction writes). Only those emit `Changed`.
@@ -47,10 +47,9 @@ Read the installed `docs/graphql-orm-contract.md` for the status of each guarant
 ## Real-server conformance
 
 In this package's repository, `pnpm conformance` runs the generated SQLite example
-behind the real router, separately from `pnpm check`. The default server tag is
-`graphql-orm-v0.90.1` (router 0.8.1). See `conformance/README.md` for setup, assertions
-and fixture accommodations. Its NodeId/computed/relation stream refusals are real
+behind the real router, separately from `pnpm check`. CI runs `graphql-orm-v0.90.1` and `graphql-orm-v0.93.0`. See `conformance/README.md` for setup, assertions
+and fixture accommodations. Computed and relation stream refusals are real
 `next` error frames (`INVALID_INPUT`), followed by `complete`; a managed version
-is admitted. A federated field using a NodeId key is also refused in that fixture; a persisted
-Id-key federated field is admitted and fetched per event.
+is admitted. `NodeId`, and a federated field keyed on it, are refused the same way on 0.90.1 and admitted on 0.93.0. A
+persisted Id-key federated field is admitted and fetched per event on both.
 Do not infer that a compiler-valid stream is admitted by the deployed server.
