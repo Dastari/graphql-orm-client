@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Changed: disposing a client no longer deletes its saved data
+
+`persistClient` used to delete an identity's saved data when its client was disposed. A pop-out window calling `dispose()` on close deleted what the main window had saved. Now:
+
+- `persistence.clear()` deletes it, and stops the identity's other windows saving it. **If you use `persistClient`, call it on sign-out:** `void persistence.clear(); client.dispose()`. Without this the data stays on the device. An application with one window per identity can pass `deleteOnDispose: true` instead, which restores the earlier behaviour.
+- `readOnly: true` makes a window restore and never write or delete. Use it for a pop-out. Otherwise the window's own smaller snapshot can replace the main window's, since the last write wins.
+
+Applications that don't use `graphql-orm-client/persistence` aren't affected.
+
 ## 0.1.0-alpha.11 (2026-11-07)
 
 Install from the GitHub release archive:

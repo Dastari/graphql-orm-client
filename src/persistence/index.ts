@@ -17,12 +17,18 @@ export interface PersistenceOptions {
   readonly maxBytes?: number
   /** Coalescing delay, default 250 ms. */
   readonly throttleMs?: number
+  /** Restore but never write or delete, for a secondary window such as a pop-out. `clear()` still deletes. */
+  readonly readOnly?: boolean
+  /** Delete the saved data when the client is disposed, as before this option. Only for an application with one window per identity. */
+  readonly deleteOnDispose?: boolean
   readonly onDiagnostic?: (diagnostic: { code: string; message: string }) => void
 }
 /** Restore completion and explicit write boundary, useful before navigating away. */
 export interface Persistence {
   readonly ready: Promise<void>
   flush(): Promise<void>
+  /** Delete this identity's saved data and stop saving it, here and in its other windows. Call on sign-out. */
+  clear(): Promise<void>
 }
 // Kept in sync with package.json; tested to prevent forgotten release updates.
 /** Package revision written into every persistence envelope. */
@@ -39,13 +45,14 @@ function serial(adapter: PersistenceAdapter, key: string, action: () => Promise<
 }
 
 /**
- * Attach opt-in persistence to one identity's client. Dispose the client on identity changes.
- * This entry point is separate from the main bundle. Failures are diagnostic-only.
+ * Attach opt-in persistence to one identity's client. Disposing the client keeps what's saved, because other windows
+ * of the identity share it: call `clear()` on sign-out, then dispose. This entry point is separate from the main bundle.
+ * Failures are diagnostic-only.
  */
 export function persistClient(client: Client, options: PersistenceOptions): Persistence {
-  if (!options.identityKey) return { ready: Promise.resolve(), flush: async () => {} }
+  if (!options.identityKey) return { ready: Promise.resolve(), flush: async () => {}, clear: async () => {} }
   if (!options.schemaHash || !options.serverRelease) throw new Error("Persistence needs schemaHash and serverRelease")
-  const { adapter, identityKey, schemaHash, serverRelease } = options
+  const { adapter, identityKey, schemaHash, serverRelease, readOnly = false, deleteOnDispose = false } = options
   const key = `graphql-orm-client:${JSON.stringify(identityKey)}`
   const budget = options.maxBytes ?? 1048576
   const delay = options.throttleMs ?? 250
@@ -58,10 +65,23 @@ export function persistClient(client: Client, options: PersistenceOptions): Pers
   let restoring = true
   let dirty = false
   const safeDelete = () => serial(adapter, key, () => adapter.delete(key)).catch(e => report("PERSISTENCE_DELETE", e))
+  const stop = () => {
+    stopped = true
+    if (timer !== null) clearTimeout(timer)
+    timer = null
+  }
+  // Another window's sign-out has to stop this one saving, or its next write would put the data back.
+  const channel = () => typeof BroadcastChannel === "function" ? new BroadcastChannel(key) : null
+  const windows = stopped ? null : channel()
+  ;(windows as { unref?: () => void } | null)?.unref?.()
+  if (windows) windows.onmessage = () => {
+    stop()
+    if (!readOnly) void safeDelete() // ordered after a write of ours that was already under way
+  }
   const flush = async () => {
     if (timer !== null) clearTimeout(timer)
     timer = null
-    if (stopped || restoring || !dirty) return
+    if (stopped || restoring || !dirty || readOnly) return
     const records = client.store.persistenceSnapshot()
     if (!records) return
     dirty = false
@@ -76,13 +96,12 @@ export function persistClient(client: Client, options: PersistenceOptions): Pers
   }
   const schedule = () => {
     dirty = true
-    if (!stopped && !restoring && timer === null) timer = setTimeout(() => { timer = null; void flush() }, delay)
+    if (!stopped && !restoring && !readOnly && timer === null) timer = setTimeout(() => { timer = null; void flush() }, delay)
   }
   if (!stopped) client.store.observeWrites(schedule, () => {
-    stopped = true
-    if (timer !== null) clearTimeout(timer)
-    timer = null
-    void safeDelete()
+    stop()
+    windows?.close()
+    if (deleteOnDispose && !readOnly) void safeDelete()
   })
   const restore = stopped ? () => {} : client.store.beginRestore()
   const ready = (async () => {
@@ -96,10 +115,19 @@ export function persistClient(client: Client, options: PersistenceOptions): Pers
       restore(envelope.records)
     } catch (error) {
       report("PERSISTENCE_RESTORE", error)
-      if (!stopped) await safeDelete()
+      if (!stopped && !readOnly) await safeDelete()
     } finally { restore([]); restoring = false; if (dirty && !stopped) schedule() }
   })()
-  return { ready, flush: async () => { await ready; await flush() } }
+  const clear = async () => {
+    stop()
+    windows?.close()
+    // A channel of its own, because sign-out can run after the client was disposed.
+    const others = channel()
+    others?.postMessage("clear")
+    others?.close()
+    await safeDelete()
+  }
+  return { ready, flush: async () => { await ready; await flush() }, clear }
 }
 function validRecord(record: unknown): boolean {
   if (!record || typeof record !== "object") return false

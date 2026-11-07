@@ -65,8 +65,8 @@ Consumers pin exact versions, so while the package is pre-1.0 a release can chan
 ## Conformance
 
 From a source checkout, `pnpm conformance` runs the built client against the SQLite service and real router
-in `conformance/`, separately from `pnpm check`. Install Chromium with
-`pnpm exec playwright-core install --with-deps chromium`. Set `CONFORMANCE_SCRATCH`
+in `conformance/`, separately from `pnpm check`. Install the browsers with
+`pnpm exec playwright-core install --with-deps chromium firefox webkit`. Set `CONFORMANCE_SCRATCH`
 outside the worktree to cache builds; check disk space first (allow 10 GB). Use only
-ports 42000–42099. A missing local browser is reported as `NOT RUN`; CI requires it.
+ports 42000–42099. A missing local browser is reported as `NOT RUN`; CI requires all three.
 See `conformance/README.md` for pinned versions, fixture accommodations and coverage.

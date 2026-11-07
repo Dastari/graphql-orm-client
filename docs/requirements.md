@@ -186,7 +186,7 @@ graphql-orm 0.93.0) keeps the record and re-reads its holders.
 read as missing and holders re-read; ambiguous values report unknown lifetime with a diagnostic.
 Persistence is built as an opt-in separate entry point with explicit identity, schema and deployment
 release envelopes, stale restoration, bounded coalesced writes and diagnostic-only storage failures. Persistence is scoped to identity,
-excludes R9, and is disposed with the identity. A cursor is never persisted across a server release:
+excludes R9, and is deleted by an explicit `clear()` on sign-out, which also stops the identity's other windows saving it. Disposing a client, as a pop-out window does on close, keeps it. A cursor is never persisted across a server release:
 a stale keyset cursor can be accepted at the wrong place.
 
 **R18. Route loading.** `loadQuery`, or similar, starts a route's query before mount, so a router's
@@ -217,7 +217,7 @@ behaviour. Mocks can't prove a document is accepted.
 *Built:* `pnpm conformance`, separate from `pnpm check`, runs the SQLite example and router
 from `graphql-orm-v0.90.1` (router 0.8.1), with a version matrix in CI. It asserts admission,
 key modes, continuity frames, node lookup, managed version ordering and pagination, and repeats
-Node and Chromium recovery. See [the coverage and fixture limits](../conformance/README.md).
+Node and browser recovery, on Chromium, Firefox and WebKit. See [the coverage and fixture limits](../conformance/README.md).
 A conformance failure remains a failure; this does not claim the proposed R2/R3 behaviour is built.
 
 **R22. Budgets.** Checked in CI: 10,000 rows in the store, a burst of 100 events a second, the
