@@ -928,8 +928,13 @@ function convert(
       const fieldDef = "getFields" in parent ? parent.getFields()[name] : undefined
       if (!fieldDef) throw new CompileError([`${parent.name}.${name} does not exist`])
       const named = getNamedType(fieldDef.type) as GraphQLCompositeType
+      const connectionNames = { ...DEFAULT_CONNECTION, ...options.connection }
+      const edgeNode = name === connectionNames.edges && isObjectType(named) && named.getFields()[connectionNames.node]
+        ? selection.selectionSet.selections.find((s): s is FieldNode => s.kind === Kind.FIELD && s.name.value === connectionNames.node)
+        : undefined
       result.push({
         kind: "link",
+        ...(edgeNode ? { listNode: edgeNode.alias?.value ?? edgeNode.name.value } : {}),
         responseKey,
         fieldName: name,
         args,
@@ -987,7 +992,22 @@ function listTypes(schema: GraphQLSchema, selections: readonly Selection[], pare
     if (!field) continue
     const type = getNamedType(field.type)
     const unwrapped = isNonNullType(field.type) ? field.type.ofType : field.type
-    if (isListType(unwrapped)) add(type)
+    // Generated aggregates share their result objects across entities. The root name cannot
+    // identify their source; a unique shared filter input with a connection root can.
+    if (isListType(unwrapped) && isObjectType(type) && type.name === "GraphqlAggregateResultRow") {
+      const candidates = new Set<string>()
+      const inputs = new Set(field.args.map(arg => getNamedType(arg.type)).filter(isInputObjectType))
+      for (const candidate of Object.values(parent.getFields())) {
+        if (!candidate.args.some(arg => inputs.has(getNamedType(arg.type) as import("graphql").GraphQLInputObjectType))) continue
+        const connection = getNamedType(candidate.type)
+        if (!isObjectType(connection)) continue
+        const edgeField = connection.getFields()[names.edges]
+        const edgeType = edgeField && getNamedType(edgeField.type)
+        const nodeField = edgeType && isObjectType(edgeType) ? edgeType.getFields()[names.node] : undefined
+        if (nodeField) candidates.add(getNamedType(nodeField.type).name)
+      }
+      if (candidates.size === 1) add(schema.getType([...candidates][0]!)!)
+    } else if (isListType(unwrapped)) add(type)
     if (isObjectType(type)) {
       const edges = type.getFields()[names.edges]
       const edge = edges && getNamedType(edges.type)

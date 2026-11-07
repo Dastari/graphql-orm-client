@@ -35,6 +35,8 @@ export interface OptimisticLayer {
 }
 
 export interface StoreOptions {
+  /** Omit absent list nodes while a delete-triggered query refresh is pending. Opt-in migration. */
+  readonly deletedRecords?: "omit"
   /** How long an unretained operation's records stay before collection. Default 5 minutes. */
   readonly retainMs?: number
   /** Timer seam for tests. */
@@ -59,6 +61,8 @@ interface Retention {
  * subscribers whose snapshot read a changed record are re-read and notified once.
  */
 export class Store {
+  /** Whether readers omit removed nodes from lists. */
+  readonly deletedRecords: "omit" | undefined
   private readonly records = new Map<string, StoredRecord>()
   private readonly changed = new Set<string>()
   private readonly subscriptions = new Set<Subscription>()
@@ -69,6 +73,7 @@ export class Store {
   private readonly clearTimer: (handle: unknown) => void
 
   constructor(options: StoreOptions = {}) {
+    this.deletedRecords = options.deletedRecords
     this.retainMs = options.retainMs ?? 5 * 60_000
     this.setTimer = options.setTimeout ?? ((callback, ms) => setTimeout(callback, ms))
     this.clearTimer = options.clearTimeout ?? ((handle) => clearTimeout(handle as ReturnType<typeof setTimeout>))

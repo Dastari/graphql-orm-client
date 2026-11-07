@@ -250,7 +250,14 @@ function useFragmentSnapshot(fragment: FragmentArtifact<any, any>, ref: unknown)
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
 }
 
-/** A component's own fragment fields, re-rendered only when they change. */
+/**
+ * A component's own fragment fields, re-rendered only when they change. `{ deleted: "null" }` types a deleted or missing
+ * record as null; a live record's data is unchanged.
+ */
+export function useFragment<D = Record<string, unknown>, N extends string = string>(
+  fragment: FragmentArtifact<D, N>, ref: FragmentRefFor<N> | null | undefined,
+  options: { deleted: "null" }
+): D | null
 export function useFragment<D = Record<string, unknown>, N extends string = string>(
   fragment: FragmentArtifact<D, N>,
   ref: FragmentRefFor<N>
@@ -259,7 +266,7 @@ export function useFragment<D = Record<string, unknown>, N extends string = stri
   fragment: FragmentArtifact<D, N>,
   ref: FragmentRefFor<N> | null | undefined
 ): D | null
-export function useFragment(fragment: FragmentArtifact<any, any>, ref: unknown): unknown {
+export function useFragment(fragment: FragmentArtifact<any, any>, ref: unknown, _options?: { deleted: "null" }): unknown {
   const snapshot = useFragmentSnapshot(fragment, ref)
   return snapshot?.data ?? null
 }

@@ -35,6 +35,7 @@ export type {
   PagedQuery,
   PagedState,
   PollingOptions,
+  ReadAllRow,
   QueryState,
   QueryStatus,
   SubscriptionObserver,

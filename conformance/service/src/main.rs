@@ -12,6 +12,7 @@ use graphql_orm::prelude::*;
     backend = "sqlite",
     table = "widgets",
     plural = "Widgets",
+    aggregate = true,
     node_id,
     auth = "none",
     default_sort = "id ASC",

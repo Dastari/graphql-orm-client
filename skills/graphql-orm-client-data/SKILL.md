@@ -1,6 +1,6 @@
 ---
 name: graphql-orm-client-data
-description: Keep regenerated lists and counts current with list streams and bounded loaded-page refresh; use full/thin stream projections and bounded holder re-reads (minRereadMs); Write components with graphql-orm-client fragments and route roots, page through tables by number (@paged, usePagedQuery), load more (@connection), refetch, run mutations (including one-time secrets with `no-store`) and plain subscriptions, and port Apollo queries without request waterfalls or over-fetching, and test components against a mock network, scripted streams and a controllable clock (graphql-orm-client/test); declare sensitive operations (@sensitive), get honest write outcomes (mutateOutcome) and show partial results per path (errorsAtPath).
+description: Keep regenerated lists and counts current with list streams and bounded loaded-page refresh; use full/thin stream projections and bounded holder re-reads (minRereadMs); Write components with graphql-orm-client fragments and route roots, page through tables by number (@paged, usePagedQuery), load more (@connection), refetch, run mutations (including one-time secrets with `no-store`) and plain subscriptions, and port Apollo queries without request waterfalls or over-fetching, and test components against a mock network, scripted streams and a controllable clock (graphql-orm-client/test); declare sensitive operations (@sensitive), get honest write outcomes (mutateOutcome) and show partial results per path (errorsAtPath); read everything up to a limit (readAll), keep aliased counts and aggregates current, and handle deleted records.
 ---
 
 # Fragments, roots, pagination and mutations
@@ -165,3 +165,13 @@ delete visibility when polling is disabled. See docs/design.md, List streams (R3
 ## Polling and query owners
 
 A query passed `pollMs` declares why: `query Name @poll(reason: "...") { ... }`. `queryOwners` globs say where queries may be written. See the live skill.
+
+## Reading everything, counts and deleted rows
+
+- `client.readAll(Query, variables, { limit, pageSize?, signal? })` returns `{ rows, total, truncated }`, for one root `@connection` selecting
+  `PageInfo { TotalCount }`. The limit is required, and a missing total throws. It's a one-time read: watch a root for freshness.
+- Aliased counts, several counts in one document, and generated aggregates stay current like lists, on types the project made live. An aggregate whose
+  source entity the schema can't establish isn't covered: poll it.
+- A record can disappear under a mounted component. `useFragment(Fragment, ref, { deleted: "null" })` types that as `D | null`, so handle null before
+  reading fields. `store: { deletedRecords: "omit" }` drops missing rows from lists while the query re-reads. Both are opt-in.
+

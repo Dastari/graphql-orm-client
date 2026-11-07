@@ -1016,3 +1016,55 @@ a real stream and reports PageInfo polling with `no-stream`, against graphql-orm
 0.8.1. Mock tests cover versions, reconnect refetch, collection, identity disposal, source-area
 globs and 40 live types at a simulated 32-operation limit. Router configuration source at both
 0.90.1 and 0.93.0 sets that default limit to 32; this change did not run conformance on 0.93.0.
+
+## Bounded read-all (R14)
+
+`client.readAll(Query, variables, { limit, pageSize?, signal? })` returns `{ rows, total, truncated }`.
+Use exactly one root `@connection`, a variable page input and select `Edges { Node { ...Row } }`
+and `PageInfo { TotalCount }`. The positive integer limit is required; optional positive `pageSize` caps each request. Missing metadata or
+an absent/null total throws; totals are never inferred. Rows are normalised and deduplicated
+by opaque identity. Offset traversal advances by returned edge count; keyset traversal follows
+`PageInfo.EndCursor` while `HasNextPage` is true. Empty continuing pages or repeated cursors
+fail rather than loop. Pages have no shared snapshot: concurrent movement may omit rows.
+`total` is the exact total returned by the last page, not a snapshot-wide guarantee.
+Abort and identity disposal cancel traversal. This is a one-time read; watch a root for freshness.
+
+## Generated aggregates and counts (R15)
+
+Aliased count-only connections and multiple counts in one document use the same R3 list
+refresh path. Generated aggregates return arrays of `GraphqlAggregateResultRow`, with
+`Groups` and `Metrics` containing nullable `Field`, `Operator`, `Value` strings and a
+non-null `Kind` enum. Values stay exact strings; the generator preserves aliases and nullability.
+Read from graphql-orm tags 0.90.1 and 0.93.0: aggregate roots are opt-in (`aggregate = true`),
+accept generated Where, GroupBy, Metrics and GroupLimit inputs, and read their declared entity.
+The compiler matches the aggregate's input object types to connection-root inputs and derives
+the entity from `Edges.Node`. Exactly one candidate is required, and only project-live types
+enter `OperationArtifact.lists`. Shared result type or operation naming alone cannot establish
+entity ownership. With no matching connection, missing filter inputs, or several candidate
+entities, SDL is insufficient: no aggregate stream coverage is claimed. Poll explicitly.
+Proposed server contract: publish aggregate source entity metadata in the served schema.
+
+## Deleted records (R16)
+
+A direct `DELETED` removes the held store record and triggers its owning roots to re-read.
+Confirmed in React: a still-mounted row's `useFragment` returns null during the reread and
+after the response excludes it. `readFragment` also returns null. Legacy non-null signatures
+do not describe this state safely. Migrate by passing `{ deleted: "null" }` as the third
+argument to both functions: the return type becomes `D | null`; render a placeholder or
+return null before reading fields. Live-record fields and fragment masking stay unchanged.
+Null means unavailable (deleted, collected, disposed, or a missing record), not proof of a
+delete or permission to infer an empty result.
+
+Opt in to `createClient({ ..., store: { deletedRecords: "omit" } })` and regenerate.
+Readers omit missing direct list members and compiled connection edges with missing nodes
+while the owning root refreshes. The record is removed from storage immediately; stale
+connection references are replaced by the next read and collected normally. Totals still
+come from the server, so they may lag until the reread. Without this setting legacy list
+shape remains unchanged. Components holding old references must still handle null.
+`DELETED` with `PROPAGATED` retains the parent and re-reads its roots (graphql-orm 0.93.0).
+On both server tags read (0.90.1 and 0.93.0), without a preimage grant direct deletes send
+nothing: lists correct on their next delivered event or poll. A stream alone cannot promise
+instant delete visibility. Pages have no shared snapshot. Deletes carry no retained version tombstone: a late
+response can restore a removed row, even when that response carries a record version,
+because the deleted record no longer supplies a version to compare. Re-reading after
+reconnect remains necessary. Without a version, ordinary writes use last-arrival-wins.
