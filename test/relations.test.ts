@@ -108,6 +108,27 @@ describe("batched relations", () => {
   a.open(); b.open(); await pause(); await pause()
   expect(requests).toEqual([["1"]]); client.dispose()
  })
+ it("collecting the store starts no relation read, and an unchanged read notifies nobody", async () => {
+  const { client, requests } = setup([row(1)])
+  const q = client.watchQuery<{ Tickets: unknown[] }>(compiled.operations.Rows!, {})
+  q.open()
+  await pause(); await pause()
+  const before = requests.length
+  // Its relation state is gone, so a read would ask again; a collection must only look.
+  for (const id of [...(client.store as unknown as { records: Map<string, unknown> }).records.keys()]) if (id.startsWith("client:batch:")) client.store.delete(id)
+  client.store.collect()
+  await pause()
+  expect(requests.length).toBe(before)
+  let notified = 0
+  const stop = q.subscribe(() => { notified++ })
+  const ticket = client.store.get(encodeNodeId("Ticket", ["1"]))!
+  client.store.setField(ticket, "NotSelected", 1)
+  client.store.publish()
+  expect(notified).toBe(0)
+  stop()
+  client.dispose()
+ })
+
  it("live foreign-key changes, version conflicts and reconnect recovery", async () => {
   const liveSchema = extendSchema(schema,parse(`
    extend schema { subscription: Subscription }

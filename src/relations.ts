@@ -38,6 +38,7 @@ export function installRelationBatching(client: Client): void {
     if (state?.fields.get("status") === "error") return { status: "error", stateId, error: state.fields.get("error") }
     if (!snapshot.missing && state?.fields.get("status") !== "stale") return { status: "ready", id, stateId }
     if (state?.fields.get("status") === "missing") return { status: "missing", stateId }
+    if (store.collecting) return { status: "pending", stateId }
     const existing = queued.get(stateId) ?? active.get(stateId)
     if (existing) existing.parents.add(parent)
     else {

@@ -64,8 +64,17 @@ export class Store {
   /** Resolve a compiler-declared relation; installed by the optional relations entry point. */
   relation?: (selection: import("../artifact.js").LinkSelection, parent: string, variables: Variables) => { status: string; id?: string; stateId?: string; error?: unknown }
 
+  /** A collection is reading to see what's reachable, so a relation read mustn't start a request. */
+  collecting = false
+
   /** Notify readers after a derived relation changes state. */
-  touch(id: string): void { if (!this.disposed) this.changed.add(id) }
+  touch(id: string): void {
+    if (this.disposed) return
+    this.changed.add(id)
+    this.touched.add(id)
+  }
+
+  private readonly touched = new Set<string>()
 
   private readonly records = new Map<string, StoredRecord>()
   private readonly changed = new Set<string>()
@@ -178,13 +187,17 @@ export class Store {
     if (this.changed.size === 0) return
     const changed = new Set(this.changed)
     this.changed.clear()
+    const touched = new Set(this.touched)
+    this.touched.clear()
     for (const subscription of [...this.subscriptions]) {
       if (!this.subscriptions.has(subscription)) continue
       const previous = subscription.snapshot
       if (![...previous.seen].some((id) => changed.has(id))) continue
       const next = this.lookup(previous.selector)
       const data = recycle(previous.data, next.data)
-      if (!this.relation && data === previous.data && next.missing === previous.missing) {
+      // A resolved relation can leave a query's masked data the same while it comes to show more records, and the query has to hear that,
+      // to hold them. Any other unchanged read notifies nobody.
+      if (data === previous.data && next.missing === previous.missing && ![...previous.seen].some((id) => touched.has(id))) {
         subscription.snapshot = { ...next, data: previous.data }
         continue
       }
@@ -233,6 +246,15 @@ export class Store {
 
   /** Delete every record no retained operation reaches. */
   collect(): void {
+    this.collecting = true
+    try {
+      this.sweep()
+    } finally {
+      this.collecting = false
+    }
+  }
+
+  private sweep(): void {
     if (this.disposed) return
     const reachable = new Set<string>([ROOT_ID])
     const rootKeys = new Set<string>()
