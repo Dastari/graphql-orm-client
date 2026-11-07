@@ -15,6 +15,7 @@ Also skills/graphql-orm-client-streams for data that isn't an entity, and skills
 Reference:
 
 - [README](README.md)
+- [Example](docs/example.md): two related entities in a graphql-orm service, and a page using them
 - [Design](docs/design.md)
 - [graphql-orm contract](docs/graphql-orm-contract.md)
 - [Changelog](CHANGELOG.md), with migration steps for every version
