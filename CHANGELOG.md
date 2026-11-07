@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.1.0-alpha.12 (2026-11-07)
+
+Install from the GitHub release archive:
+`pnpm add https://github.com/Dastari/graphql-orm-client/releases/download/v0.1.0-alpha.12/graphql-orm-client-0.1.0-alpha.12.tgz`.
+
+No regeneration is needed. Regenerate to see the new `live.default` warning.
 
 ### Changed: disposing a client no longer deletes its saved data
 
@@ -33,6 +38,14 @@ The check for production read `typeof process` first, which is `"undefined"` in 
 ### Added: a warning for a `live.default` pattern that matches no fragment
 
 A pattern in `live: { default: [...] }` matches the file a fragment is written in, not the files that spread it. A page whose rows come from fragments in a shared folder needs that folder in the pattern. `generate` now warns about a pattern that matches no file defining a fragment, since it makes nothing live.
+
+### Migration from alpha.11
+
+1. If you use `persistClient`, call `void persistence.clear()` before `client.dispose()` on sign-out, or pass `deleteOnDispose: true` if each identity has one window. Pass `readOnly: true` in a pop-out window.
+2. If you set `polling.undeclared: "error"`, set `"warn"` in production builds, or leave it unset.
+3. If you read live diagnostics from the console in production, pass `live: { onDiagnostic: (d) => console.warn(d.message) }`.
+4. Check `live.maxRereadRows` against your service's maximum page size: a keyset refresh now asks for up to that many rows in one request. Set it to your page size to keep one request per page, and lower `live.maxRereadPages` to bound a long list.
+5. Regenerate, and fix any `live.default` pattern the generator says matches nothing.
 
 ## 0.1.0-alpha.11 (2026-11-07)
 

@@ -32,7 +32,7 @@ export interface Persistence {
 }
 // Kept in sync with package.json; tested to prevent forgotten release updates.
 /** Package revision written into every persistence envelope. */
-export const PERSISTENCE_PACKAGE_VERSION = "0.1.0-alpha.11"
+export const PERSISTENCE_PACKAGE_VERSION = "0.1.0-alpha.12"
 const queues = new WeakMap<PersistenceAdapter, Map<string, Promise<void>>>()
 function serial(adapter: PersistenceAdapter, key: string, action: () => Promise<void>): Promise<void> {
   let map = queues.get(adapter)
