@@ -107,6 +107,30 @@ describe("R3 list streams", () => {
     expect(names).toEqual(["a", "b", "c", "d"])
     client.dispose()
   })
+  it("a page with room keeps its rows when one is created above them", async () => {
+    // The page asks for 50 and holds 2. A re-read must ask for the page, not only for what's loaded, or the new row pushes one out.
+    let rows = ["b", "d"]
+    const limits: unknown[] = []
+    const clock = createTestClock(), streams = createMockStreams()
+    const network = createMockNetwork({ respond: (request) => {
+      const page = request.variables.Page as { Limit: number; Offset?: number }
+      limits.push(page.Limit)
+      const shown = rows.slice(page.Offset ?? 0, (page.Offset ?? 0) + page.Limit)
+      return { data: { Widgets: { __typename: "Result", Edges: shown.map((id) => ({ __typename: "Edge", Cursor: id, Node: row(id) })), PageInfo: { __typename: "PageInfo", TotalCount: rows.length, HasNextPage: (page.Offset ?? 0) + page.Limit < rows.length, HasPreviousPage: false, EndCursor: shown.at(-1) ?? null } } } }
+    } })
+    const client = createClient({ network, store: clock.store, polling: clock.polling, live: { ...clock.live, artifacts: compiled.live, subscribe: streams.subscribe, debounceMs: 0, settleMs: false, onDiagnostic: null } })
+    const query = client.watchQuery<any>(compiled.operations.Offset!, { Page: { Limit: 50, Offset: 0 } })
+    query.open()
+    await clock.tick()
+    rows = ["a", "b", "d"]
+    streams.one("LiveWidget").emit(row("a"), { action: "CREATED" })
+    await clock.tick(2000)
+    const names = query.getState().data.Widgets.Edges.map((edge: any) => readFragment<{ Name: string }>(frags.Row!, edge.Node).Name)
+    expect(names).toEqual(["a", "b", "d"])
+    expect(limits.every((limit) => limit === 50)).toBe(true)
+    client.dispose()
+  })
+
   it("opens before the read, sees the first row, filter entry/exit, sorting and totals without polling", async () => {
     const c = setup(); c.rows([]); c.query.open()
     expect(c.streams.one("LiveWidget").request.variables).toEqual({})

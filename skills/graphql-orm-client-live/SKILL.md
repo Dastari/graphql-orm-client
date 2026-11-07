@@ -14,7 +14,8 @@ Status: early alpha. Check the installed `docs/design.md` and `docs/graphql-orm-
 2. **Pass `live` to `createClient`:** `live: { artifacts: live, ...graphqlWsTransport(ws) }`, with `live` from the generated module and
    `ws` from graphql-ws. Don't write subscription operations, reconnect handling, restarts or refetches around a stream.
 3. **Regenerate.** `@live` on a type with no usable `Changed` stream fails the build, naming the fragment. Remove `@live`, or declare
-   `@poll(reason: "...")` if polling is the honest answer.
+   `@poll(reason: "...")` if polling is the honest answer. A fragment on a type that has a stream and isn't live gets a warning, because it won't update: mark it `@live`, or
+   `@live(enabled: false)` if that's meant. Don't leave the warning.
 4. **Draw what it says.** `useLiveHealth(typename?)` tells you whether the data is being kept current, so a page can show "live updates
    unavailable". Unknown is never drawn as healthy: `unconfirmed` means no update yet, not that all is well.
 5. **Run the doctor before a deploy** (below). What a router admits for an identity can't be known at build time.
@@ -118,7 +119,7 @@ Each of these changes a default on purpose. Reach for them when you have a reaso
 | --- | --- |
 | `live: "default"` (generator) | Fragments on keyed object types are live with no directive. `@live(enabled: false)` opts one out. Opt-in, and `{ default: ["src/area/**"] }` limits it to files matching those globs. Each newly live type costs one operation on a connection |
 | `liveSelection: "as-written"` (generator) | Keeps the older stream text. On graphql-orm before 0.92.0 the server refuses it on an entity with `NodeId` |
-| `strict` (generator) | `liveWithoutStream`, `pollWithoutReason`, `rawSubscriptions` and `queryOwnership`, each `"error"`, `"warn"` or `"off"` |
+| `strict` (generator) | `liveWithoutStream`, `pollWithoutReason`, `rawSubscriptions`, `queryOwnership` and `fragmentNotLive`, each `"error"`, `"warn"` or `"off"`. All default to `"error"` except `fragmentNotLive`, which warns |
 | `queryOwners`, `subscriptionPaths` (generator) | Globs for where queries and raw subscriptions may be written. Off unless set |
 | `live.maxKeyedSubscriptions` | Per-record streams in `key` mode (50). `0` means one stream per type in `key` and `keys` mode when the argument is optional, at a row-policy check per event per subscriber |
 | `versions: { Type: null }` (generator) | Stops selecting a version field some users can't read |

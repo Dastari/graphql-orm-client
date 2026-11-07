@@ -288,6 +288,27 @@ try {
  countQuery.close(); countClient.dispose(); await countWs.dispose()
  await post('mutation { DeleteWidget(Id: "count-new") { Success } }')
  pass('R15 aliased counts and generated aggregate refresh after external creation')
+ // A real create above rows on a page with room keeps them all, and a rename elsewhere reaches a row still shown.
+ {
+  const roomy=compile(schema,[`fragment RoomyRow on Widget @live { Name }`,`query Roomy($Page: PageInput) { Widgets(OrderBy: [{ Name: ASC }, { Id: ASC }], Page: $Page) @connection(key: "roomy") { Edges { Node { Id ...RoomyRow } } } }`])
+  const socket=createWs({url:routerUrl.replace('http','ws'),webSocketImpl:WebSocket,connectionParams:{authorization:`Bearer ${token}`}})
+  const client=createClient({network:createHttpNetwork({url:routerUrl,headers}),live:{artifacts:roomy.live,...graphqlWsTransport(socket),onDiagnostic:null}})
+  const list=client.watchQuery(roomy.operations.Roomy,{Page:{Limit:100,Offset:0}})
+  list.open()
+  await until('roomy read',()=>list.getState().status==='ready')
+  await sleep(1000)
+  const names=()=>list.getState().data.Widgets.Edges.map(edge=>readFragment(roomy.fragments.RoomyRow,edge.Node).Name)
+  const before=names()
+  await post('mutation { CreateWidget(Input: {Id: "roomy-first", Name: "!First in the list"}) { Success } }')
+  await until('created row appears',()=>names().includes('!First in the list'))
+  assert(before.every(name=>names().includes(name)),`a new row pushed one out: ${JSON.stringify(names())}`)
+  await post('mutation { UpdateWidget(Id: "roomy-first", Input: {Name: "!Renamed in the list"}) { Success } }')
+  await until('rename appears',()=>names().includes('!Renamed in the list'))
+  list.close();client.dispose();await socket.dispose()
+  // Later checks count the rows, so leave none behind.
+  await post('mutation { DeleteWidget(Id: "roomy-first") { Success } }')
+  pass('a page with room keeps its rows when one is created above them, and a rename elsewhere reaches a row')
+ }
  const readAllArtifact = compile(schema, [`query Bounded($Page: PageInput) {
    Widgets(Page: $Page) @connection(key: "bounded") { Edges { Node { Id Name } } PageInfo { TotalCount } }
  }`]).operations.Bounded
