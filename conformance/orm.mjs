@@ -235,6 +235,35 @@ try {
  limit.ws.close();pass('32 admitted operations; operation 33 SUBSCRIPTION_LIMIT_EXCEEDED')
  const updateDirect = name => post('mutation($Input: UpdateWidgetInput!) { UpdateWidget(Id: \"w1\", Input: $Input) { Success } }',{Input:{Name:name}},`${serviceUrl}/graphql`)
  const update = async name => (await post('mutation($Input: UpdateWidgetInput!) { UpdateWidget(Id: "w1", Input: $Input) { Success Widget { __typename Id Name NodeId RecordVersion } } }',{Input:{Name:name}})).data.UpdateWidget.Widget
+ // A generated service burst through the real router. Frame loss is timing-dependent.
+ {
+  const docs=compile(schema,[`fragment BurstRow on Widget @live { Name }`,`query BurstHeld { Widget(Id: "w1") { ...BurstRow } }`])
+  const ws=createWs({url:routerUrl.replace('http:','ws:'),webSocketImpl:WebSocket,connectionParams:{authorization:`Bearer ${token}`},retryAttempts:Infinity})
+  const transport=graphqlWsTransport(ws)
+  let frames=0
+  const c=createClient({network:createHttpNetwork({url:routerUrl,headers}),live:{artifacts:docs.live,...transport,settleMs:false,debounceMs:0,onDiagnostic:null,
+   subscribe:(request,sink)=>transport.subscribe(request,{...sink,next:r=>{if(r.data?.WidgetChanged) frames++;sink.next(r)}})}})
+  const q=c.watchQuery(docs.operations.BurstHeld,{})
+  q.open(); await until('burst holder ready',()=>q.getState().status==='ready')
+  await sleep(500)
+  await update('burst-ready'); await until('burst stream admitted',()=>frames>0)
+  await Promise.all(Array.from({length:8},(_,worker)=>(async()=>{
+   for(let i=0;i<125;i++) {
+    const result=await updateDirect(`burst-${worker}-${i}`)
+    assert.equal(result.data.UpdateWidget.Success,true)
+   }
+  })()))
+  const finalWriteAt=Date.now()
+  const final=await update('burst-final')
+  try { await until('burst repair request',()=>c.live.status().Widget.lastBurstReadAt>=finalWriteAt,20000) }
+  catch(error) { console.error('Burst failure', JSON.stringify({frames,health:c.liveHealth(),status:c.live.status()},null,2));throw error }
+  await until('burst repair completed',()=>q.getState().status==='ready')
+  await until('burst final row',()=>c.store.get(encodeNodeId('Widget',['w1']))?.fields.get('RecordVersion')===final.RecordVersion,20000)
+  assert.equal(c.store.get(encodeNodeId('Widget',['w1'])).fields.get('Name'),'burst-final')
+  console.log(`Burst: ${frames}/1002 frames arrived; burstReads=${c.live.status().Widget.burstReads}`)
+  c.dispose(); await ws.dispose()
+  pass('burst repair reaches final generated row through router, with counted repair read')
+ }
  const old = (await post('{ Widget(Id: "w1") { __typename Id Name NodeId RecordVersion } }')).data.Widget
  const newer = await update('Newest')
  assert(newer.RecordVersion > old.RecordVersion)

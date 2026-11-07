@@ -237,6 +237,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let port = std::env::var("SERVICE_PORT")?.parse::<u16>()?;
     let mut db = Database::<SqliteBackend>::connect_sqlite("sqlite::memory:").await?;
+    // Keep the generated service's bus out of the router-buffer burst test. The
+    // deterministic FaultStreams checks still exercise service continuity loss.
+    db.set_event_channel_capacity(8192);
     db.set_entity_policy(AllowEntity);
     db.set_row_policy(Rows);
     let plan = db

@@ -338,7 +338,7 @@ warns, naming each fragment and field the new projection would exclude. Old arti
 Automatic stale, reconnect and R4 confirming reads share one per-query scheduler. It runs a leading
 read and one trailing read when more marks arrive, no faster than `live.minRereadMs` (default 2000).
 A mark during a read follows it with one more, respecting the interval. While `polling.isActive()`
-is false it waits, checking every 100 ms, then runs once on return. Closing the query cancels pending
+is false it waits, checking every 1000 ms, then runs once on return. Closing the query cancels pending
 work. Manual refetch and interval polls retain their own behavior. List invalidation shares this limiter (R3 below).
 
 In graphql-orm 0.90.1 and main `9d1a482`, `validate_subscription_selection` maps generated
@@ -1241,3 +1241,64 @@ Documents without the directive keep their existing request behaviour; adoption 
 installation, annotation and regeneration only.
 
 Reading a relation can queue a request, so a read during render can too. That queue only reads, sends each id once however many renders ask, including under StrictMode, and writes to the store only after render, so a render React discards leaves at most a read whose result the next render uses. Tests pin each of these. With no `document`, as when rendering on a server, nothing is sent and the relation stays `pending`, because private reads must never run in server rendering; `withoutDocument: "read"` allows it for a non-browser client that means to.
+
+## Burst repair reads
+
+Router 0.8.1 at graphql-orm 0.90.1 and 0.93.0 can drop frames silently (#359).
+`live.burstRead` is enabled by default: `{ events: 32, settleMs: 500, maxWaitMs: 10000 }`.
+The threshold matches the router's default broadcast capacity: fewer than 32 events cannot
+fill that buffer. Events count while less than 500 ms apart. One manager-wide window waits
+until every participating type is quiet, or 10000 ms passes, then reads the union of record
+and list holders once per query. Sustained streams start a fresh window after each deadline.
+This repairs dropped final frames when enough preceding frames arrive; it cannot detect an
+entirely lost or below-threshold burst. Server continuity signalling is still needed.
+
+Reads use `QueryResource.readAgain`: pending R3 or thin invalidations absorb the burst mark;
+an automatic read already sent after the last burst event absorbs the mark, including
+timers due together. A read predating that event is followed by one more.
+The shared `minRereadMs` limiter bounds request frequency; hidden pages wait and read once
+on return through `polling.isActive()`. A list burst with a trailing invalidation pending
+adds zero requests; other timing can add at most one per window. Disposal cancels all timers.
+Restart clears that type's window; reconnect clears the whole window before recovery reads.
+Per-type `burstReads` counts actual repair requests (including a shared pending invalidation)
+and `lastBurstReadAt` is null until one is sent. Several queries can increment a type's count.
+
+Migration: one extra read per query holding the type per burst of at least 32 events,
+coalesced across types and at most one per `minRereadMs`. Set `live: { burstRead: false }`
+to restore the old read cost. Modules generated earlier get this without regeneration.
+
+## Read and stream counters
+
+With a live layer, `liveHealth().reads` is an immutable snapshot of monotonic request
+counts for this client: `first` (opened query fetch), `manual` (refetch, execute, query and
+imperative reads), `poll` (interval including fallback), `stale` (event, missing record or
+list invalidation), `confirm` (new coverage), `restart` (ended stream), `reconnect` (socket
+recovery), `burst` (burst repair), and `pagination` (load-more). Loaded keyset refresh pages
+count individually under the initiating cause. A request which fails still counts; one
+cancelled before sending, absorbed by an in-flight read, or coalesced in the limiter does
+not. The first pending cause owns a coalesced request; per-type `burstReads` can additionally
+identify its participation in burst repair. Counters never double-count a shared request.
+
+`streams` counts open managed subscriptions across types, including overlap candidates;
+it excludes plain subscriptions and ephemeral streams. `refusedStreams` counts failed or
+refused managed operations, including full selections refused before a thin fallback and
+synchronous transport failures. Normal completion, reload and continuity-loss ends do not
+count as subscribe failures. `hasLiveLayer` explicitly reports configuration. These fields are absent without a live layer: zero means
+measured and none. Take two health samples and divide count differences by elapsed minutes.
+Counter and read-time changes alone do not notify health listeners. Event timing follows
+the existing at-most-once-per-second notification path; state changes still notify promptly.
+
+## Zero keyed subscription cap
+
+`live.maxKeyedSubscriptions: 0` requests one whole-type stream in `key` and `keys`
+modes when the narrowing argument is optional. `unkeyed` already uses one. Changes to
+held sets keep the same stream, even if the old and new sets have no rows in common;
+events for unheld rows are dropped. List invalidation still sees them. With required
+`Keys`, delivery remains narrowed and status and type health expose `keyRequired: true`.
+Other cap values are ignored in `keys` mode as before; `maxKeys` still sizes chunks.
+Required `Key` retains its existing zero-cap overflow and polling behavior.
+This applies equally to explicit and opt-in default live generation, including old artifacts.
+
+Migration for optional `Keys` schemas already setting zero: streams stop narrowing.
+The server performs a row-policy check per event per subscriber, including unheld rows.
+Remove `maxKeyedSubscriptions: 0` to keep narrowing. No regeneration is needed.

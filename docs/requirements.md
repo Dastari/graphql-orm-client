@@ -269,3 +269,17 @@ Add these to [graphql-orm-contract.md](graphql-orm-contract.md) as they're confi
   lifetime metadata, as the contract already lists.
 - A consistent time format. A generated `String` time can hold `unixepoch()` text, RFC 3339, or
   SQLite's `datetime()` with no zone, so every consumer writes its own parser.
+
+**Burst repair:** built, on by default. After at least 32 delivered events in a type's
+burst, record and list holders re-read through the shared limiter, coalesced across types.
+Health distinguishes these reads. This bounds silent router loss repair after qualifying
+bursts; below-threshold or entirely lost bursts still need server continuity signalling.
+See [burst repair](design.md#burst-repair-reads) for cost and opt-out.
+
+Read measurement is built: live-layer health exposes cumulative request counts by explicit
+cause, open managed stream count and cumulative refused/failed operations. Without a live
+layer these counts are absent. Counter changes alone do not notify health subscribers.
+
+A zero keyed cap now requests one whole-type stream for optional `Keys` as well as optional
+`Key`. Required `Keys` remains narrowed and health reports `keyRequired`; other values in
+keys mode remain ignored. Held-set changes do not replace whole-type streams.

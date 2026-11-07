@@ -68,7 +68,7 @@ export function installRelationBatching(client: Client, options: { readonly with
         const chunk = jobs.slice(offset, offset + spec.limit)
         let error: unknown
         try {
-          const result = await client.execute(spec.operation, { ...jobs[0]!.variables, Where: { [spec.key]: { InList: chunk.map(j => j.value) } }, Page: { Limit: spec.limit } })
+          const result = await client.execute(spec.operation, { ...jobs[0]!.variables, Where: { [spec.key]: { InList: chunk.map(j => j.value) } }, Page: { Limit: spec.limit } }, { readCause: "relation" })
           if (result.errors.length) error = result.errors
         } catch (cause) { error = cause }
         if (store.isDisposed) { active.clear(); return }

@@ -112,3 +112,13 @@ uses `Widget.Name` as an explicitly configured unix-seconds field for that scena
 not infer lifetime from a name or require server lifetime metadata. Chromium also exercises the
 IndexedDB adapter across a page reload, stale restoration, identity separation and sensitive-result
 exclusion. The application supplies the test schema/release envelope identifiers.
+
+## Burst repair
+
+A held Widget receives a burst of 1000 generated updates from eight concurrent workers,
+with its Changed stream going through the real router. The fixture service uses an 8192-event
+channel so this load tests the router buffer rather than overflowing the service bus; router
+capacity is unchanged. The run logs delivered frame counts
+and waits for a counted burst repair read and the final server version in the store. Loss is
+timing-dependent, so the test does not require missing frames. Dropped-final-frame repair is
+also exercised deterministically with the test kit.

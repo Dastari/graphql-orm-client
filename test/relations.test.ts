@@ -153,6 +153,7 @@ describe("batched relations", () => {
   const shown=()=>readFragment(c.fragments.Row!,q.getState().data!.Tickets[0]) as {Vendor:{status:string;data:unknown}}
   expect(shown().Vendor.status).toBe('ready')
   expect(streams.one('LiveVendor')).toBeDefined()
+  expect(client.liveHealth().reads?.relation).toBeGreaterThan(0)
   key='b';version=3
   streams.one('LiveTicket').emit({...row(1,key),RecordVersion:version})
   expect(shown().Vendor.status).toBe('pending')

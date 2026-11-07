@@ -35,6 +35,14 @@ export type LiveReason = "list-refresh-truncated" | "list-streams-disabled" | "l
 export type LiveSocketState = "connected" | "connecting" | "closed" | "unknown"
 
 export interface LiveTypeHealth {
+  /** Keys stays narrowed despite a zero keyed cap because the schema requires it. Absent without status. */
+  readonly keyRequired?: boolean
+
+  /** Burst repair requests; absent without a live layer for this type. */
+  readonly burstReads?: number
+  /** Last burst repair request; null means never. Absent without a live layer. */
+  readonly lastBurstReadAt?: number | null
+
   readonly state: LiveState
   /** Null when coverage has no known limitation, or when idle/starting. Thin retains selection-refused. */
   readonly reason: LiveReason | null
@@ -54,7 +62,19 @@ export interface LiveTypeHealth {
   readonly fragments: readonly string[]
 }
 
+/** Explicit cause of a query request. Coalesced marks count only the request sent. */
+export type ReadCause = "first" | "manual" | "poll" | "stale" | "confirm" | "restart" | "reconnect" | "burst" | "pagination" | "relation"
+
 export interface LiveHealth {
+  /** Whether managed live delivery and its counters are configured. */
+  readonly hasLiveLayer: boolean
+  /** Monotonic sent query requests by cause; absent without a live layer. */
+  readonly reads?: Readonly<Record<ReadCause, number>>
+  /** Open managed subscriptions across types; absent without a live layer. */
+  readonly streams?: number
+  /** Failed/refused subscribe attempts, cumulative; absent without a live layer. */
+  readonly refusedStreams?: number
+
   /** `unknown` unless the transport reports it: see `graphqlWsTransport`. */
   readonly socket: LiveSocketState
   /** The worst state of any type. */
@@ -118,6 +138,7 @@ export function typeHealth(status: LiveTypeStatus | undefined, holdings: readonl
   const reads = holdings.map((holding) => holding.lastReadAt).filter((value): value is number => value !== null)
   const held = status ? status.held : new Set(holdings.flatMap((holding) => holding.held)).size
   const base = {
+    ...(status ? { keyRequired: status.keyRequired, burstReads: status.burstReads, lastBurstReadAt: status.lastBurstReadAt } : {}),
     held,
     pollMs,
     fragments,

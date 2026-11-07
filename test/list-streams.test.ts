@@ -123,13 +123,15 @@ describe("R3 list streams", () => {
     expect(c.client.liveTypeHealth("Widget").pollMs).toBeNull()
     c.client.dispose()
   })
-  it("100 unheld events cause exactly two reads, never store unheld rows, and skip unrelated queries", async () => {
+  it("100 unheld events coalesce list repair and add one burst read for a record holder, without storing unheld rows", async () => {
     const c = setup(); await c.open()
     const single = c.client.watchQuery(compiled.operations.Single!, {}); single.open(); await c.clock.tick()
     const before = c.network.requests.length
     for (let i = 0; i < 100; i++) { c.emit(); await c.clock.tick(10) }
     await c.clock.tick(1000)
-    expect(c.network.requests.length - before).toBe(2)
+    const requests = c.network.requests.slice(before)
+    expect(requests.filter(request => request.name === "List")).toHaveLength(2) // burst joins the pending R3 read
+    expect(requests.filter(request => request.name === "Single")).toHaveLength(1) // a holder of the same type, repaired only by burst
     expect(c.client.store.get(encodeNodeId("Widget", ["unheld"]))).toBeUndefined()
     c.client.dispose()
   })

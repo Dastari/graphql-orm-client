@@ -1,6 +1,6 @@
 ---
 name: graphql-orm-client-live
-description: Use explicit live fragments or opt-in default/area generation with @live(enabled: false); Configure project query/subscription owners and strict build policies, declare polling reasons; Keep regenerated lists and counts current with list streams and bounded loaded-page refresh; use full/thin stream projections and bounded holder re-reads (minRereadMs); Keep graphql-orm-client data live with @live fragments and generated Changed subscriptions, overlap replacements and confirm first reads (settleMs), back off from refused streams, order writes by record version, use polling fallbacks, draw live status (useLiveHealth, liveHealth), check streams against a real router (doctor) and diagnose stale data.
+description: Configure live fragments, generated Changed streams, burst repair and read health; diagnose stale data, stream refusals, polling, overlap and version ordering.
 ---
 
 # Live data and cache policy
@@ -201,3 +201,19 @@ Migration: keep `"explicit"` to retain current stream scope. Opt in per area, re
 `liveUnavailable` and `client.liveHealth()`. More live types use more operations: the router's default
 32-operation connection budget still applies; capacity refusals remain visible and uncovered data polls.
 No setting overrides server admission or guarantees every burst event arrives.
+
+Burst repair is on by default, including with old generated modules. After 32 events it reads
+holders once more after quiet, coalescing types and pending list/thin reads through
+`minRereadMs`. `live.burstRead: false` restores the previous read cost; an object accepts
+`events`, `settleMs`, `maxWaitMs`. Per-type health has `burstReads` and `lastBurstReadAt`.
+Silent loss below the threshold still needs server signalling. See design for scheduling limits.
+
+For read rates, sample `liveHealth().reads` twice and divide differences by elapsed minutes.
+`streams` counts managed operations now; `refusedStreams` counts failed/refused operations
+cumulatively. These fields are absent without a live layer. Counts alone do not notify
+health subscribers; sample on the application's reporting interval. See design for causes.
+
+`live.maxKeyedSubscriptions: 0` uses one whole-type stream with optional Key or Keys,
+keeping it when held rows change. Required Keys stays narrowed (`keyRequired` in health).
+Other values in keys mode are ignored. Server cost is a row-policy check per event per
+subscriber; remove the zero setting to retain narrowing. Applies to both live generation modes.
