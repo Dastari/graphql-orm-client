@@ -197,7 +197,7 @@ describe("batched relations", () => {
  })
  it("polling refreshes cached related records", async () => {
   let poll: (()=>void) | undefined
-  const {client,setNamePrefix}=setup([row(1)],false,false,{setInterval:cb=>{poll=cb;return 1},clearInterval:()=>{}})
+  const {client,setNamePrefix}=setup([row(1)],false,false,{undeclared:'off',setInterval:cb=>{poll=cb;return 1},clearInterval:()=>{}})
   const q=client.watchQuery<{Tickets:unknown[]}>(compiled.operations.Rows!,{},{pollMs:100})
   q.open();await pause();await pause()
   setNamePrefix('fresh:');poll!();await pause();await pause()
@@ -207,6 +207,6 @@ describe("batched relations", () => {
  })
  it("rejects unsupported key/filter and oversized chunks at build time", () => {
   for (const source of [sources[0]!.replace('key: "Id"','key: "Name"'), sources[0]!.replace('key: "Id"','key: "Id", limit: 101'), sources[0]!.replace('root: "Vendors"','root: "Tickets"'), sources[0]!.replace('{ ...Badge }','@skip(if: true) { ...Badge }'), sources[0]!.replace('{ ...Badge }','{ Name @batch(foreignKey: "VendorId", root: "Vendors", key: "Id") }')])
-   expect(() => compile(schema, [source,sources[1]!])).toThrow(/Ticket.Vendor/)
+   expect(() => compile(schema, [source,sources[1]!])).toThrow(/Ticket\.Vendor|@skip is unsupported/)
  })
 })

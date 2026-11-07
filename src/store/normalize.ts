@@ -7,6 +7,7 @@ export interface NormalizeContext {
   /** Loaded-range refresh boundary; Infinity replaces the complete range. */
   readonly connectionTailFrom?: number
   readonly keys: Readonly<Record<string, readonly string[]>>
+  readonly lifetimes?: OperationArtifact["lifetimes"]
   readonly versions: Readonly<Record<string, string>>
   readonly variables: Variables
   /** Collects the ids of objects stored under a path because they have no key. */
@@ -14,7 +15,7 @@ export interface NormalizeContext {
 }
 
 export function contextOf(artifact: OperationArtifact, variables: Variables): NormalizeContext {
-  return { keys: artifact.keys, versions: artifact.versions, variables }
+  return { keys: artifact.keys, versions: artifact.versions, lifetimes: artifact.lifetimes, variables }
 }
 
 /**
@@ -51,6 +52,7 @@ export function normalize(
   rootId: string = ROOT_ID,
   rootTypename = "Query"
 ): void {
+  store.configureLifetimes(context.lifetimes)
   const root = store.getOrCreate(rootId, rootTypename)
   writeFields(store, root, rootTypename, selections, data, context, true)
 }

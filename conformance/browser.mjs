@@ -14,8 +14,23 @@ export async function browserRecovery({ scratch, compiled, query, routerUrl, fro
  }
  const out=`${scratch}/browser.js`
  await build({stdin:{contents:`
+ import {persistClient,indexedDBAdapter} from './dist/persistence/index.js';
  import {createClient,graphqlWsTransport} from './dist/index.js';
  import {createClient as createWs} from 'graphql-ws';
+ window.persistenceBoot=async(compiled,identity)=>{
+  const client=createClient({network:{execute:r=>window.read(r)}});
+  const adapter=indexedDBAdapter('r17-conformance');
+  const persistence=persistClient(client,{adapter,identityKey:identity,schemaHash:'conformance-schema',serverRelease:'conformance-release'});
+  await persistence.ready;
+  const q=client.watchQuery(compiled.operations.One,{});
+  window.persistenceState=()=>q.getState();
+  window.persistenceRead=()=>client.execute(compiled.operations.One,{});
+  window.persistencePrivate=()=>client.query({...compiled.operations.One,sensitive:true},{});
+  window.persistenceFlush=()=>persistence.flush();
+  window.persistencePayload=()=>adapter.get('graphql-orm-client:'+JSON.stringify(identity));
+  window.persistenceDispose=()=>client.dispose();
+  return q.getState();
+ };
  window.boot=(cfg,compiled)=>{
   const ws=createWs({url:cfg.url,connectionParams:{authorization:'Bearer '+cfg.token},retryAttempts:1,retryWait:()=>new Promise(r=>setTimeout(r,100))});
   const client=createClient({network:{execute:r=>window.read(r)},live:{artifacts:compiled.live,...graphqlWsTransport(ws),onDiagnostic:null,restart:{minMs:100,maxMs:500}}});
@@ -26,6 +41,27 @@ export async function browserRecovery({ scratch, compiled, query, routerUrl, fro
  }`,resolveDir:resolve('.')},bundle:true,format:'iife',platform:'browser',outfile:out,define:{'process.env.NODE_ENV':'"production"'},logLevel:'error'})
  const browser=await chromium.launch({executablePath,args:['--no-sandbox']})
  try {
+  const persistedPage=await browser.newPage()
+  await persistedPage.exposeFunction('read',async r=>(await(await fetch(routerUrl,{method:'POST',headers:{'content-type':'application/json',authorization:`Bearer ${token}`},body:JSON.stringify({query:r.text,variables:r.variables,operationName:r.name})})).json()))
+  const bootPersistence=async identity=>{
+   await persistedPage.goto(`${frontUrl}/page`);await persistedPage.addScriptTag({path:out})
+   return persistedPage.evaluate(([c,id])=>window.persistenceBoot(c,id),[compiled,identity])
+  }
+  await bootPersistence('identity-a')
+  await persistedPage.evaluate(()=>window.persistenceRead())
+  await persistedPage.evaluate(()=>window.persistenceFlush())
+  await persistedPage.reload();await persistedPage.addScriptTag({path:out})
+  const restored=await persistedPage.evaluate(c=>window.persistenceBoot(c,'identity-a'),compiled)
+  assert.equal(restored.stale,true);assert.ok(restored.data)
+  const other=await bootPersistence('identity-b');assert.equal(other.data,undefined)
+  await update('PRIVATE_BROWSER_MARKER_17')
+  await persistedPage.evaluate(()=>window.persistencePrivate())
+  await update('public-browser-value')
+  await persistedPage.evaluate(()=>window.persistenceRead());await persistedPage.evaluate(()=>window.persistenceFlush())
+  assert(!(await persistedPage.evaluate(()=>window.persistencePayload())).includes('PRIVATE_BROWSER_MARKER_17'))
+  await persistedPage.evaluate(()=>window.persistenceDispose())
+  await persistedPage.close()
+  console.log('PASS Chromium IndexedDB: reload restores stale data, identity separation, sensitive exclusion')
   for(let repeat=0;repeat<8;repeat++)for(const scenario of ['reload','kill']) {
    console.log(`RUN Chromium repeat=${repeat+1} ${scenario}`)
    const page=await browser.newPage()

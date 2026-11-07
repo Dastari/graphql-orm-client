@@ -33,7 +33,7 @@ general terms.
 - A write with an older record version never replaces a newer one. Without a version, the
   last write to arrive wins; document that limit wherever it applies.
 - `Changed` fires on writes, not on clock expiry. Honour lifetime fields (`expires_at`,
-  `valid_until`) in the store. Proposed: the store has no lifetime support yet (R17).
+  `valid_until`) in the store. Lifetime is opt-in through explicit generated per-type field and time-format policies (R17).
 - Identity changes dispose the whole store synchronously. A result from one identity or
   scope must never be shown under another.
 - Live delivery is an optimisation, never the only path to correct data. Every live record

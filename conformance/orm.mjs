@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { installRelationBatching } from '../dist/relations.js'
 import { readFragment } from '../dist/index.js'
+import { liveSettingCheck } from './live-setting.mjs'
 import { doctorChecks } from './doctor.mjs'
 import { browserRecovery } from './browser.mjs'
 import { spawn, execFile } from 'node:child_process'
@@ -13,11 +14,11 @@ import { WebSocket } from 'ws'
 import { createClient as createWs } from 'graphql-ws'
 import { buildSchema, execute, parse, print, buildClientSchema, getIntrospectionQuery } from 'graphql'
 import { compile } from '../dist/compiler/index.js'
-import { createClient, createHttpNetwork, graphqlWsTransport, encodeNodeId } from '../dist/index.js'
+import { createClient, createHttpNetwork, graphqlWsTransport, encodeNodeId, readFragment } from '../dist/index.js'
 
 const scratch = process.env.CONFORMANCE_SCRATCH
 const base = Number(process.env.PORT_BASE ?? 42000)
-assert((base >= 42000 && base + 4 <= 42099) || (base >= 41800 && base + 4 <= 41899))
+assert(base >= 42000 && base + 4 <= 42099)
 const serviceUrl = `http://127.0.0.1:${base+1}`
 const routerUrl = `http://127.0.0.1:${base+2}/graphql`
 const frontUrl = `http://127.0.0.1:${base+3}`
@@ -237,6 +238,36 @@ try {
  const old = (await post('{ Widget(Id: "w1") { __typename Id Name NodeId RecordVersion } }')).data.Widget
  const newer = await update('Newest')
  assert(newer.RecordVersion > old.RecordVersion)
+ const counts = compile(schema, [
+   `fragment CountLive on Widget @live { Name }`,
+   `query Counts { first: Widgets { PageInfo { n: TotalCount } } second: Widgets { PageInfo { TotalCount } }
+     summary: WidgetsAggregate(GroupBy: [], Metrics: [{Operator: COUNT}], GroupLimit: 1) { Metrics { Kind Value } } }`
+ ])
+ assert.deepEqual(counts.operations.Counts.lists, ['Widget'])
+ const countWs = createWs({ url: routerUrl.replace('http:', 'ws:'), webSocketImpl: WebSocket, connectionParams: {authorization: `Bearer ${token}`}, retryAttempts: Infinity })
+ const countClient = createClient({ network: createHttpNetwork({url:routerUrl,headers}), live: { artifacts: counts.live, ...graphqlWsTransport(countWs), minRereadMs: 0, debounceMs: 0, settleMs: false, onDiagnostic: null } })
+ const countQuery = countClient.watchQuery(counts.operations.Counts, {})
+ countQuery.open()
+ await until('initial counts', () => countQuery.getState().data?.first.PageInfo.n != null)
+ await sleep(300)
+ const beforeCount = countQuery.getState().data.first.PageInfo.n
+ await create('count-new', 'Count new')
+ await until('aliased count and aggregate creation', () => {
+   const data = countQuery.getState().data
+   return data?.first.PageInfo.n === beforeCount + 1 && data.second.PageInfo.TotalCount === beforeCount + 1 && data.summary[0].Metrics[0].Value === String(beforeCount + 1)
+ })
+ countQuery.close(); countClient.dispose(); await countWs.dispose()
+ await post('mutation { DeleteWidget(Id: "count-new") { Success } }')
+ pass('R15 aliased counts and generated aggregate refresh after external creation')
+ const readAllArtifact = compile(schema, [`query Bounded($Page: PageInput) {
+   Widgets(Page: $Page) @connection(key: "bounded") { Edges { Node { Id Name } } PageInfo { TotalCount } }
+ }`]).operations.Bounded
+ const boundedClient = createClient({ network: createHttpNetwork({ url: routerUrl, headers }) })
+ const bounded = await boundedClient.readAll(readAllArtifact, {}, { limit: 1 })
+ assert.equal(bounded.rows.length, 1); assert(bounded.total > 1); assert.equal(bounded.truncated, true)
+ const complete = await boundedClient.readAll(readAllArtifact, {}, { limit: 100, pageSize: 1 })
+ assert.equal(complete.rows.length, complete.total); assert.equal(complete.truncated, false)
+ boundedClient.dispose(); pass('R14 bounded readAll: real offset pages, exact total and truncation')
  const compiled = compile(schema,[`fragment Row on Widget @live { Name }`,`query One { Widget(Id: "w1") { ...Row } }`])
  // A generated stream is admitted as it stands, and doesn't select what the server refuses.
  assert(!/\bNodeId\b/.test(compiled.live.Widget.operation.text))
@@ -245,6 +276,20 @@ try {
  assert.equal(generated.frames.filter(f=>f.id===generatedId).length,0)
  generated.ws.close()
  pass('generated stream selection is admitted on an entity with NodeId and a managed version')
+ // R18: the loader and later mount use one real router read; no stream/settle read is enabled here.
+ {
+  let reads = 0
+  const http = createHttpNetwork({url:routerUrl,headers})
+  const loaderClient = createClient({network:{execute:(r,o)=>{ reads++; return http.execute(r,o) }}})
+  const loaded = loaderClient.loadQuery(compiled.operations.One,{})
+  await loaded.ready
+  assert.equal(loaded.getState().status,'ready')
+  const release = loaded.mount()
+  assert.equal(reads,1)
+  assert.equal(loaderClient.store.get(encodeNodeId('Widget',['w1']))?.fields.get('Name'),'Newest')
+  release(); await Promise.resolve(); loaderClient.dispose()
+  pass('route preload mounted later: one HTTP request reaches the real router')
+ }
  const query = compiled.operations.One
  // Deliver older server data after the newer snapshot through the network.
  const sequence=[newer,old]
@@ -349,6 +394,21 @@ try {
   gone.close();client.dispose();await socket.dispose()
   pass('a direct delete of a parent removes the record')
  }
+ const deleteDocs = compile(schema, [`fragment DeletedRow on Widget @live { Name }`, `query DeleteList { Widgets { Edges { Node { ...DeletedRow } } } }`])
+ await create('held-delete', 'Held delete')
+ const deleteWs = createWs({url:routerUrl.replace('http','ws'), webSocketImpl:WebSocket, connectionParams:{authorization:`Bearer ${token}`}})
+ const deleteClient = createClient({ network:createHttpNetwork({url:routerUrl,headers}), store:{deletedRecords:'omit'}, live:{artifacts:deleteDocs.live,...graphqlWsTransport(deleteWs),minRereadMs:0,debounceMs:0,settleMs:false,onDiagnostic:null} })
+ const deleteQuery=deleteClient.watchQuery(deleteDocs.operations.DeleteList,{})
+ deleteQuery.open()
+ await until('held delete loaded',()=>deleteQuery.getState().data?.Widgets.Edges.some(e=>readFragment(deleteDocs.fragments.DeletedRow,e.Node)?.Name==='Held delete'))
+ const deleteRef=deleteQuery.getState().data.Widgets.Edges.find(e=>readFragment(deleteDocs.fragments.DeletedRow,e.Node)?.Name==='Held delete').Node
+ await sleep(300)
+ await post('mutation { DeleteWidget(Id: "held-delete") { Success } }')
+ await until('held delete fragment',()=>readFragment(deleteDocs.fragments.DeletedRow,deleteRef,{deleted:'null'})===null)
+ await until('held delete list',()=>deleteQuery.getState().data.Widgets.Edges.every(e=>readFragment(deleteDocs.fragments.DeletedRow,e.Node)?.Name!=='Held delete'))
+ assert.equal(deleteClient.store.get(encodeNodeId('Widget',['held-delete'])),undefined)
+ deleteQuery.close();deleteClient.dispose();await deleteWs.dispose()
+ pass('R16 real direct delete removes held record and list node; old reference reads null')
  for(const synchronous of [true,false]) {
   for(let repeat=0;repeat<8;repeat++) {
    for(const scenario of ['reload','kill','refuse']) {
@@ -378,6 +438,16 @@ try {
   }
   if(!failures.some(f=>f.startsWith(`ws synchronous=${synchronous}`)))pass(`8 reload + 8 router-kill + 8 refusal recoveries, ws allowSynchronousEvents=${synchronous}`)
  }
+ const expiry = String(Date.now()/1000 + 3)
+ await update(expiry)
+ const lifetimeQuery=compile(schema,[`query Lifetime { Widget(Id: "w1") { Name } }`],{lifetimes:{Widget:{field:'Name',format:'unix-seconds'}}}).operations.Lifetime
+ const lifetimeNetwork=createHttpNetwork({url:routerUrl,headers});let lifetimeReads=0
+ const lifetimeClient=createClient({network:{execute:(...args)=>{lifetimeReads++;return lifetimeNetwork.execute(...args)}}})
+ const lifetimeWatch=lifetimeClient.watchQuery(lifetimeQuery,{});lifetimeWatch.open();await lifetimeWatch.refetch()
+ assert.equal(lifetimeWatch.getState().lifetime,undefined)
+ await until('lifetime expiry',()=>lifetimeWatch.getState().lifetime==='expired' && lifetimeReads>=2)
+ lifetimeWatch.close();lifetimeClient.dispose();pass('explicit String lifetime expires and holders re-read')
+ await liveSettingCheck({schema,scratch,routerUrl,token,post,until,sleep})
  await doctorChecks({schema,scratch,routerUrl,token,post})
  try {await browserRecovery({scratch,compiled,query,routerUrl,frontUrl,token,reload:()=>revision++,stopRouter,startRouter,updateDirect,update,until,sleep})}catch(e){failures.push(`Chromium: ${e.message}`);console.error(e)}
  if(failures.length)throw Error(`Conformance failures:\n${failures.join('\n')}`)

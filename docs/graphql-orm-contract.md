@@ -54,7 +54,7 @@ included; R13’s later runs on both tags are recorded below.
 | Effective page size in `PageInfo` | `@paged` computes `pageCount` from the page size it asked for | Missing. graphql-orm clamps an explicit `Limit` to `PaginationConfig::DEFAULT_MAX_LIMIT` (100) and a missing one to 50, but `PageInfo` reports neither the limit nor the offset it applied. A page size above the maximum gives a short page and a wrong page count, and the client can't tell. Needed: `PageInfo` fields for the applied `Limit` and `Offset`, or an error for a `Limit` above the maximum. Until then, keep page sizes within the server's maximum |
 | Persisted operations | Smaller requests; an allow-list of compiled operations at the router | Planned. The operation catalogue exists |
 | Shareable shared objects | Two subgraphs must compose | `PageInfo` is shareable. The aggregate result objects are fixed in 0.81.2 |
-| Lifetime metadata in the schema | The compiler can configure expiry without hand-written policy | Planned |
+| Lifetime metadata in the schema | The compiler can configure expiry without hand-written policy | Missing in graphql-orm 0.90.1 and 0.93.0 (entity macro and protocol source read). Requested: opt-in entity lifetime field metadata plus an unambiguous time representation and timezone. Until available the generator requires explicit per-type `lifetimes` field and format configuration; names alone never imply expiry |
 | In-memory server state | Connection and liveness changes reach the client as `Changed` | Not needed as an ORM feature for now: a service persists state *transitions* (connected, delayed, offline), not heartbeats, so the generated `Changed` covers them. A field overlay for exact in-memory values may follow if a consumer needs it (#223) |
 
 ## Rules for services
@@ -101,6 +101,26 @@ The client can only prove a write's outcome from what the server says. Today tha
 A dedicated `extensions.outcome: "refused" | "failed"` is a proposed addition. The client already reads it, but no graphql-orm
 version sends it (read from `graphql-orm-v0.93.0`). Until one does, a refused write that executed shows as `unconfirmed`.
 
+
+## Aggregates and deletes (R15, R16)
+
+Read from tags 0.90.1 and 0.93.0, and run on both with router 0.8.1 and SQLite:
+
+- **Aggregates:** generated aggregate roots return `GraphqlAggregateResultRow`, which is shared across entities and doesn't name its source. The compiler
+  matches the aggregate's input types to a connection root's and takes the entity from `Edges.Node`. It needs exactly one candidate; otherwise it claims
+  no stream coverage and the query must poll. Proposed: publish the aggregate's source entity in the served schema.
+- **Direct deletes without a preimage grant** send nothing, so a list corrects on its next delivered event or poll.
+- **No tombstone:** a late response can restore a removed row, because the deleted record no longer has a version to compare. The read that follows the
+  event corrects it.
+
+### Persistence release identity (R17)
+
+Requested: a stable server deployment/release identifier available to clients, changing whenever
+cursor interpretation may change. No such generic identifier was found in the entity/protocol
+source at graphql-orm 0.90.1 or 0.93.0. Schema hashes alone cannot detect unchanged-SDL releases.
+Until this exists, persistence requires an application-supplied `serverRelease`; an envelope mismatch
+discards all connections and cursors along with records. The client cannot detect an incorrectly
+reused deployment identifier.
 
 ## Batched relation lookup (R13)
 

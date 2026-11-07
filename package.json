@@ -57,6 +57,14 @@
     "./relations": {
       "types": "./dist/relations.d.ts",
       "import": "./dist/relations.js"
+    },
+    "./persistence": {
+      "types": "./dist/persistence/index.d.ts",
+      "import": "./dist/persistence/index.js"
+    },
+    "./streams": {
+      "types": "./dist/ephemeral.d.ts",
+      "import": "./dist/ephemeral.js"
     }
   },
   "peerDependencies": {

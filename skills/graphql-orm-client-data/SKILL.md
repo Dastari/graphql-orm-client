@@ -1,6 +1,6 @@
 ---
 name: graphql-orm-client-data
-description: Write masked fragments and route queries, batch relation reads, paginate, refetch, run mutations and subscriptions, handle sensitive data, write outcomes and partial errors, and test with the client test kit.
+description: Keep regenerated lists and counts current with list streams and bounded loaded-page refresh; use full/thin stream projections and bounded holder re-reads (minRereadMs); Write components with graphql-orm-client fragments and route roots, page through tables by number (@paged, usePagedQuery), load more (@connection), refetch, run mutations (including one-time secrets with `no-store`) and plain subscriptions, and port Apollo queries without request waterfalls or over-fetching, and test components against a mock network, scripted streams and a controllable clock (graphql-orm-client/test); declare sensitive operations (@sensitive), get honest write outcomes (mutateOutcome) and show partial results per path (errorsAtPath); read everything up to a limit (readAll), keep aliased counts and aggregates current, and handle deleted records; start a route's read before mount (loadQuery); honour declared lifetime fields and persist data per identity.
 ---
 
 # Fragments, roots, pagination and mutations
@@ -29,7 +29,12 @@ bounded holder re-reads. `liveSelection: "as-written"` preserves legacy stream t
   supplies variables (`Where`, order, page size).
 - Never fetch inside a child component to fill in missing data. Add the field to the child's
   fragment instead, so the root's query includes it.
-- Start the root in the route loader (`client.preload`) so the request begins before render.
+- Start the root in the browser route loader (`client.loadQuery`) and consume its handle with
+  `useLoadedQuery`; forward the router abort signal and dispose abandoned handles. It does not suspend.
+- `@skip`/`@include` selections and fragment arguments (`@argumentDefinitions`/`@arguments`) are
+  unsupported build errors. Use separate roots and operation variables. For existing conditional
+  documents, `conditionalDirectives: "legacy"` temporarily keeps unsafe old behaviour while migrating;
+  remove it after splitting roots. Whole-query hook `skip` is still supported.
 
 ## Filters and lists
 
@@ -66,7 +71,7 @@ bounded holder re-reads. `liveSelection: "as-written"` preserves legacy stream t
 - `fetchPolicy` → `policy`: `cache-first` is `store-or-network`, `cache-and-network` is
   `store-and-network` (the default), `network-only` is the same. There is no `no-cache` for queries;
   for a mutation use `policy: "no-store"` (see Mutations).
-- `pollInterval` → `pollMs`. `refetch(vars)` merges and switches, as in Apollo.
+- `pollInterval` → `pollMs`, after declaring `@poll(reason: "...")` on the query. `refetch(vars)` merges and switches, as in Apollo.
 - `errorPolicy: "none"` → treat `query.errors.length` as an error; codes are on
   `errors[i].extensions.code`. `useMutation`'s `error` is an `OperationError` with the same codes.
 - `client.query` → `client.query(Query, variables, { policy, signal })`, resolving `{ data, errors }`.
@@ -161,6 +166,34 @@ delete visibility when polling is disabled. See docs/design.md, List streams (R3
 - Use `errorsAtPath(errors, ["alias"])` to show one refused root or alias beside the rest of the response. Set
   `partialResults: "preserve-errors"` on the client so a refused field doesn't overwrite a good stored value with null.
 
+
+## Polling and query owners
+
+A query passed `pollMs` declares why: `query Name @poll(reason: "...") { ... }`. `queryOwners` globs say where queries may be written. See the live skill.
+
+## Reading everything, counts and deleted rows
+
+- `client.readAll(Query, variables, { limit, pageSize?, signal? })` returns `{ rows, total, truncated }`, for one root `@connection` selecting
+  `PageInfo { TotalCount }`. The limit is required, and a missing total throws. It's a one-time read: watch a root for freshness.
+- Aliased counts, several counts in one document, and generated aggregates stay current like lists, on types the project made live. An aggregate whose
+  source entity the schema can't establish isn't covered: poll it.
+- A record can disappear under a mounted component. `useFragment(Fragment, ref, { deleted: "null" })` types that as `D | null`, so handle null before
+  reading fields. `store: { deletedRecords: "omit" }` drops missing rows from lists while the query re-reads. Both are opt-in.
+
+
+### Lifetime
+
+Declare generator `lifetimes` only when the service guarantees the field's meaning and format.
+Regenerate to adopt. Handle `QueryState.lifetime` (`expired` or `unknown`); unknown time values
+are not proved valid. See [lifetime](../../docs/design.md#lifetime-r17) for formats and diagnostics.
+
+### Persistence
+
+Use `persistClient` from `graphql-orm-client/persistence` only with an explicit identity key, generated
+`schemaHash` (enable generator `persistence: true`) and a deployment revision in `serverRelease`. Await `ready` before starting reads; show
+`QueryState.stale` until a network write confirms restored data. Dispose the client before an identity
+change. Sensitive operations and no-store mutation results are excluded automatically.
+See [persistence](../../docs/design.md#persistence-r17) for adapter, budget and failure semantics.
 
 ## Batched relation names
 

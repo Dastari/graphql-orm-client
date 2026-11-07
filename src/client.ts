@@ -1,4 +1,3 @@
-import { ephemeral, type EphemeralOptions, type EphemeralStream } from "./ephemeral.js"
 import { withoutErrorNulls } from "./partial.js"
 import { wasNotSent, writeStatus, type WriteOutcome } from "./outcome.js"
 import type { ConnectionSpec, FragmentArtifact, FragmentRefFor, LinkSelection, OperationArtifact, PagedSpec, Selection } from "./artifact.js"
@@ -72,6 +71,10 @@ export type MutationPolicy = "store" | "no-store"
 export type QueryStatus = "idle" | "loading" | "ready" | "refreshing" | "error"
 
 export interface QueryState<T> {
+  /** Restored data has not yet been confirmed by a network read. */
+  readonly stale?: boolean
+  /** Configured lifetime cannot be proved valid, or has expired. */
+  readonly lifetime?: "expired" | "unknown"
   readonly status: QueryStatus
   /** The root's own fields, with child fragments as masked references. */
   readonly data: T | undefined
@@ -86,6 +89,26 @@ export interface QueryState<T> {
   readonly listRefreshTruncated?: boolean
 }
 
+/** Node type selected by a root connection, preserving generated fragment references. */
+export type ReadAllRow<T> = T extends object ? { [K in keyof T]: T[K] extends { Edges: readonly { Node: infer N }[] } ? N : never }[keyof T] : never
+
+/** Options for `Client.execute`. */
+export interface ExecuteOptions {
+  signal?: AbortSignal
+  beforeWrite?: () => void
+  /** Internal loaded-range refresh; driven by the compiled connection and returned PageInfo. */
+  refreshConnection?: { loaded: number; pages: number; rows: number; onTruncated(value: boolean): void }
+  /**
+   * Read the response into a store of its own instead of the client's. Nothing reaches the
+   * client's store, its subscribers or its retention. The returned snapshot, and the fragment
+   * references in its data, read from that private store, which only the caller's result keeps
+   * alive. Mutations only (see `mutate`'s `policy: "no-store"`).
+   */
+  isolated?: boolean
+  observeResponse?: (response: GraphQLResponse) => void
+  beforeSend?: () => void
+}
+
 export interface ClientOptions {
   readonly network: Network
   /** Opt-in: error-associated nulls do not erase previous good fields. Default is legacy overwrite. */
@@ -97,6 +120,11 @@ export interface ClientOptions {
 }
 
 export interface PollingOptions {
+  /**
+   * `pollMs` on a query with no `@poll(reason)`. `error`, the default, throws outside production on a regenerated module, and otherwise
+   * warns and still polls. `warn` always warns, and `off` says nothing.
+   */
+  readonly undeclared?: "error" | "warn" | "off"
   /**
    * How often a query refetches when it shows `@live` records that no subscription covers: types
    * without a usable Changed subscription, records beyond a per-record cap, or a stream waiting out a
@@ -123,6 +151,18 @@ export interface WatchedQuery<T> {
   refetch(): Promise<void>
   /** Fetch the next page of the query's `@connection` list and append it. */
   loadMore(): Promise<void>
+}
+
+/** A route read started before mount. Dispose on abandoned navigation; mount with useLoadedQuery. */
+export interface LoadedQuery<T> extends WatchedQuery<T> {
+  /** Resolves after the first read; inspect getState().error for a read failure. Cancellation resolves quietly. */
+  readonly ready: Promise<void>
+  /** Identity owner, checked by the React binding. */
+  readonly client: Client
+  /** Retain while mounted, opening again if the load expired or its last user unmounted. The cleanup tolerates StrictMode effect replay. */
+  mount(): () => void
+  /** End this loader; it can't be mounted again. Idempotent. Without this, an unused loader only pauses. */
+  dispose(): void
 }
 
 /** Receives a plain subscription's events (`client.subscribe`). */
@@ -265,9 +305,12 @@ class QueryResource<T> implements WatchedQuery<T> {
     readonly key: string,
     private readonly policy: FetchPolicy
   ) {
+    client.store.configureLifetimes(artifact.lifetimes)
     const snapshot = client.store.lookup<T>(selectorOf(artifact, variables))
     const complete = !snapshot.missing && policy !== "network-only"
     this.state = {
+      stale: snapshot.stale,
+      lifetime: snapshot.lifetime,
       status: complete ? "ready" : "loading",
       data: complete ? snapshot.data : undefined,
       error: null,
@@ -275,7 +318,6 @@ class QueryResource<T> implements WatchedQuery<T> {
       hasMore: complete ? this.connection()?.hasMore ?? false : false,
       loadingMore: false,
     }
-    if (complete) this.watch(snapshot)
   }
 
   getState = (): QueryState<T> => this.state
@@ -291,9 +333,10 @@ class QueryResource<T> implements WatchedQuery<T> {
   open(): void {
     this.users += 1
     if (this.users > 1) return
+    if (this.state.status === "ready") this.watch(this.client.store.lookup<T>(selectorOf(this.artifact, this.variables)))
     this.release = this.client.store.retain(this.key, selectorOf(this.artifact, this.variables))
     if (this.artifact.lists) this.client.live?.holdLists(this.key, this.artifact.lists)
-    if (this.state.status !== "ready" || this.policy !== "store-or-network") void this.fetch()
+    if (this.state.stale || this.state.status !== "ready" || this.policy !== "store-or-network") void this.fetch()
     this.holdLive()
     this.schedulePoll()
   }
@@ -451,6 +494,8 @@ class QueryResource<T> implements WatchedQuery<T> {
           ...this.state,
           status: "ready",
           data: snapshot.data,
+          stale: snapshot.stale,
+          lifetime: snapshot.lifetime,
           error: null,
           errors,
           hasMore: this.connection()?.hasMore ?? false,
@@ -521,7 +566,7 @@ class QueryResource<T> implements WatchedQuery<T> {
     this.unsubscribeStore?.()
     this.holdLive()
     this.unsubscribeStore = this.client.store.subscribe(snapshot, (next) => {
-      this.set({ ...this.state, data: next.data as T, hasMore: this.connection()?.hasMore ?? false })
+      this.set({ ...this.state, data: next.data as T, stale: next.stale, lifetime: next.lifetime, hasMore: this.connection()?.hasMore ?? false })
       this.holdLive()
       // A record this query shows was deleted or collected: read it again from the server.
       if (next.missing && this.users > 0) {
@@ -906,8 +951,9 @@ export class Client {
     }
     const selector = selectorOf(artifact, variables)
     if ((options.policy ?? "store-or-network") === "store-or-network") {
+      this.store.configureLifetimes(artifact.lifetimes)
       const stored = this.store.lookup<T>(selector)
-      if (!stored.missing) return { data: stored.data, errors: [] }
+      if (!stored.missing && !stored.stale) return { data: stored.data, errors: [] }
     }
     const release = this.store.retain(`query:${queryKey(artifact, variables)}`, selector)
     try {
@@ -981,15 +1027,15 @@ export class Client {
     return stop
   }
 
-  /** Create a bounded, volatile stream. Call open() to subscribe and dispose() to erase it. */
-  stream<D, T, V extends Variables, C = unknown>(
-    artifact: OperationArtifact<D, V>, variables: V, options: EphemeralOptions<D, T, V, C>
-  ): EphemeralStream<T, C> {
+  /**
+   * For optional entry points built on the client: its live options, and a place to register something to end with its identity.
+   * Returns a function to remove that registration.
+   */
+  liveExtension(end: () => void): { readonly live: LiveOptions; remove(): void } {
     if (this.store.isDisposed) throw new Error("This client was disposed with its identity")
-    if (!this.rereadOptions) throw new Error("A stream requires live.subscribe")
-    const stream = ephemeral(artifact, variables, options, this.rereadOptions, () => this.subscriptions.delete(stream.dispose))
-    this.subscriptions.add(stream.dispose)
-    return stream
+    if (!this.rereadOptions) throw new Error("This needs live.subscribe")
+    this.subscriptions.add(end)
+    return { live: this.rereadOptions, remove: () => void this.subscriptions.delete(end) }
   }
 
   /**
@@ -1058,26 +1104,83 @@ export class Client {
     return connectionTailFrom
   }
 
+  /**
+   * Traverse one root @connection up to a required row limit. TotalCount must be selected.
+   * Pages have no shared snapshot: moving rows are deduplicated by opaque record identity,
+   * but concurrent writes can still cause omissions. The total is the last page's exact count.
+   */
+  async readAll<T, V extends Variables>(artifact: OperationArtifact<T, V>, variables: V,
+    options: { limit: number; pageSize?: number; signal?: AbortSignal }
+  ): Promise<{ rows: ReadAllRow<T>[]; total: number; truncated: boolean }> {
+    if (!Number.isSafeInteger(options.limit) || options.limit <= 0) throw new Error("readAll requires a positive integer limit")
+    const pageSize = options.pageSize ?? options.limit
+    if (!Number.isSafeInteger(pageSize) || pageSize <= 0) throw new Error("readAll pageSize must be a positive integer")
+    const roots = artifact.normalization.filter((s): s is LinkSelection => s.kind === "link" && !!s.connection)
+    if (artifact.kind !== "query" || roots.length !== 1) throw new Error("readAll requires exactly one root @connection")
+    const root = roots[0]!, spec = root.connection!
+    const arg = root.args.find(a => a.name === spec.paging[0])
+    if (arg?.kind !== "variable" || !spec.limit) throw new Error("readAll requires a compiled variable page input with a limit")
+    const link = (selections: readonly Selection[], name: string) => selections.find((s): s is LinkSelection => s.kind === "link" && s.fieldName === name)
+    const info = link(root.selections, spec.pageInfo), edges = link(root.selections, spec.edges)
+    const total = info?.selections.find(s => s.kind === "scalar" && s.fieldName === "TotalCount")
+    const node = edges && link(edges.selections, spec.node)
+    const moreField = info?.selections.find(s => s.kind === "scalar" && s.fieldName === spec.hasNextPage)
+    const cursorField = info?.selections.find(s => s.kind === "scalar" && s.fieldName === spec.endCursor)
+    if (!info || !edges || !node || !total || total.kind !== "scalar") throw new Error("readAll requires Node and PageInfo.TotalCount selections")
+    if (!moreField || moreField.kind !== "scalar" || (!spec.offset && !cursorField)) throw new Error("readAll requires selected continuation PageInfo fields")
+    const rows = new Map<string, ReadAllRow<T>>()
+    let next: Variables = { ...variables, [arg.variable]: { ...(variables[arg.variable] as object), [spec.limit]: Math.min(options.limit, pageSize), ...(spec.offset ? { [spec.offset]: 0 } : { [spec.after]: null }) } }
+    let offset = 0
+    const cursors = new Set<unknown>()
+    for (;;) {
+      const result = await this.executeResponse(artifact, next as V, { signal: options.signal })
+      if (result.errors.length) throw new OperationError(artifact.name, result.errors)
+      const connection = result.response[root.responseKey] as Record<string, any>
+      const page = connection?.[info.responseKey]
+      const count = page?.[total.responseKey]
+      if (!Number.isSafeInteger(count) || count < 0) throw new Error("readAll requires an exact TotalCount from the server")
+      const batch = connection[edges.responseKey] as Record<string, any>[]
+      const snapshot = (result.snapshot.data as any)[root.responseKey]
+      const normalized = new Map<string, ReadAllRow<T>>()
+      for (const edge of snapshot[edges.responseKey]) {
+        const row = edge?.[node.responseKey]
+        const id = refData(row)?.id ?? (row && identify(row, artifact.keys ?? {}))
+        if (id) normalized.set(id, row)
+      }
+      for (const edge of batch) {
+        const row = edge[node.responseKey]
+        const id = row && identify(row, artifact.keys ?? {})
+        if (!id || !normalized.has(id)) throw new Error("readAll requires normalised node identity")
+        if (rows.size < options.limit || rows.has(id)) rows.set(id, normalized.get(id)!)
+      }
+      const more = page[moreField.responseKey]
+      if (typeof more !== "boolean") throw new Error("readAll requires HasNextPage from the server")
+      if (!more || rows.size >= options.limit) return { rows: [...rows.values()], total: count, truncated: more || count > rows.size }
+      if (!batch.length) throw new Error("readAll pagination made no progress")
+      offset += batch.length
+      const cursor = cursorField?.kind === "scalar" ? page[cursorField.responseKey] : null
+      if (!spec.offset && (cursor == null || cursors.has(cursor))) throw new Error("readAll pagination cursor made no progress")
+      cursors.add(cursor)
+      next = { ...next, [arg.variable]: { ...(next[arg.variable] as object), [spec.limit]: Math.min(options.limit - rows.size, pageSize), ...(spec.offset ? { [spec.offset]: offset } : { [spec.after]: cursor }) } }
+    }
+  }
+
   /** Send an operation and write its response into the store. */
   async execute<T = unknown, V extends Variables = Variables>(
     artifact: OperationArtifact<T, V>,
     variables: V,
-    options: {
-      signal?: AbortSignal
-      beforeWrite?: () => void
-      /** Internal loaded-range refresh; driven by the compiled connection and returned PageInfo. */
-      refreshConnection?: { loaded: number; pages: number; rows: number; onTruncated(value: boolean): void }
-      /**
-       * Read the response into a store of its own instead of the client's. Nothing reaches the
-       * client's store, its subscribers or its retention. The returned snapshot, and the fragment
-       * references in its data, read from that private store, which only the caller's result keeps
-       * alive. Mutations only (see `mutate`'s `policy: "no-store"`).
-       */
-      isolated?: boolean
-      observeResponse?: (response: GraphQLResponse) => void
-      beforeSend?: () => void
-    } = {}
+    options: ExecuteOptions = {}
   ): Promise<{ snapshot: Snapshot<T>; errors: readonly GraphQLErrorLike[] }> {
+    const { snapshot, errors } = await this.executeResponse(artifact, variables, options)
+    return { snapshot, errors }
+  }
+
+  /** `execute`, also returning the response's data as the server sent it. */
+  private async executeResponse<T = unknown, V extends Variables = Variables>(
+    artifact: OperationArtifact<T, V>,
+    variables: V,
+    options: ExecuteOptions = {}
+  ): Promise<{ snapshot: Snapshot<T>; errors: readonly GraphQLErrorLike[]; response: Record<string, unknown> }> {
     if (this.store.isDisposed) throw new Error("This client was disposed with its identity")
     if (options.isolated && artifact.kind !== "mutation")
       throw new Error(`${artifact.name} is not a mutation; only mutations can skip the store`)
@@ -1121,6 +1224,7 @@ export class Client {
       if (artifact.sensitive) return {
         snapshot: { data: response.data as T, missing: false, seen: new Set(), selector: selectorOf(artifact, variables) },
         errors,
+        response: response.data,
       }
       const rootId = artifact.kind === "query" ? ROOT_ID : `client:${artifact.kind}:${++this.mutationCount}`
       const target = options.isolated ? new Store() : this.store
@@ -1128,7 +1232,7 @@ export class Client {
       target.publish()
       const snapshot = target.lookup<T>(selectorOf(artifact, variables, rootId))
       if (rootId !== ROOT_ID) target.delete(rootId)
-      return { snapshot, errors }
+      return { snapshot, errors, response: response.data }
     } finally {
       options.signal?.removeEventListener("abort", abort)
       this.controllers.delete(controller)
@@ -1146,6 +1250,14 @@ export class Client {
   ): WatchedQuery<T> & { open(): void; close(): void } {
     if (artifact.sensitive) throw new Error(`${artifact.name}: @sensitive queries use client.query; watched results retain values`)
     const { policy = "store-and-network", pollMs } = typeof options === "string" ? { policy: options } : options
+    if (pollMs !== undefined && !artifact.pollReason?.trim()) {
+      const message = `Operation ${artifact.name}: pollMs needs @poll(reason: "why polling is needed") on the query. Add it and regenerate, or set polling.undeclared.`
+      const setting = this.polling.undeclared ?? "error"
+      // A build can't see a runtime option, so this is what finds it. It stays out of production and modules generated before the
+      // rule existed (no `lists`), because a working page mustn't crash on upgrade.
+      if (setting === "error" && artifact.lists !== undefined && !isProduction()) throw new Error(message)
+      if (setting !== "off") console.warn(message)
+    }
     const key = `${queryKey(artifact, variables)}:${policy}`
     let resource = this.resources.get(key) as QueryResource<T> | undefined
     if (!resource) {
@@ -1169,7 +1281,10 @@ export class Client {
         shared.open()
       },
       close: () => {
-        if (!opened) return
+        if (!opened) {
+          if (shared.users === 0 && this.resources.get(key) === shared) this.resources.delete(key)
+          return
+        }
         opened = false
         shared.removePoll(token)
         shared.close()
@@ -1191,6 +1306,75 @@ export class Client {
   ): PagedQuery<T, V> {
     const { pageIndex = 0, pageSize = pageSizeOf(artifact, variables), ...watch } = options
     return new PagedQueryResource<T, V>(this, artifact, variables, pageIndex, pageSize, watch)
+  }
+
+  /**
+   * Start a route read before mount. Shares a store-or-network read for equal artifacts/variables.
+   * Lists open their stream before this read (R3), even before mount; an unused loader closes after timeoutMs (default 30 seconds)
+   * and reopens if it's mounted later. Pass the router's abort signal and dispose on abandonment; a disposed loader can't be mounted.
+   * Mount through useLoadedQuery; do not pass this result to useQuery.
+   */
+  loadQuery<T, V extends Variables>(
+    artifact: OperationArtifact<T, V>, variables: V,
+    options: { signal?: AbortSignal; timeoutMs?: number } = {}
+  ): LoadedQuery<T> {
+    const timeoutMs = options.timeoutMs ?? 30_000
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new RangeError("loadQuery timeoutMs must be positive and finite")
+    const watched = this.watchQuery(artifact, variables, "store-or-network")
+    let disposed = false
+    let open = false
+    let finishCancellation!: () => void
+    const cancelled = new Promise<void>(resolve => { finishCancellation = resolve })
+    let mounts = 0
+    let timer: ReturnType<typeof setTimeout> | undefined
+    // Nobody is using it for now: an expired load, or the last unmount. A later mount opens it again, because a handle can
+    // outlive this, as when a slow route chunk takes longer than timeoutMs or a parent remounts.
+    const idle = () => {
+      if (!open) return
+      open = false
+      clearTimeout(timer)
+      this.subscriptions.delete(dispose)
+      watched.close()
+    }
+    const dispose = () => {
+      if (disposed) return
+      disposed = true
+      finishCancellation()
+      options.signal?.removeEventListener("abort", dispose)
+      idle()
+    }
+    const start = () => {
+      open = true
+      this.subscriptions.add(dispose)
+      watched.open()
+    }
+    const loaded: LoadedQuery<T> = {
+      ...watched, client: this,
+      ready: Promise.resolve(),
+      dispose,
+      mount: () => {
+        if (disposed || this.store.isDisposed) throw new Error(`${artifact.name}: route load was disposed; start a new loadQuery`)
+        clearTimeout(timer)
+        if (!open) start()
+        mounts += 1
+        let released = false
+        return () => {
+          if (released) return
+          released = true
+          mounts -= 1
+          // React replays effects synchronously. Keep the read and stream across that replay.
+          queueMicrotask(() => { if (mounts === 0) idle() })
+        }
+      },
+    }
+    if (options.signal?.aborted || this.store.isDisposed) { dispose(); return loaded }
+    options.signal?.addEventListener("abort", dispose, { once: true })
+    timer = setTimeout(idle, timeoutMs)
+    timer.unref?.()
+    start()
+    // open starts the request; refetch joins it, except for an already complete cached read.
+    if (!disposed) Object.assign(loaded, { ready: watched.getState().status === "ready" ? Promise.resolve() : Promise.race([watched.refetch(), cancelled]) })
+    return loaded
   }
 
   /** Start a query before rendering (from a route loader). Resolves when the data is stored. */
@@ -1353,8 +1537,12 @@ export class Client {
   }
 }
 
+function isProduction(): boolean {
+  return typeof process !== "undefined" && process.env?.NODE_ENV === "production"
+}
+
 function defaultDiagnostic(diagnostic: LiveDiagnostic): void {
-  if (typeof process !== "undefined" && process.env?.NODE_ENV === "production") return
+  if (isProduction()) return
   console.warn(diagnostic.message)
 }
 
@@ -1382,8 +1570,13 @@ export function fragmentSelector(fragment: FragmentArtifact<any, any>, ref: unkn
 
 /**
  * Read a fragment's own fields through a reference. A plain function, so adapters and mappers
- * can call it; components that should re-render use `useFragment` instead.
+ * can call it; components that should re-render use `useFragment` instead. `{ deleted: "null" }` types a
+ * deleted or missing record as null; a live record's data is unchanged.
  */
+export function readFragment<D = Record<string, unknown>, N extends string = string>(
+  fragment: FragmentArtifact<D, N>, ref: FragmentRefFor<N> | null | undefined,
+  options: { deleted: "null" }
+): D | null
 export function readFragment<D = Record<string, unknown>, N extends string = string>(
   fragment: FragmentArtifact<D, N>,
   ref: FragmentRefFor<N>
@@ -1392,10 +1585,11 @@ export function readFragment<D = Record<string, unknown>, N extends string = str
   fragment: FragmentArtifact<D, N>,
   ref: FragmentRefFor<N> | null | undefined
 ): D | null
-export function readFragment(fragment: FragmentArtifact<any, any>, ref: unknown): unknown {
+export function readFragment(fragment: FragmentArtifact<any, any>, ref: unknown, options?: { deleted: "null" }): unknown {
   if (ref === null || ref === undefined) return null
   const { store, selector } = fragmentSelector(fragment, ref)
-  return store.lookup(selector).data
+  const data = store.lookup(selector).data
+  return options?.deleted === "null" ? data ?? null : data
 }
 
 const defaultActive = () => typeof document === "undefined" || document.visibilityState !== "hidden"

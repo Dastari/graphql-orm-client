@@ -9,7 +9,7 @@ screen.
 > **Status: early alpha.** The compiler, the normalised store, the React bindings and the live
 > layer, cursor and offset pagination, page-number navigation, optimistic mutations, polling, plain
 > subscriptions and the generator with TypeScript types all work and are tested. Real applications
-> use it, and APIs may still change. Live updates are opt-in per fragment (`@live`) and have known
+> use it, and APIs may still change. Live updates default to explicit per-fragment opt-in (`@live`) and have known
 > limits: see [the requirements](docs/requirements.md).
 
 ## Why not Apollo or Relay
@@ -30,13 +30,17 @@ catalogue. This client is built on those guarantees.
 | Stage | What happens |
 | --- | --- |
 | Component | Declares a fragment on the type it renders and reads it with `useFragment`. It only sees the fields it asked for (data masking). |
-| Route root | Owns one query that spreads its children's fragments. A route loader can prefetch it before rendering, so there is no request waterfall. |
+| Route root | Owns one query that spreads its children's fragments. A browser route loader starts it with `client.loadQuery`; `useLoadedQuery` consumes the same read. |
 | Compiler | `graphql-orm-client generate` turns every root into a flattened query, a sha256 hash of its text, a normalisation map, per-fragment readers and, for fragments marked `@live`, a subscription document. |
 | Store | Keeps records by `NodeId` (type name plus complete key), orders writes by record version and retains by reference count. |
 | Live layer | Subscribes to the generated `Changed` events for the records held through `@live` fragments and writes each event's entity into the store. Polling is a fallback for records no subscription covers. |
 
 Read [the design](docs/design.md) for the full model and [the graphql-orm
 contract](docs/graphql-orm-contract.md) for what the server must provide.
+
+Browser route loaders return `client.loadQuery(Query, variables, { signal })`; components read the
+handle with `useLoadedQuery` from the React subpath. Dispose abandoned navigations. Unmounted
+loads expire after 30 seconds. See [route loading and server shells](docs/design.md#route-loading-r18).
 
 ## Generate
 
@@ -131,7 +135,7 @@ An application coming from Apollo will find `skip`, `refetch(variables)`, fetch 
 abort signals, `client.query`, `client.subscribe`, `useSubscription` and `refetchQueries`; the
 [design](docs/design.md#coming-from-apollo) maps each Apollo option.
 
-For progress, AI text deltas, terminal output and search results, use `client.stream` and React's
+For progress, AI text deltas, terminal output and search results, use `createStream` from `graphql-orm-client/streams` and React's
 `useEphemeralStream`. A required buffer limit bounds memory; sequence and resume declarations enable
 de-duplication and reconnect replay when the service supports it. Gaps, evictions and unprovable
 continuity are explicit. These values never enter the store. See [ephemeral streams](docs/design.md#ephemeral-streams-r11).
@@ -150,6 +154,10 @@ can't be known at build time. It runs introspection and subscriptions only. Use 
 real frames (refusal, lost events, schema reload, socket failure) and a clock the test drives, so an
 application can test its own freshness with no server. See the
 [data skill](skills/graphql-orm-client-data/SKILL.md#testing).
+
+Opt-in lifetime policies and identity-scoped persistence are documented in the
+[design](docs/design.md#lifetime-r17). Persistence uses the separate `graphql-orm-client/persistence`
+entry point and requires an explicit identity key, schema hash and server release identifier.
 
 ## For agents
 
@@ -172,3 +180,11 @@ pnpm exec graphql-orm-client skills install --target claude   # or agents / code
 ## Licence
 
 MIT
+
+Generation enforces explicit live stream availability and declared polling reasons. Optional
+`queryOwners` and `subscriptionPaths` globs enforce project ownership. See the
+[policy settings and migration controls](docs/design.md#project-build-policies-r5).
+
+The generator keeps `live: "explicit"` by default. `"default"` or
+`{ "default": ["src/area/**"] }` is opt-in, not recommended by default.
+Use `@live(enabled: false)` to opt out; see [live settings](docs/design.md#live-generation-setting-r1).

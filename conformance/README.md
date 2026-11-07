@@ -15,7 +15,7 @@ CONFORMANCE_SCRATCH=/path/outside/checkout pnpm conformance
 Set `CHROME` to an existing Chromium executable. A missing executable prints
 `NOT RUN`, not a pass; CI requires Chromium. A present executable that cannot launch
 fails the run. `PORT_BASE` defaults to 42000 and must reserve five ports within
-42000–42099 (or the reserved task range 41800–41899). Runs are serial. Use a different base for concurrent invocations.
+42000–42099. Runs are serial. Use a different base for concurrent invocations.
 The runner creates its own temporary directory if `CONFORMANCE_SCRATCH` is absent.
 Keep it to reuse Cargo output. Each invocation gets a separate runtime subdirectory. Check free disk first: allow at least 10 GB for a cold
 build. Manifests, binaries, schema snapshots, descriptors, browser bundles and
@@ -35,6 +35,8 @@ a computed Summary and a hand-written computed RecordVersion. The second subgrap
 is deliberately a small Node federation extension, owning Widget.RemoteName through
 the NodeId key and Vendor.RemoteName through the persisted Id key. The latter is
 admitted and resolved per event; the NodeId-key variant follows NodeId's admission (see below). The source of entity events and all database writes is the Rust ORM.
+
+R18 also preloads a query and mounts its handle later, asserting one HTTP read through the real router.
 
 R13 seeds 200 Ticket/Vendor pairs and reads their related names through masked fragments.
 The HTTP bridge counts requests forwarded to the real router: two parent pages and two
@@ -91,3 +93,22 @@ all 64 recovery cases and seven doctor verdicts, took 121.8 seconds on the final
 (an earlier complete run took 111 seconds). The workflow's
 20-minute timeout allows for slower runners and downloads. GitHub Actions has not
 been observed; these are local measurements.
+
+R1 generates a default-mode project against the real schema, verifies Widget stream updates and
+health, and that a keyless value type (the real PageInfo) stays out of it and doesn't poll. A keyed type with no stream is covered by mock tests: the service has none. The existing real 33-operation test pins router capacity.
+
+## Bounded reads, aggregates and deleted references
+
+R14 checks bounded and complete `readAll` traversal against the generated offset connection.
+R15 holds two aliased count roots (including an aliased total) and a generated aggregate,
+creates a row through a separate request, and waits for all three totals to advance.
+The fixture opts Widget into generated aggregates; its existing row policy declares unrestricted
+read visibility. R16 enables preimage delivery, holds a fragment reference, deletes its row
+through the router, and checks the store, nullable fragment read and refreshed list.
+React's still-mounted-row case runs in the unit suite; the router case uses the core reader.
+
+R17 adds explicit String lifetime expiry and holder re-reads against the real service. The test
+uses `Widget.Name` as an explicitly configured unix-seconds field for that scenario only; it does
+not infer lifetime from a name or require server lifetime metadata. Chromium also exercises the
+IndexedDB adapter across a page reload, stale restoration, identity separation and sensitive-result
+exclusion. The application supplies the test schema/release envelope identifiers.

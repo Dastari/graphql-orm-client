@@ -4,12 +4,12 @@ Status: partly built. Implemented and tested:
 - the compiler (`compile` from `graphql-orm-client/compiler`);
 - NodeId;
 - the store: normalisation, version ordering, masked reads, subscriptions, retention and garbage collection, disposal;
-- `Client`: `execute`, `watchQuery`, `watchPagedQuery`, `preload`, `query`, `mutate`, `subscribe`
+- `Client`: `execute`, `watchQuery`, `watchPagedQuery`, `preload`, `loadQuery`, `query`, `mutate`, `subscribe`
   and `refetchQueries`;
 - transport: `createHttpNetwork` (GraphQL over HTTP) and `graphqlWsTransport` (a graphql-ws
   client for the live layer);
 - `readFragment`;
-- React: `ClientProvider`, `useQuery`, `usePagedQuery`, `useFragment`, `useFragmentList`,
+- React: `ClientProvider`, `useQuery`, `useLoadedQuery`, `usePagedQuery`, `useFragment`, `useFragmentList`,
   `useMutation` and `useSubscription`;
 - the live layer: `compile(...).live`, `LiveManager`, `createClient({ live })`, and opt-in back-off for refused streams;
 - the generator: `graphql-orm-client generate` with `--check`. It emits typed artifacts, masked
@@ -20,8 +20,8 @@ Status: partly built. Implemented and tested:
 - optimistic mutations, `no-store` mutations, interval polling, and the live polling fallback;
 - `@refetchable` fragments: `client.refetchFragment` and `useRefetchableFragment`.
 
-Proposed, not built: persistence, per-type
-`staleMs`/`expiresField` policy, the `scope` store option, sending operations by persisted hash,
+Proposed, not built: per-type
+`staleMs` policy, the `scope` store option, sending operations by persisted hash,
 batching writes per tick, refetching a parent on a `PROPAGATED` event, response size and time limits,
 and marking records stale after a failed lookup. Sections below label these. What the client still
 needs is in [requirements.md](requirements.md).
@@ -68,17 +68,80 @@ const CatalogPageQuery = graphql(`
   }
 `)
 
-// Route loader: start the request before rendering.
-loader: ({ context, deps }) => context.client.preload(CatalogPageQuery, { Where: deps.where })
+// Browser route loader: return the handle without awaiting ready.
+loader: ({ context, deps, signal }) =>
+  context.client.loadQuery(CatalogPageQuery, { Where: deps.where }, { signal })
 
 function CatalogPage() {
-  const { data } = useQuery(CatalogPageQuery, useLoaderDeps())
+  const { data } = useLoadedQuery(useLoaderData())
   return data?.Widgets.Edges.map((edge) => <WidgetRow key={edge.Node.Id} widget={edge.Node} />)
 }
 ```
 
 `useFragment` returns only the fragment's own fields. A child's fields are hidden behind its
 fragment reference (data masking), so a parent cannot come to depend on them by accident.
+
+### Route loading (R18)
+
+`client.loadQuery(Query, variables, { signal?, timeoutMs? })` starts a retained read immediately,
+with no component mounted. Return its handle from the browser router loader and pass it to
+`useLoadedQuery(handle)` under the same `ClientProvider`. This hook returns `QueryState` and does
+not suspend. `handle.ready` resolves after the first read; inspect the state for errors. Equal query
+hashes and variables share a `store-or-network` resource. Mounting a completed or in-flight handle
+sends no additional request. The same handle can serve several components. Effect cleanup waits one
+microtask, so StrictMode's synchronous cleanup/setup replay neither aborts the read nor churns streams.
+A real unmount closes after that microtask. A later mount opens it again, because a handle can outlive that, as when a parent remounts. Only `dispose()` or the abort signal ends it for good; then start a new load.
+
+Pass the router's cancellation signal and call `handle.dispose()` when abandoning a navigation.
+Cancellation is quiet, including transports that return after abort; identity disposal clears the store
+synchronously and rejects late responses. An unmounted loader closes after 30 seconds by default, and opens again if it's mounted later;
+`timeoutMs` must be positive and finite. Adjust it for slow navigation. Mount cancels that deadline.
+Disposal releases retention; records then follow the configured store retention/garbage collection.
+The handle itself should be dropped by the router when the navigation ends.
+
+R3 list interest opens **before** the loader's first read, even if nobody mounts. Deferring the stream
+until mount would create a new read/subscribe gap for the preloaded list. Cancellation or the unused-load
+deadline closes this interest automatically. R4 confirming reads, reconnect recovery and live events
+may still cause additional requests; "one read" means no duplicate caused by mounting, not disabling
+freshness. There is still no server subscribe acknowledgement, and the router can drop frames (#359).
+`@sensitive` reads reject before loading because a watch retains results; use `client.query` instead.
+
+Migration is opt-in per route: replace `preload` plus `useQuery` with `loadQuery` plus
+`useLoadedQuery`, forward cancellation, and handle `idle`, `loading` and `error` states. The old
+`preload` remains an awaitable warm-up that closes on completion. A subsequent default `useQuery`
+uses `store-and-network` and may read again. Its legacy StrictMode effect replay can restart a request;
+the loader hook avoids that. Suspense is not implemented.
+
+### Conditional selections and fragment arguments
+
+Fragment-local `@argumentDefinitions`/`@arguments` are not implemented and fail compilation with a
+specific error. Route operations already own their variables and build-time composition; introducing
+local defaults and argument substitution would require distinct fragment reference identities and
+reader variable scopes. Use operation variables rather than silently losing those scopes.
+
+`@skip` and `@include` are rejected at build time by default, on fields, spreads and inline fragments,
+including live fragments. Previously the wire query preserved the directive, but normalisation and
+read selections did not represent its condition: an omitted field read as missing, generated types
+required it, and flattened live projections could select it unconditionally. This is unsafe and is
+not conditional-selection support. `conditionalDirectives: "legacy"` in generator config (or compile
+options) temporarily preserves that previous behaviour for migration. Split conditional selections
+into separate route roots, remove the setting and regenerate. Proper variable-aware conditional
+readers, optional generated fields and stream projections remain proposed. The hook's `skip` option
+skips a whole operation and is unaffected.
+
+### Framework server shells
+
+Server rendering data is a non-goal: no result streaming and no serialised store handoff.
+Entry points import in Node without `window` or `document`. A server shell may render
+`ClientProvider` and `useQuery`; it returns `idle` and starts no read, retention, stream or timer.
+The query server snapshot is also `idle` during hydration, so the browser first hydrates the same
+shell, then observes/loads client data. Create the browser client and invoke browser loaders there;
+do not invoke `loadQuery` from a server loader (it deliberately starts I/O). Do not share identity
+clients between server requests. `useLoadedQuery` also supplies an idle server snapshot, but creating
+its handle is an explicit I/O action. Fragment hooks require real fragment references; omit data
+subtrees from the server shell. No per-render query resources are registered by default shell rendering. Migration: render an idle
+placeholder on server and browser; `useQuery(..., { serverSnapshot: "legacy" })` temporarily restores
+the old server snapshot and resource registration. Remove it after adopting the idle shell.
 
 ### View-model fragments
 
@@ -176,36 +239,9 @@ them, so going back within that period needs no request.
 
 ### Cache policy
 
-Only `retainMs` is built. Everything else in this section is proposed: passing `scope`, `types` or
-`persistence` today is a type error, and lifetime fields are not honoured (R17). Until then, one
-client per identity gives the same isolation: dispose it when the identity changes.
-
-```ts
-const client = createClient({
-  network: createHttpNetwork({ url: "/api/graphql" }),
-  store: {
-    retainMs: 5 * 60_000,
-    // Proposed from here: scope, per-type policy and persistence.
-    scope: identityKey,            // a change disposes the store synchronously
-    types: {
-      Widget: { staleMs: 30_000 },
-      PriceList: { staleMs: 5 * 60_000 },
-      Invitation: { expiresField: "ExpiresAt" },
-    },
-    persistence: null,             // or indexedDbPersistence({ name, maxBytes })
-  },
-  live: { artifacts: live, ...graphqlWsTransport(ws) },
-  polling: { liveFallbackMs: 30_000 },
-})
-```
-
-- **`staleMs`.** How long a record counts as fresh. Reading a stale record serves it from the
-  cache and refetches it in the background.
-- **`expiresField`.** A lifetime field. The store drops the record when it expires, because
-  `Changed` fires on writes, not on clock expiry. Once graphql-orm publishes lifetime metadata
-  in the schema, the compiler will fill this in.
-- **`persistence`.** Optional IndexedDB storage for offline start. Persisted data is keyed by
-  identity scope and cleared when the scope changes.
+`store.retainMs` controls retention. Lifetime and persistence are opt-in; see the R17 sections
+below. One client belongs to one identity: dispose it before exposing a new identity's client.
+Per-type `staleMs` and automatic `store.scope` switching remain proposed.
 
 ### Query states
 
@@ -280,7 +316,7 @@ how to narrow it:
 
 The payload's entity field is found by type (`Widget` in `WidgetChangedEvent`), and its action
 by name. Types with `@live` fragments but no usable subscription are listed in
-`compile(...).liveUnavailable`, and their holders must poll. `client.live.status()` reports
+`compile(...).liveUnavailable` when compilation succeeds (R5 requires an explicit polling reason or lowered strictness); their holders poll. `client.live.status()` reports
 per-type counts, including overflow beyond the `key`-mode limit. A `DELETED` event removes the
 record, and any query that showed it reads again, unless its change kind is `PROPAGATED` (see above).
 
@@ -507,7 +543,8 @@ await client.mutate(RenameWidgetMutation, { Id: id, Name: name }, {
 ## Polling
 
 - **Fixed intervals.** `watchQuery(..., { pollMs })` and `useQuery(..., { pollMs })` refetch on
-  an interval while that handle is open. Each handle's interval lasts until it closes, and the
+  an interval while that handle is open. The query must declare `@poll(reason: "...")`;
+  undeclared intervals fail unless `polling.undeclared` is `"warn"` or `"off"`. Each handle's interval lasts until it closes, and the
   shortest open interval wins; in React, a new `pollMs` (or none) replaces the old one.
 - **Live fallback.** A query that shows `@live` records no subscription covers polls every
   `polling.liveFallbackMs` (default 30 s; `null` turns it off). That covers types with no usable
@@ -683,8 +720,8 @@ fragments.
   outgoing identity.
 - Proposed: bounding responses by size and time. `createHttpNetwork` sets no limit; pass a wrapped
   `fetch` for one.
-- Proposed: persisted data is per identity scope and is never read across scopes. Nothing is persisted
-  today.
+- Opt-in persistence is keyed by an explicit identity and deleted on client disposal. It does not
+  encrypt storage; use a storage adapter appropriate to the data and threat model.
 - The client does not authorise anything. A denied field or record arrives as the server
   decides (null or error), and the client stores exactly that.
 - A record lookup can fail with "not current" or "unavailable" (a stale row, or a source that
@@ -715,8 +752,8 @@ those runs; each timing in each run is itself the median of five samples.
 | 100-event burst wall time (ms) | 32.552 | 750 |
 | 100-event subscriber notifications | 100 | 100 |
 | 45,000-line schema + 250 documents (ms) | 694 | 5,000 |
-| Main standalone raw bundle (bytes) | 49,423 | 60,000 |
-| Main standalone gzip bundle (bytes) | 15,889 | 20,000 |
+| Main standalone raw bundle (bytes) | 55,626 | 65,000 |
+| Main standalone gzip bundle (bytes) | 17,910 | 21,000 |
 | React standalone raw bundle (bytes) | 6,969 | 10,000 |
 | React standalone gzip bundle (bytes) | 2,836 | 4,000 |
 
@@ -750,8 +787,7 @@ memory, browser RSS, GPU memory and server cost. It does not establish a bound o
 application or on other devices.
 
 The compile, main and react rows were measured again on 2026-11-07 after R2, R3 and R4; the rest are from the first run. Those three
-changes took the main bundle from 39,582 to 49,423 bytes. They also took the marginal JS heap per window on a CI runner from about 7.0 MB to
-about 11.5 MB, with 10,000 rows per window. That is within its limit and not yet explained.
+changes took the main bundle from 39,582 to 49,423 bytes. The marginal JS heap per window is unchanged, at about 7.1 MB with 10,000 rows per window. It looked like 11.5 MB for a while, because the budget measured with R4's confirming read still in flight; it now waits for that to finish.
 
 A nested compile for each live type used to re-extend the whole schema, which took the compile from 7.6 s to about 24 s while staying under
 the then limit of 30 s. The extended schema is now cached per schema, and the 5 s limit is what guards it.
@@ -818,10 +854,10 @@ the directive from the wire document. Results are plain values with fragment sel
 they carry no fragment references and cannot be opened by `readFragment`. No store (including
 a private store), retention or inspector receives the result. Existing matching entities remain
 unchanged, just as with mutation `policy: "no-store"`. That older option still supports private
-fragment reads. Sensitive queries use imperative `client.query`; watched queries and preload
+fragment reads. Sensitive queries use imperative `client.query`; watched queries, preload and loadQuery
 reject them because those retain results. Sensitive mutations reject optimistic responses.
 Live fragments anywhere in a sensitive operation, and operation-level `@live`, fail the build.
-Persistence is proposed (R17); it must exclude these results. Callers own the returned values
+Persistence excludes these results. Callers own the returned values
 and must avoid logging or retaining secrets themselves. No server change is required.
 
 ### Write certainty (R10)
@@ -892,7 +928,7 @@ No real refused-write signal or committed read-back denial was produced; those c
 cases use mocks. The fixture's public mutation succeeded without an authorization header.
 ## Ephemeral streams (R11)
 
-`client.stream(subscription, variables, options)` creates a framework-agnostic handle for progress,
+`createStream(client, subscription, variables, options)`, from `graphql-orm-client/streams` so it stays out of the main bundle, creates a framework-agnostic handle for progress,
 AI text deltas, terminal output and search results. It uses `live.subscribe`, as plain subscriptions
 do, but bypasses normalization entirely. Nothing enters the store or persistence. Call `open()`
 to start and `dispose()` to stop and synchronously erase the buffer and cursor. The client owns
@@ -900,7 +936,7 @@ all handles, including unopened ones, and disposes them on `client.dispose()`. I
 must dispose the old client before creating the next one, as with query data.
 
 ```ts
-const output = client.stream(OutputSubscription, {}, {
+const output = createStream(client, OutputSubscription, {}, {
   select: data => data.output,
   bufferSize: 2000,
   sequence: {
@@ -963,6 +999,191 @@ adds 3,613 raw / 1,151 gzip bytes to main and 127 / 37 to React (source and buil
 slightly). The command failed the unrelated compiler timing budget: median 41,678.8 ms exceeded
 30,000 ms. Window measurements were explicitly skipped, so that portion is incomplete. No limits
 were raised and this is not a full budget pass.
+
+## Project build policies (R5)
+
+Built. `strict` in the generator config accepts `liveWithoutStream`, `pollWithoutReason`,
+`rawSubscriptions` and `queryOwnership`, each `"error"` (default), `"warn"` or `"off"`.
+An explicit `@live` fragment with no usable stream must remove `@live` or declare
+`@poll(reason: "why polling is needed")`. Reasons must be non-empty and are recorded on artifacts.
+`liveUnavailable` remains available when a policy is downgraded or polling is declared.
+
+Set `queryOwners: ["src/routes/**", "src/dialogs/**", "src/adapters/**"]` to restrict query documents;
+windows, pickers and other project owners can have their own paths. `subscriptionPaths` similarly
+restricts raw subscription documents. Both checks are disabled when their setting is absent.
+Globs use config-relative source document paths with `/`, `*`, `**` and `?`; brace/extglob syntax
+is unsupported. All files declaring identical text are checked. Programmatic compilation can pass
+`documentPaths` (document text to file paths); without it diagnostics name the GraphQL source or
+`<document N>` and configured path policies cannot match unknown paths.
+
+`pollMs` is a runtime option, including through hooks, so a build can't see it. Declare it instead:
+`query Name @poll(reason: "...") { ... }`. An undeclared `pollMs` throws from `watchQuery` outside production, on a regenerated module, so
+development and tests find it. In production, and on a module generated before this release, it warns and still polls, because a working
+page mustn't crash on upgrade. `polling.undeclared: "warn" | "off"` on the client relaxes this. `strict.pollWithoutReason` covers an empty
+reason at build time. Fallback polling is reported through health and needs no declaration. The escape for a raw subscription is
+`createStream` from `graphql-orm-client/streams` (R11).
+
+## Live generation setting (R1)
+
+Built. The generator and `compile` default to `live: "explicit"`: only `@live` fragments request
+streams. `live: "default"` is opt-in, not recommended by default; the owner must decide before
+the package default changes. It makes object fragments live without a directive.
+`live: { "default": ["src/area/**"] }` enables that behaviour only for matching fragment document
+source files, relative to the config directory. It matches the fragment's file, not a spreading query's.
+Plain-string `compile(schema, sources)` keeps its explicit behaviour; pass `documentPaths` when
+using area mode programmatically. Unknown files do not match area globs.
+
+`@live(enabled: false)` opts a fragment out in every mode; `@live` and `@live(enabled: true)` opt in.
+An implicit live fragment with no usable stream warns, appears in `liveUnavailable`, and uses the
+normal fallback interval (30 seconds unless changed); health reports `no-stream` and polling, or
+unavailable if fallback is disabled. Explicit `@live` on that type follows R5's error policy.
+Only fragments on object types with a key become implicitly live. A keyless value type has no identity and no stream, and its data comes with its parent, so it stays as it is. Abstract fragments need explicit intent.
+Lists open streams only for types with a live fragment somewhere in the project. Default mode
+widens that set; an opted-out fragment does not disable another live fragment of the same type.
+
+Migration: keep `"explicit"` to retain current stream scope. Opt in per area, regenerate, and inspect
+`liveUnavailable` and `client.liveHealth()`. More live types use more operations: the router's default
+32-operation connection budget still applies; capacity refusals remain visible and uncovered data polls.
+No setting overrides server admission or guarantees every burst event arrives.
+
+R1 validation: the generated default-mode project updates a directive-free Widget fragment from
+a real stream and reports PageInfo polling with `no-stream`, against graphql-orm 0.90.1/router
+0.8.1. Mock tests cover versions, reconnect refetch, collection, identity disposal, source-area
+globs and 40 live types at a simulated 32-operation limit. Router configuration source at both
+0.90.1 and 0.93.0 sets that default limit to 32; this change did not run conformance on 0.93.0.
+
+## Bounded read-all (R14)
+
+`client.readAll(Query, variables, { limit, pageSize?, signal? })` returns `{ rows, total, truncated }`.
+Use exactly one root `@connection`, a variable page input and select `Edges { Node { ...Row } }`
+and `PageInfo { TotalCount }`. The positive integer limit is required; optional positive `pageSize` caps each request. Missing metadata or
+an absent/null total throws; totals are never inferred. Rows are normalised and deduplicated
+by opaque identity. Offset traversal advances by returned edge count; keyset traversal follows
+`PageInfo.EndCursor` while `HasNextPage` is true. Empty continuing pages or repeated cursors
+fail rather than loop. Pages have no shared snapshot: concurrent movement may omit rows.
+`total` is the exact total returned by the last page, not a snapshot-wide guarantee.
+Abort and identity disposal cancel traversal. This is a one-time read; watch a root for freshness.
+
+## Generated aggregates and counts (R15)
+
+Aliased count-only connections and multiple counts in one document use the same R3 list
+refresh path. Generated aggregates return arrays of `GraphqlAggregateResultRow`, with
+`Groups` and `Metrics` containing nullable `Field`, `Operator`, `Value` strings and a
+non-null `Kind` enum. Values stay exact strings; the generator preserves aliases and nullability.
+Read from graphql-orm tags 0.90.1 and 0.93.0: aggregate roots are opt-in (`aggregate = true`),
+accept generated Where, GroupBy, Metrics and GroupLimit inputs, and read their declared entity.
+The compiler matches the aggregate's input object types to connection-root inputs and derives
+the entity from `Edges.Node`. Exactly one candidate is required, and only project-live types
+enter `OperationArtifact.lists`. Shared result type or operation naming alone cannot establish
+entity ownership. With no matching connection, missing filter inputs, or several candidate
+entities, SDL is insufficient: no aggregate stream coverage is claimed. Poll explicitly.
+Proposed server contract: publish aggregate source entity metadata in the served schema.
+
+## Deleted records (R16)
+
+A direct `DELETED` removes the held store record and triggers its owning roots to re-read.
+Confirmed in React: a still-mounted row's `useFragment` returns null during the reread and
+after the response excludes it. `readFragment` also returns null. Legacy non-null signatures
+do not describe this state safely. Migrate by passing `{ deleted: "null" }` as the third
+argument to both functions: the return type becomes `D | null`; render a placeholder or
+return null before reading fields. Live-record fields and fragment masking stay unchanged.
+Null means unavailable (deleted, collected, disposed, or a missing record), not proof of a
+delete or permission to infer an empty result.
+
+Opt in to `createClient({ ..., store: { deletedRecords: "omit" } })` and regenerate.
+Readers omit missing direct list members and compiled connection edges with missing nodes
+while the owning root refreshes. The record is removed from storage immediately; stale
+connection references are replaced by the next read and collected normally. Totals still
+come from the server, so they may lag until the reread. Without this setting legacy list
+shape remains unchanged. Components holding old references must still handle null.
+`DELETED` with `PROPAGATED` retains the parent and re-reads its roots (graphql-orm 0.93.0).
+On both server tags read (0.90.1 and 0.93.0), without a preimage grant direct deletes send
+nothing: lists correct on their next delivered event or poll. A stream alone cannot promise
+instant delete visibility. Pages have no shared snapshot. Deletes carry no retained version tombstone: a late
+response can restore a removed row, even when that response carries a record version,
+because the deleted record no longer supplies a version to compare. Re-reading after
+reconnect remains necessary. Without a version, ordinary writes use last-arrival-wins.
+
+## Lifetime (R17)
+
+Lifetime is opt-in. Generator `lifetimes: { Widget: { field: "Expires", format: "unix-seconds" } }`
+selects that scalar in reads and carries the policy in artifacts. No field name implies expiry.
+`StoreOptions.lifetimes` accepts the same declaration for direct store writers. Regenerate to adopt;
+projects without a declaration keep their current behaviour. The available representations are
+`unix-seconds` (number or decimal text), `rfc3339` (explicit zone required), and `sqlite-utc`
+(an explicit service guarantee that SQLite's zone-less datetime text means UTC).
+
+Expired records read as missing, with `Snapshot.lifetime` and `QueryState.lifetime` set to `expired`;
+watched holders re-read. A fragment whose own record has expired reads null, like a missing record. Unknown or absent time values remain visible with lifetime `unknown` and
+emit `StoreOptions.onDiagnostic` code `LIFETIME_UNKNOWN`. They are neither expired nor proved valid.
+A null lifetime is unknown, not an infinite lease. Calendar dates are validated before parsing.
+The store uses one expiry timer, rechecking at the nearest deadline, capped at 2,147,483,647 ms.
+Expiry does not delete records or synthesize Changed events; normal version ordering and retention
+still apply. Disposal clears the timer and records. Browser clock correctness is a consumer dependency.
+
+## Persistence (R17)
+
+Import `persistClient` and optionally `indexedDBAdapter` from `graphql-orm-client/persistence`.
+Attach once to a fresh client, before starting reads, and await `ready` to draw restored data:
+
+```ts
+import { persistClient, indexedDBAdapter } from "graphql-orm-client/persistence"
+import { schemaHash } from "./graphql/generated"
+
+const persistence = persistClient(client, {
+  adapter: indexedDBAdapter(),
+  identityKey: signedInIdentityKey,
+  schemaHash,
+  serverRelease: deploymentRevision,
+  onDiagnostic: diagnostic => report(diagnostic),
+})
+await persistence.ready
+```
+
+The adapter interface is async `get(key): string | null`, `set(key, string)` and `delete(key)`.
+There is no default identity: absent or empty `identityKey` disables all storage access. Include
+authorization scope in that key. To change identity, dispose the old client synchronously before
+creating a new client; changing an application variable does not change an existing client's identity.
+Do not attach two persistence controllers to the same client. The adapter must make writes atomic.
+
+Windows of one identity share a key, because each has its own store (R19). The last write wins, which costs only staleness, since restored data is re-read. But disposing a client deletes the key, so a pop-out window calling `dispose()` on close deletes what the main window saved, until its next write. Dispose on an identity change, not on window close.
+
+Envelopes contain format version, package version, schema hash, server release and identity.
+Any mismatch is diagnosed and deleted, with no migration. Generator setting `persistence: true` exports `schemaHash`, a
+SHA-256 of printed schema SDL; a consumer can also supply its tracked R23 snapshot hash consistently.
+The application must supply `serverRelease` and change it on every deployment affecting the API.
+Neither SDL nor operation hashes can detect a release with unchanged schema. The client cannot
+detect a misreported release. Connections and their cursors are restored only under an exact
+release match; none cross a declared release. Storage remains local to the adapter and identity.
+
+Restored snapshots set `stale: true` in QueryState and Snapshot until network writes reach their
+records. Cache-first watched queries fetch on open; imperative queries bypass restored cache hits.
+Restore only inserts absent records, so reads and live events arriving during restore always win,
+including unversioned writes. Normal version ordering applies after restore; without a version,
+arrival order wins. Restoration does not set last-read times or confirm a live stream.
+
+Sensitive and no-store results never enter this store and cannot reach persistence. Active optimistic
+layers postpone the entire snapshot until rollback/confirmation, so unconfirmed values never persist.
+Writers that put secrets directly into the shared store are responsible for those values.
+
+Writes coalesce for `throttleMs` (250 ms by default). `flush()` awaits restore and a pending snapshot;
+call it before navigation when persistence matters. The default `maxBytes` is 1 MiB of UTF-8 JSON,
+applied before parse and before writes. Oversized snapshots delete the previous stored payload.
+Malformed records, envelope mismatches, storage unavailability and quota failures report
+`PERSISTENCE_*` diagnostics and never fail a query. Diagnostic callbacks cannot break persistence.
+The budget bounds accepted payloads, not an adapter's allocation before returning a value.
+
+Disposal erases memory immediately, cancels pending writes and queues deletion after any in-flight
+write. A late restore cannot repopulate disposed memory, and a late write cannot survive the queued
+delete. Adapter failures can prevent physical deletion and are diagnosed; isolation still holds in
+memory. Adapter operations must eventually settle. Abrupt page closure preserves a snapshot for the
+next load; explicit disposal deletes it. Tabs are independent; there is no cross-tab synchronization
+or transaction ordering between different adapter instances.
+
+R17 bundle measurement (minified standalone ESM closure, external peers, gzip level 9):
+main 59,593 bytes / 19,175 gzip, versus 55,720 / 17,995 before R17 (+3,873 / +1,180).
+The separate persistence entry is 3,354 / 1,562 bytes and imports no runtime code from main.
+The main growth is lifetime evaluation plus store hooks for stale restoration and optimistic safety.
 
 ## Batched relation reads (R13)
 

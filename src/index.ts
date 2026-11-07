@@ -27,6 +27,7 @@ export {
 } from "./client.js"
 export type {
   ClientOptions,
+  LoadedQuery,
   FetchPolicy,
   GraphQLErrorLike,
   GraphQLResponse,
@@ -36,6 +37,7 @@ export type {
   PagedQuery,
   PagedState,
   PollingOptions,
+  ReadAllRow,
   QueryState,
   QueryStatus,
   SubscriptionObserver,
@@ -55,3 +57,5 @@ export { markNotSent } from "./outcome.js"
 export type { WriteOutcome, WriteStatus } from "./outcome.js"
 
 export { errorsAtPath } from "./partial.js"
+
+export type { LifetimePolicy, LifetimeState } from "./store/lifetime.js"

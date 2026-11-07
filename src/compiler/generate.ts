@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto"
+import { printSchema } from "graphql"
 import {
   Kind,
   getNamedType,
@@ -20,6 +22,8 @@ import type { Selection } from "../artifact.js"
 import { CompileError, compile, type CompileOptions } from "./compile.js"
 
 export interface GenerateOptions extends CompileOptions {
+  /** Emit a schema fingerprint for opt-in persistence; schema changes then affect --check. */
+  readonly persistence?: boolean
   /** TypeScript types for custom scalars, e.g. `{ DateTime: "string", JSON: "unknown" }`. */
   readonly scalars?: Readonly<Record<string, string>>
   /** Module the generated file imports runtime types from. Default `graphql-orm-client`. */
@@ -197,11 +201,15 @@ export function generate(schema: GraphQLSchema, sources: readonly string[], opti
     "",
     ...[...named.values()].filter(Boolean).sort(),
     "",
+    ...(options.persistence ? [
+      `/** Schema fingerprint for persistence envelopes. */`,
+      `export const schemaHash = ${JSON.stringify(createHash("sha256").update(printSchema(schema)).digest("hex"))}`,
+    ] : []),
     ...lines,
     "",
     `/** Live subscriptions per type; pass to createClient({ live: { artifacts: live, ... } }). */`,
     `export const live = ${JSON.stringify(compiled.live)} as unknown as Readonly<Record<string, LiveArtifact>>`,
-    `/** Types with @live fragments but no usable Changed subscription; their holders must poll. */`,
+    `/** Types with live fragments but no usable Changed subscription; their holders must poll. */`,
     `export const liveUnavailable: readonly string[] = ${JSON.stringify(compiled.liveUnavailable)}`,
     "",
     `const documents: Record<string, unknown> = {`,
