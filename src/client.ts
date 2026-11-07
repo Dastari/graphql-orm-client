@@ -72,6 +72,8 @@ export type MutationPolicy = "store" | "no-store"
 export type QueryStatus = "idle" | "loading" | "ready" | "refreshing" | "error"
 
 export interface QueryState<T> {
+  /** Restored data has not yet been confirmed by a network read. */
+  readonly stale?: boolean
   /** Configured lifetime cannot be proved valid, or has expired. */
   readonly lifetime?: "expired" | "unknown"
   readonly status: QueryStatus
@@ -267,9 +269,11 @@ class QueryResource<T> implements WatchedQuery<T> {
     readonly key: string,
     private readonly policy: FetchPolicy
   ) {
+    client.store.configureLifetimes(artifact.lifetimes)
     const snapshot = client.store.lookup<T>(selectorOf(artifact, variables))
     const complete = !snapshot.missing && policy !== "network-only"
     this.state = {
+      stale: snapshot.stale,
       lifetime: snapshot.lifetime,
       status: complete ? "ready" : "loading",
       data: complete ? snapshot.data : undefined,
@@ -296,7 +300,7 @@ class QueryResource<T> implements WatchedQuery<T> {
     if (this.users > 1) return
     this.release = this.client.store.retain(this.key, selectorOf(this.artifact, this.variables))
     if (this.artifact.lists) this.client.live?.holdLists(this.key, this.artifact.lists)
-    if (this.state.status !== "ready" || this.policy !== "store-or-network") void this.fetch()
+    if (this.state.stale || this.state.status !== "ready" || this.policy !== "store-or-network") void this.fetch()
     this.holdLive()
     this.schedulePoll()
   }
@@ -451,6 +455,7 @@ class QueryResource<T> implements WatchedQuery<T> {
           ...this.state,
           status: "ready",
           data: snapshot.data,
+          stale: snapshot.stale,
           lifetime: snapshot.lifetime,
           error: null,
           errors,
@@ -522,7 +527,7 @@ class QueryResource<T> implements WatchedQuery<T> {
     this.unsubscribeStore?.()
     this.holdLive()
     this.unsubscribeStore = this.client.store.subscribe(snapshot, (next) => {
-      this.set({ ...this.state, data: next.data as T, lifetime: next.lifetime, hasMore: this.connection()?.hasMore ?? false })
+      this.set({ ...this.state, data: next.data as T, stale: next.stale, lifetime: next.lifetime, hasMore: this.connection()?.hasMore ?? false })
       this.holdLive()
       // A record this query shows was deleted or collected: read it again from the server.
       if (next.missing && this.users > 0) {
@@ -904,8 +909,9 @@ export class Client {
     }
     const selector = selectorOf(artifact, variables)
     if ((options.policy ?? "store-or-network") === "store-or-network") {
+      this.store.configureLifetimes(artifact.lifetimes)
       const stored = this.store.lookup<T>(selector)
-      if (!stored.missing) return { data: stored.data, errors: [] }
+      if (!stored.missing && !stored.stale) return { data: stored.data, errors: [] }
     }
     const release = this.store.retain(`query:${queryKey(artifact, variables)}`, selector)
     try {

@@ -20,7 +20,7 @@ Status: partly built. Implemented and tested:
 - optimistic mutations, `no-store` mutations, interval polling, and the live polling fallback;
 - `@refetchable` fragments: `client.refetchFragment` and `useRefetchableFragment`.
 
-Proposed, not built: persistence, per-type
+Proposed, not built: per-type
 `staleMs` policy, the `scope` store option, sending operations by persisted hash,
 batching writes per tick, refetching a parent on a `PROPAGATED` event, response size and time limits,
 and marking records stale after a failed lookup. Sections below label these. What the client still
@@ -176,36 +176,9 @@ them, so going back within that period needs no request.
 
 ### Cache policy
 
-Only `retainMs` is built. Everything else in this section is proposed: passing `scope`, `types` or
-`persistence` today is a type error, and lifetime fields are not honoured (R17). Until then, one
-client per identity gives the same isolation: dispose it when the identity changes.
-
-```ts
-const client = createClient({
-  network: createHttpNetwork({ url: "/api/graphql" }),
-  store: {
-    retainMs: 5 * 60_000,
-    // Proposed from here: scope, per-type policy and persistence.
-    scope: identityKey,            // a change disposes the store synchronously
-    types: {
-      Widget: { staleMs: 30_000 },
-      PriceList: { staleMs: 5 * 60_000 },
-      Invitation: { expiresField: "ExpiresAt" },
-    },
-    persistence: null,             // or indexedDbPersistence({ name, maxBytes })
-  },
-  live: { artifacts: live, ...graphqlWsTransport(ws) },
-  polling: { liveFallbackMs: 30_000 },
-})
-```
-
-- **`staleMs`.** How long a record counts as fresh. Reading a stale record serves it from the
-  cache and refetches it in the background.
-- **`expiresField`.** A lifetime field. The store drops the record when it expires, because
-  `Changed` fires on writes, not on clock expiry. Once graphql-orm publishes lifetime metadata
-  in the schema, the compiler will fill this in.
-- **`persistence`.** Optional IndexedDB storage for offline start. Persisted data is keyed by
-  identity scope and cleared when the scope changes.
+`store.retainMs` controls retention. Lifetime and persistence are opt-in; see the R17 sections
+below. One client belongs to one identity: dispose it before exposing a new identity's client.
+Per-type `staleMs` and automatic `store.scope` switching remain proposed.
 
 ### Query states
 
@@ -683,8 +656,8 @@ fragments.
   outgoing identity.
 - Proposed: bounding responses by size and time. `createHttpNetwork` sets no limit; pass a wrapped
   `fetch` for one.
-- Proposed: persisted data is per identity scope and is never read across scopes. Nothing is persisted
-  today.
+- Opt-in persistence is keyed by an explicit identity and deleted on client disposal. It does not
+  encrypt storage; use a storage adapter appropriate to the data and threat model.
 - The client does not authorise anything. A denied field or record arrives as the server
   decides (null or error), and the client stores exactly that.
 - A record lookup can fail with "not current" or "unavailable" (a stale row, or a source that
@@ -821,7 +794,7 @@ unchanged, just as with mutation `policy: "no-store"`. That older option still s
 fragment reads. Sensitive queries use imperative `client.query`; watched queries and preload
 reject them because those retain results. Sensitive mutations reject optimistic responses.
 Live fragments anywhere in a sensitive operation, and operation-level `@live`, fail the build.
-Persistence is proposed (R17); it must exclude these results. Callers own the returned values
+Persistence excludes these results. Callers own the returned values
 and must avoid logging or retaining secrets themselves. No server change is required.
 
 ### Write certainty (R10)
@@ -974,9 +947,71 @@ projects without a declaration keep their current behaviour. The available repre
 (an explicit service guarantee that SQLite's zone-less datetime text means UTC).
 
 Expired records read as missing, with `Snapshot.lifetime` and `QueryState.lifetime` set to `expired`;
-watched holders re-read. Unknown or absent time values remain visible with lifetime `unknown` and
+watched holders re-read. A fragment whose own record has expired reads null, like a missing record. Unknown or absent time values remain visible with lifetime `unknown` and
 emit `StoreOptions.onDiagnostic` code `LIFETIME_UNKNOWN`. They are neither expired nor proved valid.
 A null lifetime is unknown, not an infinite lease. Calendar dates are validated before parsing.
 The store uses one expiry timer, rechecking at the nearest deadline, capped at 2,147,483,647 ms.
 Expiry does not delete records or synthesize Changed events; normal version ordering and retention
 still apply. Disposal clears the timer and records. Browser clock correctness is a consumer dependency.
+
+## Persistence (R17)
+
+Import `persistClient` and optionally `indexedDBAdapter` from `graphql-orm-client/persistence`.
+Attach once to a fresh client, before starting reads, and await `ready` to draw restored data:
+
+```ts
+import { persistClient, indexedDBAdapter } from "graphql-orm-client/persistence"
+import { schemaHash } from "./graphql/generated"
+
+const persistence = persistClient(client, {
+  adapter: indexedDBAdapter(),
+  identityKey: signedInIdentityKey,
+  schemaHash,
+  serverRelease: deploymentRevision,
+  onDiagnostic: diagnostic => report(diagnostic),
+})
+await persistence.ready
+```
+
+The adapter interface is async `get(key): string | null`, `set(key, string)` and `delete(key)`.
+There is no default identity: absent or empty `identityKey` disables all storage access. Include
+authorization scope in that key. To change identity, dispose the old client synchronously before
+creating a new client; changing an application variable does not change an existing client's identity.
+Do not attach two persistence controllers to the same client. The adapter must make writes atomic.
+
+Envelopes contain format version, package version, schema hash, server release and identity.
+Any mismatch is diagnosed and deleted, with no migration. Generator setting `persistence: true` exports `schemaHash`, a
+SHA-256 of printed schema SDL; a consumer can also supply its tracked R23 snapshot hash consistently.
+The application must supply `serverRelease` and change it on every deployment affecting the API.
+Neither SDL nor operation hashes can detect a release with unchanged schema. The client cannot
+detect a misreported release. Connections and their cursors are restored only under an exact
+release match; none cross a declared release. Storage remains local to the adapter and identity.
+
+Restored snapshots set `stale: true` in QueryState and Snapshot until network writes reach their
+records. Cache-first watched queries fetch on open; imperative queries bypass restored cache hits.
+Restore only inserts absent records, so reads and live events arriving during restore always win,
+including unversioned writes. Normal version ordering applies after restore; without a version,
+arrival order wins. Restoration does not set last-read times or confirm a live stream.
+
+Sensitive and no-store results never enter this store and cannot reach persistence. Active optimistic
+layers postpone the entire snapshot until rollback/confirmation, so unconfirmed values never persist.
+Writers that put secrets directly into the shared store are responsible for those values.
+
+Writes coalesce for `throttleMs` (250 ms by default). `flush()` awaits restore and a pending snapshot;
+call it before navigation when persistence matters. The default `maxBytes` is 1 MiB of UTF-8 JSON,
+applied before parse and before writes. Oversized snapshots delete the previous stored payload.
+Malformed records, envelope mismatches, storage unavailability and quota failures report
+`PERSISTENCE_*` diagnostics and never fail a query. Diagnostic callbacks cannot break persistence.
+The budget bounds accepted payloads, not an adapter's allocation before returning a value.
+
+Disposal erases memory immediately, cancels pending writes and queues deletion after any in-flight
+write. A late restore cannot repopulate disposed memory, and a late write cannot survive the queued
+delete. Adapter failures can prevent physical deletion and are diagnosed; isolation still holds in
+memory. Adapter operations must eventually settle. Abrupt page closure preserves a snapshot for the
+next load; explicit disposal deletes it. Tabs are independent; there is no cross-tab synchronization
+or transaction ordering between different adapter instances.
+
+R17 bundle measurement (minified standalone ESM closure, external peers, gzip level 9):
+main 59,593 bytes / 19,175 gzip, versus 55,720 / 17,995 before R17 (+3,873 / +1,180).
+The separate persistence entry is 3,354 / 1,562 bytes and imports no runtime code from main.
+The main growth is lifetime evaluation plus store hooks for stale restoration and optimistic safety.

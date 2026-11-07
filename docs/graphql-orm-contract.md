@@ -101,3 +101,12 @@ The client can only prove a write's outcome from what the server says. Today tha
 A dedicated `extensions.outcome: "refused" | "failed"` is a proposed addition. The client already reads it, but no graphql-orm
 version sends it (read from `graphql-orm-v0.93.0`). Until one does, a refused write that executed shows as `unconfirmed`.
 
+
+### Persistence release identity (R17)
+
+Requested: a stable server deployment/release identifier available to clients, changing whenever
+cursor interpretation may change. No such generic identifier was found in the entity/protocol
+source at graphql-orm 0.90.1 or 0.93.0. Schema hashes alone cannot detect unchanged-SDL releases.
+Until this exists, persistence requires an application-supplied `serverRelease`; an envelope mismatch
+discards all connections and cursors along with records. The client cannot detect an incorrectly
+reused deployment identifier.

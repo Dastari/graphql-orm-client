@@ -172,7 +172,8 @@ graphql-orm 0.93.0) keeps the record and re-reads its holders.
 
 **R17. Lifetime and persistence.** Lifetime is built, opt-in through explicit generated field and format policies. Expired records
 read as missing and holders re-read; ambiguous values report unknown lifetime with a diagnostic.
-Persistence is being implemented with the roadmap's persistence phase. Persistence is scoped to identity,
+Persistence is built as an opt-in separate entry point with explicit identity, schema and deployment
+release envelopes, stale restoration, bounded coalesced writes and diagnostic-only storage failures. Persistence is scoped to identity,
 excludes R9, and is disposed with the identity. A cursor is never persisted across a server release:
 a stale keyset cursor can be accepted at the wrong place.
 

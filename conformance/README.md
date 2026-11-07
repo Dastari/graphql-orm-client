@@ -87,3 +87,9 @@ all 64 recovery cases and seven doctor verdicts, took 121.8 seconds on the final
 (an earlier complete run took 111 seconds). The workflow's
 20-minute timeout allows for slower runners and downloads. GitHub Actions has not
 been observed; these are local measurements.
+
+R17 adds explicit String lifetime expiry and holder re-reads against the real service. The test
+uses `Widget.Name` as an explicitly configured unix-seconds field for that scenario only; it does
+not infer lifetime from a name or require server lifetime metadata. Chromium also exercises the
+IndexedDB adapter across a page reload, stale restoration, identity separation and sensitive-result
+exclusion. The application supplies the test schema/release envelope identifiers.

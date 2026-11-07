@@ -39,3 +39,19 @@ it("reports unknown lifetime without guessing and collects expired retained grap
  const release=store.retain("root",{id:ROOT_ID,selections:[],variables:{},fragments:{}});release()
  await vi.advanceTimersByTimeAsync(10);expect(store.size).toBe(0);store.dispose()
 })
+it("shares a timer across records and wakes safely for far-future expiries",async()=>{
+ vi.useFakeTimers();vi.setSystemTime(0)
+ const store=new Store({lifetimes:{Widget:{field:'Expires',format:'unix-seconds'}}})
+ for(const [id,time] of [['soon','1'],['later','9000000000']]) {
+  const record=store.getOrCreate(id!,'Widget');store.setField(record,'Expires',time)
+ }
+ store.publish();expect(vi.getTimerCount()).toBe(1)
+ const selector={id:'soon',selections:[],variables:{},fragments:{}}
+ const onChange=vi.fn();store.subscribe(store.lookup(selector),onChange)
+ await vi.advanceTimersByTimeAsync(1000)
+ expect(store.lookup(selector)).toMatchObject({data:null,missing:true,lifetime:'expired'})
+ expect(onChange).toHaveBeenCalledTimes(1);expect(vi.getTimerCount()).toBe(1)
+ await vi.advanceTimersByTimeAsync(2147483647)
+ expect(store.lifetime('later')).toBe('valid');expect(vi.getTimerCount()).toBe(1)
+ store.dispose();expect(vi.getTimerCount()).toBe(0)
+})

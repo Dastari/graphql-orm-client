@@ -1,6 +1,6 @@
 ---
 name: graphql-orm-client-data
-description: Keep regenerated lists and counts current with list streams and bounded loaded-page refresh; use full/thin stream projections and bounded holder re-reads (minRereadMs); Write components with graphql-orm-client fragments and route roots, page through tables by number (@paged, usePagedQuery), load more (@connection), refetch, run mutations (including one-time secrets with `no-store`) and plain subscriptions, and port Apollo queries without request waterfalls or over-fetching, and test components against a mock network, scripted streams and a controllable clock (graphql-orm-client/test); declare sensitive operations (@sensitive), get honest write outcomes (mutateOutcome) and show partial results per path (errorsAtPath).
+description: Write fragments, route roots, pagination, mutations, sensitive operations and subscriptions; handle lifetime and restored stale data, configure identity-scoped persistence, and test data flows with the mock network and streams.
 ---
 
 # Fragments, roots, pagination and mutations
@@ -167,3 +167,11 @@ delete visibility when polling is disabled. See docs/design.md, List streams (R3
 Declare generator `lifetimes` only when the service guarantees the field's meaning and format.
 Regenerate to adopt. Handle `QueryState.lifetime` (`expired` or `unknown`); unknown time values
 are not proved valid. See [lifetime](../../docs/design.md#lifetime-r17) for formats and diagnostics.
+
+### Persistence
+
+Use `persistClient` from `graphql-orm-client/persistence` only with an explicit identity key, generated
+`schemaHash` (enable generator `persistence: true`) and a deployment revision in `serverRelease`. Await `ready` before starting reads; show
+`QueryState.stale` until a network write confirms restored data. Dispose the client before an identity
+change. Sensitive operations and no-store mutation results are excluded automatically.
+See [persistence](../../docs/design.md#persistence-r17) for adapter, budget and failure semantics.

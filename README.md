@@ -151,6 +151,10 @@ real frames (refusal, lost events, schema reload, socket failure) and a clock th
 application can test its own freshness with no server. See the
 [data skill](skills/graphql-orm-client-data/SKILL.md#testing).
 
+Opt-in lifetime policies and identity-scoped persistence are documented in the
+[design](docs/design.md#lifetime-r17). Persistence uses the separate `graphql-orm-client/persistence`
+entry point and requires an explicit identity key, schema hash and server release identifier.
+
 ## For agents
 
 Start with [`AGENTS.md`](AGENTS.md) and [`llms.txt`](llms.txt). Install the bundled skills into a

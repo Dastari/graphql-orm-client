@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add `graphql-orm-client/persistence`: async adapters, a thin IndexedDB adapter, identity/release
+  envelopes, bounded coalesced writes and stale restoration. Import `persistClient` explicitly and
+  provide identityKey, schemaHash and serverRelease to adopt. Set generator `persistence: true` and regenerate for the exported schemaHash.
+  Dispose the old client before changing identity; disposal also deletes its persisted snapshot.
+
 - Opt-in generated lifetime field and format policies, expiry notifications and holder re-reads.
   Regenerate with `lifetimes` to adopt; no configuration preserves existing behaviour.
 
