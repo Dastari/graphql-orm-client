@@ -65,6 +65,10 @@
     "./streams": {
       "types": "./dist/ephemeral.d.ts",
       "import": "./dist/ephemeral.js"
+    },
+    "./read-all": {
+      "types": "./dist/read-all.d.ts",
+      "import": "./dist/read-all.js"
     }
   },
   "peerDependencies": {

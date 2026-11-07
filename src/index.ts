@@ -37,13 +37,13 @@ export type {
   PagedQuery,
   PagedState,
   PollingOptions,
-  ReadAllRow,
   QueryState,
   QueryStatus,
   SubscriptionObserver,
   WatchOptions,
   WatchedQuery,
 } from "./client.js"
+export type { ReadAllRow } from "./read-all.js"
 export { HttpError, createHttpNetwork, graphqlWsSubscribe, graphqlWsTransport } from "./transport.js"
 export type { ReadCause, LiveDiagnostic, LiveHealth, LiveReason, LiveSocketState, LiveState, LiveTypeHealth } from "./health.js"
 export type { GraphQLWsClientLike, HttpNetworkOptions } from "./transport.js"

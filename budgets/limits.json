@@ -71,13 +71,13 @@
     },
     "mainRawBytes": {
       "max": 65000,
-      "measured": 55626,
-      "margin": "Minified standalone entry closure, external peers. Was 60000. Streams moved to their own entry to stay under it; R18, R17 and R13 still to land bring this to about 61400. Growth past this needs a reason."
+      "measured": 59388,
+      "margin": "Minified standalone entry closure, external peers. Streams and readAll have their own entries to stay under this. The burst read brings it to about 62500. Growth past this needs a reason."
     },
     "mainGzipBytes": {
       "max": 21000,
-      "measured": 17910,
-      "margin": "Gzip of the same closure. Was 20000; reset with the raw limit. R18, R17 and R13 bring this to about 19600."
+      "measured": 19014,
+      "margin": "Gzip of the same closure. The burst read brings it to about 20000."
     },
     "reactRawBytes": {
       "max": 10000,
