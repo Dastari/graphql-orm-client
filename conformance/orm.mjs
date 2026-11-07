@@ -129,7 +129,7 @@ function pass(label){passed++;console.log(`PASS ${label}`)}
 try {
  await listen(front,base+3)
  await listen(remote,base+4)
- child(process.env.SERVICE_BIN,[],{SERVICE_PORT:String(base+1)})
+ child(process.env.SERVICE_BIN,[],{SERVICE_PORT:String(base+1),SERVICE_DATABASE:`sqlite://${scratch}/service.db?mode=rwc`})
  await until('service ready',async()=>{try{originalSdl=await(await fetch(`${serviceUrl}/sdl`)).text();originalDescriptor=await(await fetch(`${serviceUrl}/.well-known/graphql-router`)).json();return true}catch{return false}})
  await writeFile(`${scratch}/router.json`,JSON.stringify({listener:`127.0.0.1:${base+2}`,graphqlPath:'/graphql',nodeLookup:{},authentication:{jwksUrl:`${frontUrl}/jwks`,issuer:'https://conformance.local',audiences:['graphql-router'],allowInsecureLoopbackJwks:true},subscriptions:{maxOperationsPerConnection:32},schemaPollIntervalMs:200,gracefulShutdownTimeoutSeconds:1,subgraphs:[{name:'widgets',graphqlUrl:`${serviceUrl}/graphql`,sdlUrl:`${frontUrl}/sdl`,protocolUrl:`${frontUrl}/.well-known/graphql-router`},{name:'remote',graphqlUrl:`${remoteUrl}/graphql`,sdlUrl:`${remoteUrl}/sdl`,protocolUrl:`${remoteUrl}/.well-known/graphql-router`}]}))
  await startRouter()
