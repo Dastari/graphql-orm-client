@@ -204,6 +204,13 @@ handoff. See [route loading](design.md#route-loading-r18) for lifecycle and migr
 store per window. The owner decided to keep that for now; R22 measures the cost, including pop-out tool
 windows.
 
+**R26. Typed errors.** An application tells one failure from another by meaning, not by matching message text: a stale
+version, an expired cursor, a missing or invisible row, a masked internal error, an outage, a connection with no response, and a
+code it doesn't know, which it must handle. *Built:* `classifyError` and `classifyErrors` map graphql-orm's `OrmErrorCode` values
+and the router's codes to an `ErrorKind`, with `unknown` for anything else. Missing on the server: a generated result's
+`Success: false` carries only free text (`Error: "Entity not found"`); requested as
+[graphql-orm#385](https://github.com/Dastari/graphql-orm/issues/385).
+
 ## 4. Proving it
 
 **R20. A test kit.** `graphql-orm-client/test`: a mock transport keyed by operation name that validates

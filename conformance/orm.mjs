@@ -14,7 +14,7 @@ import { WebSocket } from 'ws'
 import { createClient as createWs } from 'graphql-ws'
 import { buildSchema, execute, parse, print, buildClientSchema, getIntrospectionQuery } from 'graphql'
 import { compile } from '../dist/compiler/index.js'
-import { createClient, createHttpNetwork, graphqlWsTransport, encodeNodeId, readFragment } from '../dist/index.js'
+import { classifyError, createClient, createHttpNetwork, graphqlWsTransport, encodeNodeId, readFragment } from '../dist/index.js'
 
 const scratch = process.env.CONFORMANCE_SCRATCH
 const base = Number(process.env.PORT_BASE ?? 42000)
@@ -335,6 +335,27 @@ try {
   list.close();client.dispose();await socket.dispose()
   for (const id of ['ks-a','ks-b','ks-c','ks-d']) await post(`mutation { DeleteWidget(Id: "${id}") { Success } }`)
   pass('a keyset list loaded in three pages refreshes in one request, and a row created inside it appears')
+ }
+ // Real errors through the router classify by their code, not their text.
+ {
+  const ops=compile(schema,[
+   `mutation Stale($Id: String!, $Name: String!, $Expected: Int) { UpdateWidget(Id: $Id, Input: {Name: $Name}, ExpectedVersion: $Expected) { Success Widget { Id Name RecordVersion } } }`,
+   `query BadCursor($Page: KeysetPageInput!) { WidgetsKeyset(Page: $Page) { Edges { Node { Id } } } }`,
+  ]).operations
+  const client=createClient({network:createHttpNetwork({url:routerUrl,headers})})
+  const kind=async(promise)=>{ const error=await promise.then(()=>null,e=>e); assert(error,'expected a failure'); const c=classifyError(error); console.log(`  classified ${c.kind} ${c.code} ${JSON.stringify(c.message)}`); return c }
+  await post('mutation { CreateWidget(Input: {Id: "err-a", Name: "a"}) { Success } }')
+  assert.equal((await kind(client.mutate(ops.Stale,{Id:'err-a',Name:'b',Expected:99}))).kind,'conflict')
+  assert.equal((await kind(client.query(ops.BadCursor,{Page:{limit:2,after:'bm90LWEtY3Vyc29y'}}))).kind,'cursor-invalid')
+  assert.equal((await kind(client.query(ops.BadCursor,{Page:{limit:0}}))).kind,'invalid-input')
+  const unknownField=await kind(client.execute({...ops.BadCursor,name:'Typo',text:'query Typo { WidgetsKeyset(Page: {limit: 1}) { Edges { Node { Nmae } } } }'},{}))
+  console.log(`  an unknown field through the router: ${unknownField.kind} ${unknownField.code}`)
+  // The router keeps the code and replaces the message, so text can't be matched through it.
+  const stale=await kind(client.mutate(ops.Stale,{Id:'err-a',Name:'c',Expected:99}))
+  assert.equal(stale.message,'Unexpected error')
+  client.dispose()
+  await post('mutation { DeleteWidget(Id: "err-a") { Success } }')
+  pass('real errors through the router classify by code: a stale ExpectedVersion, a tampered cursor, a zero limit')
  }
  const readAllArtifact = compile(schema, [`query Bounded($Page: PageInput) {
    Widgets(Page: $Page) @connection(key: "bounded") { Edges { Node { Id Name } } PageInfo { TotalCount } }

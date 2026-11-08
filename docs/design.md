@@ -896,6 +896,47 @@ HTTP limits are opt-in to preserve existing applications: configure
 Limits cover response streaming and are not mutation retries. Custom networks must implement
 their own bounds and must not automatically retry mutations.
 
+### Classifying errors (R26)
+
+`classifyError(error)` and `classifyErrors(error)`, from the main entry, take what a read or write failed with: a
+`QueryState.error`, what `mutate` or `commit` rejected with, `QueryState.errors`, or one GraphQL error. `classifyErrors` gives one
+entry per GraphQL error, in order; `classifyError` gives the first, or null for nothing. Each entry has a `kind`, the `code` as sent,
+`message`, `path`, graphql-orm's `correlationId`, an `HttpError`'s `status`, and `writeOutcome` (`extensions.outcome` as sent).
+Missing fields are null, never guessed.
+
+| Kind | From |
+| --- | --- |
+| `invalid-input` | `INVALID_INPUT`; the router's `GRAPHQL_VALIDATION_FAILED` |
+| `unauthenticated`, `forbidden` | The codes of those names; HTTP 401 and 403 with no GraphQL body |
+| `not-found`, `conflict`, `constraint-violation`, `cursor-invalid`, `page-limit-exceeded` | The graphql-orm code of the same name |
+| `limit-exceeded` | The router's `OPERATION_LIMIT_EXCEEDED`, `SUBSCRIPTION_LIMIT_EXCEEDED` |
+| `unavailable` | `SERVICE_UNAVAILABLE`; the router's `SUBGRAPH_UNAVAILABLE`, `SUBSCRIPTION_SCHEMA_RELOAD`; HTTP 429, 502, 503, 504 with no GraphQL body |
+| `internal` | `INTERNAL_ERROR`, whose cause graphql-orm masks; the router's `SUBGRAPH_FAILURE` |
+| `misconfigured` | `AUTHORIZATION_MISCONFIGURED` |
+| `outcome-unknown` | `extensions.outcome: "unknown"`, whatever the code |
+| `network` | No response arrived: a failed connection or a passed deadline. `createHttpNetwork` marks these; a custom network uses `markNoResponse` |
+| `cancelled` | The caller's abort |
+| `unknown` | Any other code, no code, or an error that isn't GraphQL or HTTP. A `TypeError` isn't assumed to be a network failure |
+
+The codes are graphql-orm's `OrmErrorCode` (`crates/graphql-orm/src/graphql/errors.rs`, `graphql-orm-v0.95.0`) and the router's.
+Checked against a generated SQLite service on `graphql-orm-v0.94.0`, with no router: a stale `ExpectedVersion` is `CONFLICT`, a
+tampered keyset cursor `CURSOR_INVALID`, `limit: 0` on a keyset root `INVALID_INPUT`, a create naming a missing parent
+`CONSTRAINT_VIOLATION`, and a stopped service `network`. Validation errors from the service itself have no code, so they're
+`unknown`. An offset `Limit` above the maximum is clamped, not refused.
+
+Through router 0.8.1 (conformance, `graphql-orm-v0.94.0`) the codes arrive unchanged, but the router replaces each service error's
+message with "Unexpected error", so message text can't be matched through it at all. A selection the router rejects carries the
+validation rule's name as its code (`FieldsOnCorrectType` for an unknown field), which is `unknown`.
+
+A generated single-row update or delete of a missing row is not an error at all: it answers `Success: false` with
+`Error: "Entity not found"`, free text with no code ([graphql-orm#385](https://github.com/Dastari/graphql-orm/issues/385)), so
+`classifyError` has nothing to classify there. Check `Success` on the result.
+
+A refetch that fails keeps the rows it had: the query's status is `error`, `error` is set and `data` is the last good result,
+including every loaded page of a `@connection` list. The store is written only after every request of a refresh succeeds. The
+exception is a partial response: a nullable field above a list that comes back null with an error is written, so the list reads as
+null with status `ready` and the error in `errors`. `partialResults: "preserve-errors"` keeps the rows there.
+
 ### Partial responses (R12)
 
 Already supported: an HTTP GraphQL response with both data and errors is returned; successful

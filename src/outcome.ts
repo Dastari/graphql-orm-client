@@ -23,6 +23,23 @@ export function wasNotSent(error: unknown): boolean {
   return typeof error === "object" && error !== null && notSent.has(error)
 }
 
+const noResponse = new WeakSet<object>()
+
+/**
+ * A transport says no response arrived for this request: the connection failed, or its deadline passed. For a write, that means
+ * the outcome isn't known. `createHttpNetwork` marks these itself; a custom network can call this so `classifyError` reports
+ * `network`. The error itself is left as it is.
+ */
+export function markNoResponse<E>(error: E): E {
+  if (typeof error === "object" && error !== null) noResponse.add(error)
+  return error
+}
+
+/** Whether a transport marked this error as one where no response arrived. */
+export function hadNoResponse(error: unknown): boolean {
+  return typeof error === "object" && error !== null && noResponse.has(error)
+}
+
 /**
  * Conservative: null data, HTTP status and free-form error messages prove no write outcome. A response with no
  * `data` key does: per GraphQL over HTTP, execution never started.

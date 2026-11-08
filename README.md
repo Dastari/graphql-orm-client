@@ -135,6 +135,7 @@ catalogue. This client is built on those guarantees.
 | Infinite scroll | `@connection`, `loadMore` | `/react` |
 | Changing data | `useMutation`, `client.mutate`; `mutateOutcome` when the UI must say whether a write happened | `/react`, main |
 | A secret that must stay out of the store | `@sensitive` | main |
+| Telling one failure from another (a stale version, an expired cursor, an outage) | `classifyError` | main |
 | One refused alias beside the rest of a response | `errorsAtPath`, `partialResults: "preserve-errors"` | main |
 | A related name on every row, read in one request | `@batch`, `installRelationBatching` | `/relations` |
 | Every row up to a stated limit | `readAll` | `/read-all` |
