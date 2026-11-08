@@ -9,7 +9,10 @@ changelogs. Check for them before each commit. Requests from consumers arrive as
 Dastari/graphql-orm-client. Open issues are the work queue: check them at the start of a session,
 and when a request is accepted, record it in docs/requirements.md in general terms with a link to its
 issue. Close the issue from the PR that builds it, or comment on it with the reason it won't be built.
-A security vulnerability is never discussed in a public issue; report it to Toby directly.
+A security vulnerability is never discussed in a public issue. It arrives, or is filed upstream, as
+a private vulnerability report (the repository's "Report a vulnerability" form, or
+`gh api -X POST repos/Dastari/<repo>/security-advisories/reports`); tell Toby when you file or
+receive one. Check open reports with `gh api repos/Dastari/graphql-orm-client/security-advisories`.
 
 When this package needs something from graphql-orm, open an issue on Dastari/graphql-orm the same
 way, in general terms, instead of writing a prompt for another agent.
