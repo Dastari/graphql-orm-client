@@ -53,7 +53,9 @@ export { ROOT_ID, Store } from "./store/store.js"
 export type { Selector, Snapshot, StoreOptions } from "./store/store.js"
 
 export type { EphemeralOptions, EphemeralState, EphemeralStream, StreamSequence } from "./ephemeral.js"
-export { markNotSent } from "./outcome.js"
+export { markNoResponse, markNotSent } from "./outcome.js"
+export { classifyError, classifyErrors } from "./errors.js"
+export type { ClassifiedError, ErrorKind } from "./errors.js"
 export type { WriteOutcome, WriteStatus } from "./outcome.js"
 
 export { errorsAtPath } from "./partial.js"

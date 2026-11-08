@@ -173,6 +173,13 @@ expect(client.live.status().Ticket.subscriptions).toBe(1)
 - Use `client.mutateOutcome`, or `commitOutcome` from `useMutation`, when the UI must tell the user whether a write happened. Status is
   `confirmed`, `refused`, `failed` or `unconfirmed`. `mutate` and `commit` are unchanged. A write is never retried: pass `reconcile` to
   read the record again after an `unconfirmed` one, and call again yourself after step-up authentication.
+- To decide what to do about a failure, use `classifyError(error)`, never the message text. Pass it `query.error`, what `commit`
+  rejected with, or `query.errors`. Switch on `kind`: `conflict` (a stale `ExpectedVersion`: reload the record), `cursor-invalid`
+  (start the list again), `not-found`, `unauthenticated`, `forbidden`, `unavailable` (try later), `network` (no response: for a
+  write the outcome isn't known), `internal` (the server masked the cause; quote `correlationId`), `cancelled`, and `unknown`, which
+  every switch must handle. A generated update or delete of a missing row isn't an error: check `Success` on its result.
+- A failed refetch keeps the rows already shown: `status` is `error`, `error` is set, and `data` is the last good result. Show the
+  error beside the rows, not instead of them. Don't render a failed read as an empty list.
 - Use `errorsAtPath(errors, ["alias"])` to show one refused root or alias beside the rest of the response. Set
   `partialResults: "preserve-errors"` on the client so a refused field doesn't overwrite a good stored value with null.
 

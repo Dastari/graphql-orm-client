@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Added: `classifyError`, to tell one failure from another
+
+`classifyError(error)` and `classifyErrors(error)` take a `QueryState.error`, what `mutate` or `commit` rejected with, or
+`QueryState.errors`, and give each error a `kind`: `conflict`, `cursor-invalid`, `not-found`, `unauthenticated`, `forbidden`,
+`unavailable`, `internal`, `network`, `cancelled` and the rest, with `unknown` for a code this version doesn't know. Each keeps the
+code as sent, the path, graphql-orm's `correlationId` and `extensions.outcome`. Use it in place of matching message text.
+
+`createHttpNetwork` now marks a request that got no response (a failed connection or a passed deadline), so `classifyError` reports
+`network`. What it throws is unchanged. A custom network can do the same with `markNoResponse`.
+
 ## 0.1.0-alpha.12 (2026-11-07)
 
 Install from the GitHub release archive:

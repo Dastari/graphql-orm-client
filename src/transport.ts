@@ -1,4 +1,4 @@
-import { markNotSent } from "./outcome.js"
+import { markNoResponse, markNotSent } from "./outcome.js"
 import type { GraphQLResponse, Network, OperationRequest } from "./client.js"
 import type { LiveSocketState } from "./health.js"
 import type { LiveConnection, SubscriptionSink } from "./live.js"
@@ -46,13 +46,16 @@ export function createHttpNetwork(options: HttpNetworkOptions): Network {
       const headers = new Headers(extra)
       headers.set("content-type", "application/json")
       headers.set("accept", "application/graphql-response+json, application/json;q=0.9")
-      const response = await send(options.url, {
-        method: "POST",
-        headers,
-        credentials: options.credentials ?? "same-origin",
-        body: JSON.stringify({ operationName: request.name, query: request.text, variables: request.variables }),
-        ...(boundedSignal ? { signal: boundedSignal } : {}),
-      })
+      let response: Response
+      try {
+        response = await send(options.url, {
+          method: "POST",
+          headers,
+          credentials: options.credentials ?? "same-origin",
+          body: JSON.stringify({ operationName: request.name, query: request.text, variables: request.variables }),
+          ...(boundedSignal ? { signal: boundedSignal } : {}),
+        })
+      } catch (error) { throw signal?.aborted ? error : markNoResponse(error) }
       let body: unknown
       if (bounds?.maxResponseBytes !== undefined) {
         const reader = response.body?.getReader()
