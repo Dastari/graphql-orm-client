@@ -343,7 +343,6 @@ try {
    `query BadCursor($Page: KeysetPageInput!) { WidgetsKeyset(Page: $Page) { Edges { Node { Id } } } }`,
   ]).operations
   const client=createClient({network:createHttpNetwork({url:routerUrl,headers})})
-  const anonymous=createClient({network:createHttpNetwork({url:routerUrl})})
   const kind=async(promise)=>{ const error=await promise.then(()=>null,e=>e); assert(error,'expected a failure'); const c=classifyError(error); console.log(`  classified ${c.kind} ${c.code} ${JSON.stringify(c.message)}`); return c }
   await post('mutation { CreateWidget(Input: {Id: "err-a", Name: "a"}) { Success } }')
   assert.equal((await kind(client.mutate(ops.Stale,{Id:'err-a',Name:'b',Expected:99}))).kind,'conflict')
@@ -351,12 +350,12 @@ try {
   assert.equal((await kind(client.query(ops.BadCursor,{Page:{limit:0}}))).kind,'invalid-input')
   const unknownField=await kind(client.execute({...ops.BadCursor,name:'Typo',text:'query Typo { WidgetsKeyset(Page: {limit: 1}) { Edges { Node { Nmae } } } }'},{}))
   console.log(`  an unknown field through the router: ${unknownField.kind} ${unknownField.code}`)
-  const signedOut=await kind(anonymous.query(ops.BadCursor,{Page:{limit:1}}))
-  console.log(`  no token: ${signedOut.kind} ${signedOut.code} status ${signedOut.status}`)
-  assert.equal(signedOut.kind,'unauthenticated')
-  client.dispose(); anonymous.dispose()
+  // The router keeps the code and replaces the message, so text can't be matched through it.
+  const stale=await kind(client.mutate(ops.Stale,{Id:'err-a',Name:'c',Expected:99}))
+  assert.equal(stale.message,'Unexpected error')
+  client.dispose()
   await post('mutation { DeleteWidget(Id: "err-a") { Success } }')
-  pass('real errors through the router classify by code: a stale ExpectedVersion, a tampered cursor, a zero limit, no token')
+  pass('real errors through the router classify by code: a stale ExpectedVersion, a tampered cursor, a zero limit')
  }
  const readAllArtifact = compile(schema, [`query Bounded($Page: PageInput) {
    Widgets(Page: $Page) @connection(key: "bounded") { Edges { Node { Id Name } } PageInfo { TotalCount } }

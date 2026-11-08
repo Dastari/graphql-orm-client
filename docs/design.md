@@ -924,6 +924,10 @@ tampered keyset cursor `CURSOR_INVALID`, `limit: 0` on a keyset root `INVALID_IN
 `CONSTRAINT_VIOLATION`, and a stopped service `network`. Validation errors from the service itself have no code, so they're
 `unknown`. An offset `Limit` above the maximum is clamped, not refused.
 
+Through router 0.8.1 (conformance, `graphql-orm-v0.94.0`) the codes arrive unchanged, but the router replaces each service error's
+message with "Unexpected error", so message text can't be matched through it at all. A selection the router rejects carries the
+validation rule's name as its code (`FieldsOnCorrectType` for an unknown field), which is `unknown`.
+
 A generated single-row update or delete of a missing row is not an error at all: it answers `Success: false` with
 `Error: "Entity not found"`, free text with no code ([graphql-orm#385](https://github.com/Dastari/graphql-orm/issues/385)), so
 `classifyError` has nothing to classify there. Check `Success` on the result.
