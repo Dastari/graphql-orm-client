@@ -5,8 +5,14 @@ changing anything. The package is in alpha and used by real applications: keep t
 skills and code consistent with each other, and label anything not yet built as proposed.
 
 Keep this repository free of any consuming project's names and domain, in examples, tests, docs and
-changelogs. Check for them before each commit. Requests from consumers go in docs/requirements.md in
-general terms.
+changelogs. Check for them before each commit. Requests from consumers arrive as GitHub issues on
+Dastari/graphql-orm-client. Open issues are the work queue: check them at the start of a session,
+and when a request is accepted, record it in docs/requirements.md in general terms with a link to its
+issue. Close the issue from the PR that builds it, or comment on it with the reason it won't be built.
+A security vulnerability is never discussed in a public issue; report it to Toby directly.
+
+When this package needs something from graphql-orm, open an issue on Dastari/graphql-orm the same
+way, in general terms, instead of writing a prompt for another agent.
 
 ## Ownership
 
