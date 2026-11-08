@@ -8,6 +8,14 @@ Keep this repository free of any consuming project's names and domain, in exampl
 changelogs. Check for them before each commit. Requests from consumers go in docs/requirements.md in
 general terms.
 
+## Work queue
+
+Open issues on [Dastari/graphql-orm-client](https://github.com/Dastari/graphql-orm-client/issues) are the
+work queue. Check them (`gh issue list --state open`) at the start of each session and when a piece of work
+finishes. Record a request that arrives another way, such as through the owner, as an issue in general terms
+so the queue stays complete. Link each PR to its issue (`Fixes #n`), and close an issue that is declined with
+the reason. docs/requirements.md still records each general requirement and its acceptance line.
+
 ## Ownership
 
 - This package is the browser client for graphql-orm APIs. It is not a general GraphQL client.
