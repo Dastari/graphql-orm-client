@@ -9,6 +9,9 @@ keep the data current while it's on screen. If that can't happen, the build fail
 
 ## The default path
 
+[docs/example.md](docs/example.md) has the whole path in one place: two related graphql-orm entities, their service, and a page
+that lists, adds and closes rows and stays current.
+
 Install a [release archive](https://github.com/Dastari/graphql-orm-client/releases), pinned to one version, with `graphql` and, for live updates, `graphql-ws`.
 
 **1. Point it at your router.** `graphql-orm-client.config.json`:

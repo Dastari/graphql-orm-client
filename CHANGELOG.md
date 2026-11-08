@@ -12,6 +12,11 @@ code as sent, the path, graphql-orm's `correlationId` and `extensions.outcome`. 
 `createHttpNetwork` now marks a request that got no response (a failed connection or a passed deadline), so `classifyError` reports
 `network`. What it throws is unchanged. A custom network can do the same with `markNoResponse`.
 
+### Added: a complete example
+
+`docs/example.md` builds two related graphql-orm entities, their service, and a page that lists, adds and closes rows and stays
+current, checked against graphql-orm 0.94.0.
+
 ## 0.1.0-alpha.12 (2026-11-07)
 
 Install from the GitHub release archive:

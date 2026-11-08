@@ -47,7 +47,7 @@ Read the installed `docs/graphql-orm-contract.md` for the status of each guarant
 ## Real-server conformance
 
 In this package's repository, `pnpm conformance` runs the generated SQLite example
-behind the real router, separately from `pnpm check`. CI runs `graphql-orm-v0.90.1` and `graphql-orm-v0.93.0`. See `conformance/README.md` for setup, assertions
+behind the real router, separately from `pnpm check`. CI runs `graphql-orm-v0.90.1`, `v0.91.1`, `v0.93.0` and `v0.94.0`. See `conformance/README.md` for setup, assertions
 and fixture accommodations. Computed and relation stream refusals are real
 `next` error frames (`INVALID_INPUT`), followed by `complete`; a managed version
 is admitted. `NodeId`, and a federated field keyed on it, are refused the same way on 0.90.1 and admitted on 0.93.0. A
