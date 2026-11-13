@@ -19,6 +19,9 @@ CI installs Chromium and never uses this escape.
   for 100 events, with a different row changed on each. Measure wall and event-processing time,
   verify all final versions, and assert exactly 100 notifications across all subscribers.
   This measures a simulated 100 events/s, not socket throughput or React render time.
+  The same workload runs again with 1,000 and 10,000 rows and as many subscribers, and reports the mean
+  time inside one event's delivery (`eventMs1000`, `eventMs10000`). These exist to fail if an event
+  goes back to costing a read of the whole list.
 - Compiler: generate exactly 45,000 nonblank SDL lines at runtime (500 neutral entity types, Where
   inputs, connections, Changed events), and 250 documents: 125 live fragments plus 125 root queries.
   Time schema parsing/construction and the real compile together; validate artifact counts.

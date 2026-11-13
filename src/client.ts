@@ -7,7 +7,7 @@ import { contextOf, identify, normalize } from "./store/normalize.js"
 import { IDLE_TYPE_HEALTH, diagnosticMessage, typeHealth, worstOf, type LiveDiagnostic, type LiveHealth, type LiveHolding, type LiveTypeHealth } from "./health.js"
 import { LiveManager, type LiveOptions, type SubscriptionSink } from "./live.js"
 import { FRAGMENT_REF, readSelections, type FragmentRefData } from "./store/read.js"
-import { ROOT_ID, Store, type OptimisticLayer, type Selector, type Snapshot, type StoreOptions, recycle } from "./store/store.js"
+import { ROOT_ID, Store, type OptimisticLayer, type Selector, type Snapshot, type StoreOptions, intersects, recycle } from "./store/store.js"
 
 export interface GraphQLErrorLike {
   readonly message: string
@@ -584,9 +584,12 @@ class QueryResource<T> implements WatchedQuery<T> {
   private watch(snapshot: Snapshot<T>): void {
     this.unsubscribeStore?.()
     this.holdLive()
-    this.unsubscribeStore = this.client.store.subscribe(snapshot, (next) => {
+    this.unsubscribeStore = this.client.store.subscribe(snapshot, (next, { structural }) => {
       this.set({ ...this.state, data: next.data as T, stale: next.stale, lifetime: next.lifetime, hasMore: this.connection()?.hasMore ?? false })
-      this.holdLive()
+      // Which records the query reaches through `@live` fragments changes only with a link, a new record or a removed one among the
+      // records it reaches. A changed scalar leaves what it holds as it was, and reading the whole query again for each one costs as
+      // much as the query is long.
+      if (!this.reach || intersects(this.reach, structural)) this.holdLive()
       // A record this query shows was deleted or collected: read it again from the server.
       if (next.missing && this.users > 0) {
         if (this.artifact.lists) this.readAgain()
@@ -620,7 +623,7 @@ class QueryResource<T> implements WatchedQuery<T> {
     const targets = new Map<string, Set<string>>()
     this.uncovered = false
     this.liveHoldings = new Map()
-    readSelections(this.client.store, selectorOf(this.artifact, this.variables), {
+    this.reach = readSelections(this.client.store, selectorOf(this.artifact, this.variables), {
       inlineSpreads: true,
       onSpread: (fragment, id, typename) => {
         if (!this.artifact.fragments[fragment]?.live) return
@@ -636,13 +639,15 @@ class QueryResource<T> implements WatchedQuery<T> {
         ids.add(id)
         targets.set(typename, ids)
       },
-    })
+    }).seen
     live?.hold(this.key, targets)
     this.refreshFallbackPoll()
     this.client.healthChanged()
   }
 
   private uncovered = false
+  /** Every record the last `holdLive` read, through fragments too. */
+  private reach: ReadonlySet<string> | null = null
 
   /** Poll when this query holds `@live` records that nothing else keeps fresh. */
   refreshFallbackPoll(): void {

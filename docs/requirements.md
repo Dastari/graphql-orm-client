@@ -231,6 +231,8 @@ A conformance failure remains a failure; this does not claim the proposed R2/R3 
 **R22. Budgets.** Checked in CI: 10,000 rows in the store, a burst of 100 events a second, the
 compile time of 250 documents against a 45,000-line schema, the bundle size of the main and react
 entry points, and the cost of one socket and store per window with pop-out tool windows open (R19).
+The cost of one event must follow what changed, not the length of the list showing it: the burst also runs at 1,000 and
+10,000 rows with a limit on time per event ([#68](https://github.com/Dastari/graphql-orm-client/issues/68)).
 *Built:* `pnpm budgets` and the separate budgets CI workflow. Thresholds, baselines and margins
 are in `budgets/limits.json`; the method and one-machine window measurement are in
 [the design](design.md#several-windows-r19-and-budgets-r22). A skipped browser measurement is incomplete,
