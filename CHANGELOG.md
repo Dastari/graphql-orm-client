@@ -29,6 +29,13 @@ No setting and no regeneration: results, notifications and ordering are the same
 - `store.subscribe`'s callback gets a second argument, `{ structural }`: the records the batch created, replaced, removed or
   relinked.
 - The memo uses about 300 bytes a row, and the main bundle grew by about 2 KB (0.8 KB gzipped).
+### Fixed: a render React threw away left its query behind for good
+
+`useQuery` calls `client.watchQuery` during render. When React discarded that render without running its effects (a suspended
+sibling, an interrupted transition, StrictMode's extra render), the query stayed registered until the client was disposed, so a
+page with changing variables, such as a search box, grew without bound. A query nobody has opened is now held only by its handles
+and freed with them; handles for the same variables still share it
+([#71](https://github.com/Dastari/graphql-orm-client/issues/71)). Nothing to change in applications.
 
 ### Added: a complete example
 
