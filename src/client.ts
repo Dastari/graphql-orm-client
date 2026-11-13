@@ -784,7 +784,23 @@ export class Client {
   /** Null when the client was created without live options. */
   readonly live: LiveManager | null
   private readonly network: Network
+  /** Queries someone has open. */
   private readonly resources = new Map<string, QueryResource<unknown>>()
+  /**
+   * Queries nobody has open, held only by their handles. React calls `watchQuery` during render and can throw that render away
+   * without running its effects, so a handle may never be opened or closed; a strong map would keep each such query for good.
+   * Handles for one key still share one query while any of them is reachable.
+   */
+  private readonly unopened = new Map<string, WeakRef<QueryResource<unknown>>>()
+  private readonly forget = new FinalizationRegistry<{ key: string; ref: WeakRef<QueryResource<unknown>> }>(({ key, ref }) => {
+    if (this.unopened.get(key) === ref) this.unopened.delete(key)
+  })
+
+  private keepUnopened(key: string, resource: QueryResource<unknown>): void {
+    const ref = new WeakRef(resource)
+    this.unopened.set(key, ref)
+    this.forget.register(resource, { key, ref }, ref)
+  }
   private readonly controllers = new Set<AbortController>()
   private readonly subscriptions = new Set<() => void>()
   private readonly subscribeTransport: LiveOptions["subscribe"] | null
@@ -1240,10 +1256,10 @@ export class Client {
       if (setting !== "off") console.warn(message)
     }
     const key = `${queryKey(artifact, variables)}:${policy}`
-    let resource = this.resources.get(key) as QueryResource<T> | undefined
+    let resource = (this.resources.get(key) ?? this.unopened.get(key)?.deref()) as QueryResource<T> | undefined
     if (!resource) {
       resource = new QueryResource<T>(this, artifact, variables, queryKey(artifact, variables), policy)
-      this.resources.set(key, resource as QueryResource<unknown>)
+      if (!this.store.isDisposed) this.keepUnopened(key, resource as QueryResource<unknown>)
     }
     const shared = resource
     // Each handle opens and closes once at a time, and polls only while it is open.
@@ -1257,19 +1273,27 @@ export class Client {
       open: () => {
         if (opened || this.store.isDisposed) return
         opened = true
-        if (!this.resources.has(key)) this.resources.set(key, shared as QueryResource<unknown>)
+        if (!this.resources.has(key)) {
+          this.resources.set(key, shared as QueryResource<unknown>)
+          if (this.unopened.get(key)?.deref() === shared) {
+            const ref = this.unopened.get(key)!
+            this.unopened.delete(key)
+            this.forget.unregister(ref)
+          }
+        }
         if (pollMs !== undefined) shared.addPoll(token, pollMs)
         shared.open()
       },
       close: () => {
-        if (!opened) {
-          if (shared.users === 0 && this.resources.get(key) === shared) this.resources.delete(key)
-          return
-        }
+        if (!opened) return
         opened = false
         shared.removePoll(token)
         shared.close()
-        if (shared.users === 0 && this.resources.get(key) === shared) this.resources.delete(key)
+        if (shared.users === 0 && this.resources.get(key) === shared) {
+          this.resources.delete(key)
+          // Handles still held, as by a mounted loader, keep sharing it.
+          if (!this.store.isDisposed && !this.unopened.get(key)?.deref()) this.keepUnopened(key, shared as QueryResource<unknown>)
+        }
       },
     }
   }
@@ -1513,6 +1537,7 @@ export class Client {
     for (const controller of this.controllers) controller.abort()
     this.controllers.clear()
     this.resources.clear()
+    this.unopened.clear()
     this.healthListeners.clear()
     this.store.dispose()
   }
