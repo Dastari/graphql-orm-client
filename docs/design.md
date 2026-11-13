@@ -766,8 +766,8 @@ those runs; each timing in each run is itself the median of five samples.
 | One event, 1,000-row list (ms) | 0.151 | 1.2 |
 | One event, 10,000-row list (ms) | 1.255 | 8 |
 | 45,000-line schema + 250 documents (ms) | 694 | 5,000 |
-| Main standalone raw bundle (bytes) | 66,952 | 68,000 |
-| Main standalone gzip bundle (bytes) | 21,446 | 22,000 |
+| Main standalone raw bundle (bytes) | 67,147 | 68,000 |
+| Main standalone gzip bundle (bytes) | 21,521 | 22,000 |
 | React standalone raw bundle (bytes) | 6,969 | 10,000 |
 | React standalone gzip bundle (bytes) | 2,836 | 4,000 |
 

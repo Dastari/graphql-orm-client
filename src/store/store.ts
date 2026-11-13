@@ -364,12 +364,27 @@ export class Store {
     this.touched.clear()
     const info: PublishInfo = { structural: new Set(this.structural) }
     this.structural.clear()
+    // A subscriber can write and publish from its callback. That publish reads with what it wrote and with what every publish
+    // still under way wrote, since a memo can't yet hold those for the subscribers they haven't reached.
+    const pending = this.publishing.length ? new Set([...changed, ...this.publishing.flatMap((batch) => [...batch])]) : changed
+    this.publishing.push(changed)
+    try {
+      this.notify(changed, pending, touched, info)
+    } finally {
+      this.publishing.pop()
+    }
+  }
+
+  /** The written ids of each publish under way, outermost first. */
+  private readonly publishing: ReadonlySet<string>[] = []
+
+  private notify(changed: ReadonlySet<string>, pending: ReadonlySet<string>, touched: ReadonlySet<string>, info: PublishInfo): void {
     for (const subscription of [...this.subscriptions]) {
       if (!this.subscriptions.has(subscription)) continue
       const previous = subscription.snapshot
       if (!intersects(previous.seen, changed)) continue
       const wasTouched = touched.size > 0 && intersects(previous.seen, touched)
-      const next = this.reread(subscription, changed)
+      const next = this.reread(subscription, pending)
       // The memo keeps the objects the snapshot ends up holding, so the next read's unchanged records are the very same objects.
       const replaced = next.cache ? new Map<object, object>() : undefined
       const data = recycle(previous.data, next.data, replaced)

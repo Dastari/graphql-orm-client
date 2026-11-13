@@ -48,13 +48,15 @@ function writeOne(store: Store, value: Record<string, unknown>): void {
 }
 
 /** Subscribe, and check after every publish that what the subscriber holds is what a whole read gives. */
-function follow(store: Store, operation: typeof Plain) {
+function follow(store: Store, operation: typeof Plain, { checkEach = false } = {}) {
   const selector = selectorOf(operation)
   let latest: Snapshot = store.lookup(selector)
   const calls = vi.fn()
   const stop = store.subscribe(latest, (next) => {
     latest = next
     calls()
+    // What a subscriber is handed must be what the store holds at that moment, not only once the outer publish ends.
+    if (checkEach) check()
   })
   const check = () => {
     const whole = store.lookup(selector)
@@ -222,7 +224,7 @@ describe("incremental reads of a large snapshot", () => {
       store.setField(store.get(ownerId("o4"))!, "Name", `nested-${++renames}`)
       store.publish()
     })
-    const view = follow(store, Plain)
+    const view = follow(store, Plain, { checkEach: true })
     writeOne(store, item("9", 2, "o4"))
     for (let version = 2; version < 6; version++) {
       writeOne(store, item("2", version, "o2"))
