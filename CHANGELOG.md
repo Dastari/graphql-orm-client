@@ -12,6 +12,24 @@ code as sent, the path, graphql-orm's `correlationId` and `extensions.outcome`. 
 `createHttpNetwork` now marks a request that got no response (a failed connection or a passed deadline), so `classifyError` reports
 `network`. What it throws is unchanged. A custom network can do the same with `markNoResponse`.
 
+### Changed: an event costs what it changed, not the length of the list showing it
+
+One `Changed` event for one row used to read every query showing that row from top to bottom, twice: once for the query's
+data and once to work out which records it holds live. On a 10,000-row list that was 25 ms an event. Now the store keeps a memo
+for each large subscriber and reads only the written records and what's above them, and a query works out what it holds only
+when rows arrive, leave or are relinked. Measured with the mock network, per event: 0.25 ms to 0.05 ms at 100 rows, 1.6 ms to
+0.15 ms at 1,000, and 25 ms to 1.3 ms at 10,000
+([#68](https://github.com/Dastari/graphql-orm-client/issues/68)).
+
+No setting and no regeneration: results, notifications and ordering are the same. Three things to know:
+
+- `Snapshot.seen` on a large subscription can now include records an earlier read reached and the latest didn't. Nothing in the
+  package's documented API exposes it; code that reads `client.store` directly and treats `seen` as exact should call
+  `store.lookup(selector)` for an exact set.
+- `store.subscribe`'s callback gets a second argument, `{ structural }`: the records the batch created, replaced, removed or
+  relinked.
+- The memo uses about 300 bytes a row, and the main bundle grew by about 2 KB (0.8 KB gzipped).
+
 ### Added: a complete example
 
 `docs/example.md` builds two related graphql-orm entities, their service, and a page that lists, adds and closes rows and stays

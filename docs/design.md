@@ -230,6 +230,17 @@ aggregate row) is stored inside its parent.
   before 0.1.0-alpha.10, every `DELETED` removes the record.
 - Each response or event is one batch: subscribers are notified once per batch, synchronously, and
   only those whose fields changed. Proposed: batching writes per tick.
+- A subscriber is read again only when the batch wrote a record its last read reached. A snapshot that reached
+  fewer than 64 records is read whole. A larger one keeps a memo: each record's result, and which records it was
+  reached from. Its next read takes the written records and everything above them from the store, and the rest
+  from the memo, so a write to one row of a long list reads that row, its edge, the list and the root. Unchanged
+  rows keep the same objects. The memo costs about 300 bytes a row (measured: 3 MB for 10,000 rows) and belongs
+  to one subscription. A read that meets a type with a lifetime policy or a `@batch` relation isn't memoised,
+  because those change with the clock or a request and not only with a write; such a snapshot is read whole, as
+  before. One step per row remains (a memo lookup), and one check per subscriber per batch.
+- A watched query works out which records it holds through `@live` fragments when it's read from the network,
+  and again after a batch only if that batch created, replaced or removed a record the query reaches, or wrote a
+  link on one. A batch that changes scalar values alone, which is what a `Changed` event is, leaves it as it was.
 
 ### Retention and garbage collection
 
@@ -750,11 +761,13 @@ those runs; each timing in each run is itself the median of five samples.
 | 10,000-row collection (ms) | 4.14 | 300 |
 | Store retained heap (bytes) | 8,196,336 | 24,000,000 |
 | Heap after collection (bytes) | 14,960 | 4,000,000 |
-| 100-event burst wall time (ms) | 32.552 | 750 |
+| 100-event burst wall time (ms) | 3.145 | 750 |
 | 100-event subscriber notifications | 100 | 100 |
+| One event, 1,000-row list (ms) | 0.151 | 1.2 |
+| One event, 10,000-row list (ms) | 1.255 | 8 |
 | 45,000-line schema + 250 documents (ms) | 694 | 5,000 |
-| Main standalone raw bundle (bytes) | 59,388 | 65,000 |
-| Main standalone gzip bundle (bytes) | 19,014 | 21,000 |
+| Main standalone raw bundle (bytes) | 66,952 | 68,000 |
+| Main standalone gzip bundle (bytes) | 21,446 | 22,000 |
 | React standalone raw bundle (bytes) | 6,969 | 10,000 |
 | React standalone gzip bundle (bytes) | 2,836 | 4,000 |
 
@@ -783,6 +796,11 @@ once. All windows shared one isolate on this machine; summing per-target heap wo
 
 The larger marginal cost of the 1→3 and 3→6 steps was **7,017,366 JS bytes
 and one socket per additional window**. This supports keeping the R19 decision for now.
+The burst, per-event and main bundle rows were measured again on 2026-11-13, on the same machine without the window run,
+after incremental reads ([#68](https://github.com/Dastari/graphql-orm-client/issues/68)). Before that change one event cost
+0.25 ms at 100 rows, 1.6 ms at 1,000 and 25 ms at 10,000, because each event read the whole list twice. The main bundle limit
+rose from 65,000 to 68,000 bytes (gzip 21,000 to 22,000) for it.
+
 It includes page/runtime, query snapshots and store allocations; it excludes native renderer
 memory, browser RSS, GPU memory and server cost. It does not establish a bound on a full
 application or on other devices.

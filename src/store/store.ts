@@ -52,9 +52,30 @@ export interface StoreOptions {
   readonly clearTimeout?: (handle: unknown) => void
 }
 
+/** What a publish tells a subscriber about the batch it came from. */
+export interface PublishInfo {
+  /**
+   * The records the batch changed in a way that could alter which records are reached from them: created, replaced or removed, a
+   * link or other object value written, a relation resolved. A record whose scalar values changed and nothing else isn't here.
+   */
+  readonly structural: ReadonlySet<string>
+}
+
 interface Subscription {
   snapshot: Snapshot
-  readonly callback: (snapshot: Snapshot) => void
+  readonly callback: (snapshot: Snapshot, info: PublishInfo) => void
+  /** A memo was asked for and the read couldn't give one. */
+  unmemoised?: boolean
+}
+
+/** A snapshot that read fewer records than this is read whole each time; a memo would cost more than it saves. */
+const MEMO_MIN_RECORDS = 64
+
+/** Whether two sets share a member, walking the smaller one. */
+export function intersects(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
+  if (a.size > b.size) [a, b] = [b, a]
+  for (const id of a) if (b.has(id)) return true
+  return false
 }
 
 interface Retention {
@@ -82,7 +103,11 @@ export class Store {
     if (this.disposed) return
     this.changed.add(id)
     this.touched.add(id)
+    this.structural.add(id)
   }
+
+  /** Records written since the last publish in a way that could change which records a reader reaches from them. */
+  private readonly structural = new Set<string>()
 
   private readonly touched = new Set<string>()
 
@@ -139,6 +164,7 @@ export class Store {
       const state = this.lifetime(id)!
       if (state !== this.lifetimeStates.get(id)) {
         this.changed.add(id)
+        this.structural.add(id)
         if (state === "unknown") {
           try { this.diagnostic?.({ code: "LIFETIME_UNKNOWN", message: `Cannot determine lifetime of ${record.__typename}.${policy.field}` }) } catch { /* diagnostics must not affect reads */ }
         }
@@ -212,6 +238,7 @@ export class Store {
       this.records.set(entry.id, { __id: entry.id, __typename: entry.typename, fields: new Map(entry.fields) })
       this.restored.add(entry.id)
       this.changed.add(entry.id)
+      this.structural.add(entry.id)
     }
     this.publish()
   }
@@ -230,6 +257,7 @@ export class Store {
     const record: StoredRecord = { __id: id, __typename: typename, fields: new Map() }
     this.records.set(id, record)
     this.changed.add(id)
+    this.structural.add(id)
     return record
   }
 
@@ -244,6 +272,7 @@ export class Store {
       written.set(key, value)
       this.journal.written.set(record.__id, written)
     }
+    if ((typeof value === "object" && value !== null) || (typeof previous === "object" && previous !== null)) this.structural.add(record.__id)
     record.fields.set(key, value)
     this.changed.add(record.__id)
   }
@@ -280,6 +309,7 @@ export class Store {
 
   rollback(layer: OptimisticLayer): void {
     this.layers.delete(layer)
+    for (const id of layer.written.keys()) this.structural.add(id)
     for (const [id, written] of layer.written) {
       const record = this.records.get(id)
       if (!record) continue
@@ -307,7 +337,10 @@ export class Store {
     this.restoreBlocked?.add(id)
     this.restored.delete(id)
     this.lifetimeStates.delete(id)
-    if (this.records.delete(id)) this.changed.add(id)
+    if (this.records.delete(id)) {
+      this.changed.add(id)
+      this.structural.add(id)
+    }
   }
 
   /** Read a selector now, without subscribing. */
@@ -329,25 +362,45 @@ export class Store {
     this.changed.clear()
     const touched = new Set(this.touched)
     this.touched.clear()
+    const info: PublishInfo = { structural: new Set(this.structural) }
+    this.structural.clear()
     for (const subscription of [...this.subscriptions]) {
       if (!this.subscriptions.has(subscription)) continue
       const previous = subscription.snapshot
-      if (![...previous.seen].some((id) => changed.has(id))) continue
-      const next = this.lookup(previous.selector)
-      const data = recycle(previous.data, next.data)
+      if (!intersects(previous.seen, changed)) continue
+      const wasTouched = touched.size > 0 && intersects(previous.seen, touched)
+      const next = this.reread(subscription, changed)
+      // The memo keeps the objects the snapshot ends up holding, so the next read's unchanged records are the very same objects.
+      const replaced = next.cache ? new Map<object, object>() : undefined
+      const data = recycle(previous.data, next.data, replaced)
+      if (replaced?.size) for (const node of next.cache!.fresh) node.data = (replaced.get(node.data as object) as typeof node.data) ?? node.data
       // A resolved relation can leave a query's masked data the same while it comes to show more records, and the query has to hear that,
       // to hold them. Any other unchanged read notifies nobody.
-      if (data === previous.data && next.missing === previous.missing && next.lifetime === previous.lifetime && next.stale === previous.stale && ![...previous.seen].some((id) => touched.has(id))) {
+      if (data === previous.data && next.missing === previous.missing && next.lifetime === previous.lifetime && next.stale === previous.stale && !wasTouched) {
         subscription.snapshot = { ...next, data: previous.data }
         continue
       }
       subscription.snapshot = { ...next, data }
-      subscription.callback(subscription.snapshot)
+      subscription.callback(subscription.snapshot, info)
     }
   }
 
-  subscribe(snapshot: Snapshot, callback: (snapshot: Snapshot) => void): () => void {
-    const subscription: Subscription = { snapshot, callback }
+  /**
+   * Read a subscription's selector after a batch of writes. A small snapshot is read whole. A large one keeps a memo of its last
+   * read, so a write to one row of a long list reads that row and the records above it, not every row.
+   */
+  private reread(subscription: Subscription, changed: ReadonlySet<string>): Snapshot {
+    const previous = subscription.snapshot
+    if (subscription.unmemoised || (!previous.cache && previous.seen.size < MEMO_MIN_RECORDS)) return this.lookup(previous.selector)
+    const next = readSelections(this, previous.selector, previous.cache ? { cache: previous.cache, changed } : { cache: true })
+    if (!next.cache) subscription.unmemoised = true
+    return { ...next, selector: previous.selector }
+  }
+
+  subscribe(snapshot: Snapshot, callback: (snapshot: Snapshot, info: PublishInfo) => void): () => void {
+    // A memo is continued only by the subscription whose reads built it.
+    const { cache: _cache, ...own } = snapshot
+    const subscription: Subscription = { snapshot: own, callback }
     this.subscriptions.add(subscription)
     return () => {
       this.subscriptions.delete(subscription)
@@ -415,6 +468,7 @@ export class Store {
         if (!rootKeys.has(key)) {
           root.fields.delete(key)
           this.changed.add(ROOT_ID)
+          this.structural.add(ROOT_ID)
         }
       }
     }
@@ -439,6 +493,7 @@ export class Store {
     this.relation = undefined
     this.refreshRelations = undefined
     this.changed.clear()
+    this.structural.clear()
   }
 
   get isDisposed(): boolean {
@@ -475,9 +530,10 @@ function sameValue(a: unknown, b: unknown): boolean {
 
 /**
  * Structural sharing: return `previous` (or parts of it) wherever `next` is deeply equal, so
- * unchanged subtrees keep their identity and React skips them.
+ * unchanged subtrees keep their identity and React skips them. `replaced` collects, for each object of `next` that didn't end up
+ * in the result, the object that took its place.
  */
-export function recycle<T>(previous: T, next: T): T {
+export function recycle<T>(previous: T, next: T, replaced?: Map<object, object>): T {
   if (previous === next) return previous
   if (typeof previous !== "object" || typeof next !== "object" || previous === null || next === null)
     return next
@@ -485,7 +541,7 @@ export function recycle<T>(previous: T, next: T): T {
   if (Array.isArray(previous) && Array.isArray(next)) {
     let same = previous.length === next.length
     const items = next.map((item, index) => {
-      const recycled = index < previous.length ? recycle(previous[index], item) : item
+      const recycled = index < previous.length ? recycle(previous[index], item, replaced) : item
       if (recycled !== previous[index]) same = false
       return recycled
     })
@@ -497,7 +553,7 @@ export function recycle<T>(previous: T, next: T): T {
   let same = keys.length === Object.keys(prev).length
   const result: Record<string, unknown> = {}
   for (const key of keys) {
-    const recycled = key in prev ? recycle(prev[key], nxt[key]) : nxt[key]
+    const recycled = key in prev ? recycle(prev[key], nxt[key], replaced) : nxt[key]
     if (recycled !== prev[key]) same = false
     result[key] = recycled
   }
@@ -506,7 +562,11 @@ export function recycle<T>(previous: T, next: T): T {
   for (const symbol of symbols) {
     if (!sameRef((prev as Record<symbol, unknown>)[symbol], (nxt as Record<symbol, unknown>)[symbol])) same = false
   }
-  if (same) return previous
+  if (same) {
+    replaced?.set(next, previous)
+    return previous
+  }
+  replaced?.set(next, result)
   // Masked fragment references carry hidden properties; keep them on the new object.
   for (const symbol of symbols) {
     Object.defineProperty(result, symbol, { value: (nxt as Record<symbol, unknown>)[symbol], enumerable: false })

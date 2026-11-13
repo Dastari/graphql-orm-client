@@ -460,6 +460,12 @@ export class LiveManager {
     }, this.options.debounceMs ?? 50)
   }
 
+  /** Whether any holder keeps this record live. Asked for every event, so it doesn't build the union `held()` does. */
+  private holds(typename: string, id: string): boolean {
+    for (const targets of this.holders.values()) if (targets.get(typename)?.has(id)) return true
+    return false
+  }
+
   private held(): Map<string, Set<string>> {
     const union = new Map<string, Set<string>>()
     for (const targets of this.holders.values()) {
@@ -895,7 +901,7 @@ export class LiveManager {
     this.noteEvent(artifact.typename)
     this.noteBurst(artifact.typename)
     const listHolders = new Set(this.listHolders(artifact.typename))
-    if (!this.held().get(artifact.typename)?.has(id)) {
+    if (!this.holds(artifact.typename, id)) {
       this.onEvent(listHolders, artifact.typename, thin, artifact.rereadFragments ?? [])
       return
     }

@@ -60,11 +60,13 @@ for (let i = 0; i < 5; i++) {
 }
 for (const name of Object.keys(samples)) results[name] = median(samples[name])
 
-await measure("burstMs", async () => {
+// One list of `rows` rows with a fragment subscriber per row, and 100 events a simulated second apart by 10 ms, each changing a
+// different row. Returns wall time, time inside event delivery, and how many subscribers were told.
+async function burst(rows) {
   const streams = createMockStreams({ schema: smallSDL })
   const clock = createTestClock()
   const client = createClient({
-    network: createMockNetwork({ schema: smallSDL, respond: () => ({ data: data(100) }) }),
+    network: createMockNetwork({ schema: smallSDL, respond: () => ({ data: data(rows) }) }),
     live: { artifacts: compiled.live, subscribe: streams.subscribe, debounceMs: 0,
       setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout },
   })
@@ -81,7 +83,7 @@ await measure("burstMs", async () => {
   })
   const start = performance.now()
   let processingMs = 0
-  // 100 changed records over one simulated second. The test clock avoids scheduler noise.
+  // The test clock avoids scheduler noise.
   for (let i = 0; i < 100; i++) {
     clock.advance(10)
     const eventStart = performance.now()
@@ -91,15 +93,21 @@ await measure("burstMs", async () => {
   }
   const elapsed = performance.now() - start
   assert.equal(notifications, 100, "one notification per changed row; no fan-out to unchanged rows")
-  for (const edge of list.getState().data.Tickets.Edges)
-    assert.match(readFragment(fragment, edge.Node).Title, /-v2$/)
-  results.burstNotifications = notifications
-  ;(samples.burstProcessingMs ??= []).push(processingMs)
+  const edges = list.getState().data.Tickets.Edges
+  for (let i = 0; i < 100; i++) assert.match(readFragment(fragment, edges[i].Node).Title, /-v2$/)
   stops.forEach(stop => stop())
   list.close()
   client.dispose()
+  return { elapsed, processingMs, notifications }
+}
+await measure("burstMs", async () => {
+  const { elapsed, processingMs, notifications } = await burst(100)
+  results.burstNotifications = notifications
+  ;(samples.burstProcessingMs ??= []).push(processingMs)
   return elapsed
 })
+// The cost of one event must follow what changed, not how long the list showing it is.
+for (const rows of [1000, 10000]) await measure("eventMs" + rows, async () => (await burst(rows)).processingMs / 100)
 results.burstProcessingMs = median(samples.burstProcessingMs)
 
 const fixture = largeFixture()
