@@ -22,8 +22,7 @@ Status: partly built. Implemented and tested:
 
 Proposed, not built: per-type
 `staleMs` policy, the `scope` store option, sending operations by persisted hash,
-batching writes per tick, refetching a parent on a `PROPAGATED` event, response size and time limits,
-and marking records stale after a failed lookup. Sections below label these. What the client still
+batching writes per tick, refetching a parent on a `PROPAGATED` event, and marking records stale after a failed lookup. Sections below label these. What the client still
 needs is in [requirements.md](requirements.md).
 
 ## Goals
@@ -718,8 +717,11 @@ fragments.
 
 - The store is disposed synchronously when the identity changes. No read runs under the
   outgoing identity.
-- Proposed: bounding responses by size and time. `createHttpNetwork` sets no limit; pass a wrapped
-  `fetch` for one.
+- Responses can be bounded by time and size: `createHttpNetwork({ url, reads, writes })` takes
+  `{ deadlineMs, maxResponseBytes }` for each kind. Both are off unless set, so by default a request that never
+  answers keeps its query loading (#72 proposes a default). The deadline covers reading the body as well as the
+  headers. A response larger than `maxResponseBytes` is cancelled as it streams in and fails the request. A write
+  that passes its deadline is `unconfirmed` and is not sent again.
 - Opt-in persistence is keyed by an explicit identity and deleted by `clear()`, which an application calls on
   sign-out. Disposing a client doesn't delete it. It does not encrypt storage; use a storage adapter appropriate
   to the data and threat model.
