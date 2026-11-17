@@ -120,6 +120,29 @@ Regenerate to get the new types. A module generated before keeps compiling and w
 regenerating, callers that pass these fields still compile and may drop them. Code that reads such a field from a value typed as the
 generated input type now sees `number | undefined` and needs a fallback.
 
+### Fixed: persistence copied and encoded the whole store on every flush, and kept doing so over budget
+
+Each flush copied every record, serialised it and encoded the result again only to measure it. A store over `maxBytes`
+paid that on every flush, deleted the saved snapshot each time and reported `PERSISTENCE_SIZE` each time
+([#70](https://github.com/Dastari/graphql-orm-client/issues/70)). Now a flush serialises only the records written since
+the last one and measures UTF-8 length without encoding. Over budget it reports `PERSISTENCE_SIZE` and deletes the
+saved snapshot once, then saves nothing until the store fits, when it saves a complete snapshot again. Nothing partial
+is saved. Nothing to change in applications. If you counted `PERSISTENCE_SIZE` diagnostics, expect one each time the
+store goes over, not one per flush.
+
+### Changed: a saved snapshot older than 7 days isn't restored
+
+The persistence envelope now records `savedAt`, the time of its last write, and `persistClient` takes `maxAgeMs`
+([#75](https://github.com/Dastari/graphql-orm-client/issues/75)). A snapshot older than that, by default 7 days, is
+reported as `PERSISTENCE_EXPIRED`, deleted and not restored: the application starts as it would with nothing saved.
+So is one saved more than a minute later than the device clock says it is now; the minute allows for a clock that
+time synchronisation stepped back. A read-only window leaves it in place. The clock is
+`Date.now` unless you pass `now`.
+
+- To keep restoring a snapshot of any age, as before, pass `maxAgeMs: Infinity`.
+- The envelope format is now 2. A snapshot saved by 0.1.0-alpha.12 or earlier is deleted on first load and not
+  restored, as every release's snapshots already were (the envelope carries the package version).
+
 ## 0.1.0-alpha.12 (2026-11-07)
 
 Install from the GitHub release archive:

@@ -205,6 +205,15 @@ Persistence is built as an opt-in separate entry point with explicit identity, s
 release envelopes, stale restoration, bounded coalesced writes and diagnostic-only storage failures. Persistence is scoped to identity,
 excludes R9, and is deleted by an explicit `clear()` on sign-out, which also stops the identity's other windows saving it. Disposing a client, as a pop-out window does on close, keeps it. A cursor is never persisted across a server release:
 a stale keyset cursor can be accepted at the wrong place.
+*Built after 0.1.0-alpha.12:* a flush costs what was written since the last one, not the size of the store, and a store
+over its byte budget is measured without being serialised again, saving nothing until it fits
+([#70](https://github.com/Dastari/graphql-orm-client/issues/70)). Acceptance: a flush of an over-budget store doesn't
+serialise it again while it's still over budget, and the documented behaviour over budget matches the code, with a test.
+Saving a subset that fits is not built: it would need every reachable record and a record of use the store doesn't keep.
+A snapshot records when it was saved, and one older than `maxAgeMs` (default 7 days) is deleted and not restored
+([#75](https://github.com/Dastari/graphql-orm-client/issues/75)). Acceptance: such a snapshot isn't restored and is
+deleted from the adapter; an envelope without `savedAt`, from an earlier version, is deleted as a mismatch; tests use an
+injected clock.
 
 **R18. Route loading.** `loadQuery`, or similar, starts a route's query before mount, so a router's
 loader can avoid a waterfall. Suspense is optional (R29). Fragment arguments (R28) and `@skip`/`@include` (R27)
