@@ -66,7 +66,12 @@ function Page({ loaded }: { loaded: LoadedQuery<TicketsPageQuery> }) {
 - Never fetch inside a child component to fill in missing data. Add the field to the child's
   fragment instead, so the root's query includes it.
 - Start the root in the browser route loader (`client.loadQuery`) and consume its handle with
-  `useLoadedQuery`; forward the router abort signal and dispose abandoned handles. It does not suspend.
+  `useLoadedQuery`; forward the router abort signal and dispose abandoned handles. `useLoadedQuery` does not
+  suspend. `useSuspenseLoadedQuery(handle)` reads the same handle and suspends until it has data (no extra
+  request); a first-read error goes to the error boundary (`await handle.refetch()` before resetting it). It
+  suspends again only for a new handle: set that in `startTransition` to keep the previous screen. Browser only;
+  the server renders the Suspense fallback. In tests, render it inside `await act(async () => ...)`: React waits on
+  the suspended read inside an awaited `act`.
 - `@skip`/`@include` selections and fragment arguments (`@argumentDefinitions`/`@arguments`) are
   unsupported build errors. Use separate roots and operation variables. For existing conditional
   documents, `conditionalDirectives: "legacy"` temporarily keeps unsafe old behaviour while migrating;

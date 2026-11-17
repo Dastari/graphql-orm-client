@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
   useSyncExternalStore,
+  use,
   type ReactNode,
 } from "react"
 import type { FragmentArtifact, FragmentRefFor, OperationArtifact } from "../artifact.js"
@@ -154,6 +155,47 @@ export function useLoadedQuery<T>(loaded: LoadedQuery<T>): QueryState<T> {
   if (client !== loaded.client) throw new Error("useLoadedQuery: loader belongs to a different identity client")
   useEffect(() => loaded.mount(), [loaded])
   return useSyncExternalStore(loaded.subscribe, loaded.getState, idleState) as QueryState<T>
+}
+
+/** What `useSuspenseLoadedQuery` returns: a query state that always has data. */
+export type SuspenseQueryState<T> = QueryState<T> & { readonly data: T }
+
+/** The identity behind a handle ended; its reads wait here for good, one promise per client, collected with it. */
+const ended = new WeakMap<Client, Promise<never>>()
+
+/**
+ * Read a loader handle, suspending until it has data. The loader started the request, so suspending only waits on it: no second
+ * request and no waterfall, StrictMode included. A first read that fails throws its error to the nearest error boundary; to retry,
+ * `await handle.refetch()` before resetting the boundary, or start a new `loadQuery`.
+ *
+ * Once there is data it never suspends again for the same handle: a refetch shows `refreshing` with the data, a live update
+ * re-renders, and a failed refetch keeps the data with `error` set. A new handle (other variables, another navigation) suspends
+ * again; set it inside `startTransition` (as routers navigate) to keep the previous screen until the new data arrives.
+ *
+ * While suspended it retains nothing a render could leak: the handle stays open under its unused-load deadline, which waits for
+ * the pending read. Once the handle's client is disposed (the identity changed), the read suspends for good, under any
+ * provider: it never resolves, throws or shows data, so the next identity's loader has to supply a new handle. A handle that
+ * was disposed or aborted with its client alive throws, as `useLoadedQuery` does. A handle from another live client throws.
+ *
+ * Browser only. Server rendering is not supported: on the server it throws, so React renders the nearest `<Suspense>` fallback
+ * there and renders this subtree in the browser.
+ */
+export function useSuspenseLoadedQuery<T>(loaded: LoadedQuery<T>): SuspenseQueryState<T> {
+  if (typeof window === "undefined") throw new Error("useSuspenseLoadedQuery renders in the browser only; the server shows the Suspense fallback")
+  const client = useClient()
+  useEffect(() => loaded.mount(), [loaded])
+  const state = useSyncExternalStore(loaded.subscribe, loaded.getState, loaded.getState) as QueryState<T>
+  const owner = loaded.client
+  if (owner.store.isDisposed) {
+    let never = ended.get(owner)
+    if (!never) ended.set(owner, (never = new Promise<never>(() => {})))
+    use(never)
+  }
+  if (client !== owner) throw new Error("useSuspenseLoadedQuery: loader belongs to a different identity client")
+  if (state.data !== undefined) return state as SuspenseQueryState<T>
+  if (state.status === "error" && state.error) throw state.error
+  use(loaded.suspend())
+  return state as SuspenseQueryState<T>
 }
 
 export interface PagedQueryOptions extends QueryOptions {

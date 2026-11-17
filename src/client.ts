@@ -366,6 +366,13 @@ export interface LoadedQuery<T> extends WatchedQuery<T> {
   readonly client: Client
   /** Retain while mounted, opening again if the load expired or its last user unmounted. The cleanup tolerates StrictMode effect replay. */
   mount(): () => void
+  /**
+   * For a suspending read (`useSuspenseLoadedQuery`) before it mounts: a promise, the same one until it settles, that resolves when
+   * the read leaves `loading` (data or an error) or the load is disposed. Opens an expired load again, as `mount` does. The unused-load
+   * deadline waits while it is pending, then starts again, so a render that never commits still releases the load. Sends no request
+   * of its own. Throws once the load or its client is disposed.
+   */
+  suspend(): Promise<void>
   /** End this loader; it can't be mounted again. Idempotent. Without this, an unused loader only pauses. */
   dispose(): void
 }
@@ -1904,14 +1911,40 @@ export class Client {
       this.subscriptions.add(dispose)
       watched.open()
     }
+    const live = () => {
+      if (disposed || this.store.isDisposed) throw new Error(`${artifact.name}: route load was disposed; start a new loadQuery`)
+      clearTimeout(timer)
+      if (!open) start()
+    }
+    const unused = () => {
+      clearTimeout(timer)
+      timer = setTimeout(idle, timeoutMs)
+      timer.unref?.()
+    }
+    let waiting: Promise<void> | null = null
     const loaded: LoadedQuery<T> = {
       ...watched, client: this,
       ready: Promise.resolve(),
       dispose,
+      suspend: () => {
+        live()
+        return waiting ??= new Promise<void>(resolve => {
+          let off = () => {}, done = false
+          const settle = () => {
+            if (done) return
+            done = true
+            waiting = null
+            off()
+            if (open && mounts === 0) unused()
+            resolve()
+          }
+          off = watched.subscribe(() => { if (watched.getState().status !== "loading") settle() })
+          void cancelled.then(settle)
+          if (watched.getState().status !== "loading") queueMicrotask(settle)
+        })
+      },
       mount: () => {
-        if (disposed || this.store.isDisposed) throw new Error(`${artifact.name}: route load was disposed; start a new loadQuery`)
-        clearTimeout(timer)
-        if (!open) start()
+        live()
         mounts += 1
         let released = false
         return () => {
@@ -1925,8 +1958,7 @@ export class Client {
     }
     if (options.signal?.aborted || this.store.isDisposed) { dispose(); return loaded }
     options.signal?.addEventListener("abort", dispose, { once: true })
-    timer = setTimeout(idle, timeoutMs)
-    timer.unref?.()
+    unused()
     start()
     // open starts the request; refetch joins it, except for an already complete cached read.
     if (!disposed) Object.assign(loaded, { ready: watched.getState().status === "ready" ? Promise.resolve() : Promise.race([watched.refetch(), cancelled]) })

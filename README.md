@@ -107,7 +107,7 @@ pnpm exec graphql-orm-client skills install --target claude   # or agents / code
 | Stage | What happens |
 | --- | --- |
 | Component | Declares a fragment on the type it renders and reads it with `useFragment`. It only sees the fields it asked for (data masking). |
-| Route root | Owns one query that spreads its children's fragments. A browser route loader starts it with `client.loadQuery`; `useLoadedQuery` consumes the same read. |
+| Route root | Owns one query that spreads its children's fragments. A browser route loader starts it with `client.loadQuery`; `useLoadedQuery` (or `useSuspenseLoadedQuery`, which suspends) consumes the same read. |
 | Compiler | `graphql-orm-client generate` turns every root into a flattened query, a sha256 hash of its text, a normalisation map, per-fragment readers and, for fragments marked `@live`, a subscription document. |
 | Store | Keeps records by `NodeId` (type name plus complete key), orders writes by record version and retains by reference count. |
 | Live layer | Subscribes to the generated `Changed` events for the records held through `@live` fragments and writes each event's entity into the store. Polling is a fallback for records no subscription covers. |

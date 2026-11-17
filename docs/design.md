@@ -9,7 +9,7 @@ Status: partly built. Implemented and tested:
 - transport: `createHttpNetwork` (GraphQL over HTTP) and `graphqlWsTransport` (a graphql-ws
   client for the live layer);
 - `readFragment`;
-- React: `ClientProvider`, `useQuery`, `useLoadedQuery`, `usePagedQuery`, `useFragment`, `useFragmentList`,
+- React: `ClientProvider`, `useQuery`, `useLoadedQuery`, `useSuspenseLoadedQuery`, `usePagedQuery`, `useFragment`, `useFragmentList`,
   `useMutation` and `useSubscription`;
 - the live layer: `compile(...).live`, `LiveManager`, `createClient({ live })`, and opt-in back-off for refused streams;
 - the generator: `graphql-orm-client generate` with `--check`. It emits typed artifacts, masked
@@ -21,7 +21,7 @@ Status: partly built. Implemented and tested:
 - `@refetchable` fragments: `client.refetchFragment` and `useRefetchableFragment`.
 
 Proposed, not built: per-type
-`staleMs` policy ([R30](requirements.md)), a store inspector ([R31](requirements.md)), Suspense ([R29](requirements.md)), the `scope` store option, sending operations by persisted hash,
+`staleMs` policy ([R30](requirements.md)), a store inspector ([R31](requirements.md)), a Suspense read for a query started at render, the `scope` store option, sending operations by persisted hash,
 batching writes per tick, refetching a parent on a `PROPAGATED` event, and marking records stale after a failed lookup. Sections below label these. What the client still
 needs is in [requirements.md](requirements.md).
 
@@ -111,7 +111,42 @@ Migration is opt-in per route: replace `preload` plus `useQuery` with `loadQuery
 `useLoadedQuery`, forward cancellation, and handle `idle`, `loading` and `error` states. The old
 `preload` remains an awaitable warm-up that closes on completion. A subsequent default `useQuery`
 uses `store-and-network` and may read again. Its legacy StrictMode effect replay can restart a request;
-the loader hook avoids that. Suspense is not implemented; R29 in [the requirements](requirements.md) records it.
+the loader hook avoids that.
+
+#### Suspending read (R29)
+
+`useSuspenseLoadedQuery(handle)` reads the same handle and suspends until it has data, so the route's
+`<Suspense>` fallback shows while the loader's read is in flight. It returns `QueryState` with `data` always set. It
+sends no request: the loader started the read, so suspending only waits on it, and StrictMode's double render
+waits on the same promise. While suspended it calls `handle.suspend()`, which returns one promise per pending read
+(resolving when the state leaves `loading` or the handle is disposed) and opens an expired handle again, as
+`mount` does. Nothing is retained per render: the handle is already open under its unused-load deadline, and that
+deadline waits while a suspended render waits, then starts again when the read settles. A render that never
+commits (an abandoned navigation without an abort signal) therefore releases the handle `timeoutMs` after the
+read settles. Mount, after the commit, cancels the deadline as with `useLoadedQuery`.
+
+A first read that fails throws its error to the nearest error boundary. To retry, `await handle.refetch()` and then
+reset the boundary; the handle's status stays `error` until that read settles, so resetting first would throw the
+same error again. After the first data the hook never suspends again for that handle: a refetch shows
+`refreshing` with the data, live updates re-render, and a refetch that fails keeps the data and sets `error`. A
+new handle (a navigation, or other variables) suspends again. Set it inside `startTransition`, as routers do for
+navigation, to keep the previous screen until the new handle has data; outside a transition the boundary shows
+its fallback.
+
+Disposing the client while a read is suspended resolves the pending promise without data. The hook then
+suspends for good on a promise that never settles, cached weakly per disposed client, whatever provider is
+above it: it never shows the old identity's data, never throws into the next identity's error boundary, and
+holds no listener or retention. The next identity's loader supplies a new handle. A handle disposed or aborted
+while its client is alive throws `route load was disposed`, as `useLoadedQuery`'s mount does, and a handle
+from another live client throws as well.
+
+The hook suspends with React's `use`, so React 19 is required (as the peer range says). In tests, render inside
+`await act(async () => render(...))`; with a synchronous `act` React can't wait on the read and never retries it.
+
+Server rendering is a non-goal here too. On the server the hook throws before reading anything, so React
+renders the nearest `<Suspense>` fallback in the server HTML and renders that subtree in the browser. A
+`useSuspenseQuery` for a query started at render is not built: it would start a request from render, which the
+loader pattern avoids.
 
 ### Conditional selections and fragment arguments
 
