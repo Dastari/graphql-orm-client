@@ -104,8 +104,13 @@ async function watchCommand(args) {
     else targets.push({
       directory: path,
       recursive: true,
-      accept: (file) => extensions.includes(extname(file)) && resolve(path, file) !== out &&
-        !file.split(/[\\/]/).some((part) => part === "node_modules" || part.startsWith(".")),
+      accept: (file) => {
+        const full = resolve(path, file)
+        if (full === out || file.split(/[\\/]/).some((part) => part === "node_modules" || part.startsWith("."))) return false
+        if (extensions.includes(extname(file))) return true
+        // A directory moved in or out is one event for its name, whatever documents it holds.
+        return !existsSync(full) || statSync(full).isDirectory()
+      },
     })
   }
   const { watchFiles } = await import("../dist/compiler/watch.js")
@@ -137,7 +142,8 @@ async function loadProject(args) {
   const documentPaths = {}
   const sources = files.flatMap((file) => {
     try {
-      const documents = extractDocuments(readFileSync(file, "utf8"), config.functionName ?? "graphql")
+      const fileName = relative(base, file).split("\\").join("/")
+      const documents = extractDocuments(readFileSync(file, "utf8"), config.functionName ?? "graphql", { fileName })
       for (const text of documents) (documentPaths[text] ??= []).push(relative(base, file).split("\\").join("/"))
       return documents
     } catch (error) {
@@ -226,10 +232,13 @@ function endpointOptions(args) {
   return { value, url, headers }
 }
 
-/** `localhost`, a `.localhost` name, 127.0.0.0/8 or ::1: names that never leave this machine. */
+/**
+ * Exactly `localhost`, a literal 127.0.0.0/8 address or `[::1]`. `URL` has already lowercased the name and written
+ * IPv4 and IPv6 literals in their shortest form, so `127.1` and `[0:0:0:0:0:0:0:1]` arrive as `127.0.0.1` and `[::1]`.
+ * Other names, `localhost.` and `*.localhost` among them, can be sent to a DNS server, so they don't count.
+ */
 function isLoopback(hostname) {
-  const host = hostname.toLowerCase().replace(/\.$/, "")
-  return host === "localhost" || host.endsWith(".localhost") || host === "[::1]" || /^127(\.\d{1,3}){3}$/.test(host)
+  return hostname === "localhost" || hostname === "[::1]" || /^127(\.\d{1,3}){3}$/.test(hostname)
 }
 
 async function schemaPullCommand(args) {

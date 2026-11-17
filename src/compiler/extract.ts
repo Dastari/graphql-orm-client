@@ -1,91 +1,112 @@
-const IDENTIFIER = /[A-Za-z0-9_$]/
-/** After one of these, a `/` starts a regular expression; after anything else it divides. */
-const BEFORE_EXPRESSION = new Set([..."(,=:[!&|?{};+-*%<>~^"])
-const KEYWORDS_BEFORE_EXPRESSION = new Set(["return", "typeof", "instanceof", "in", "of", "new", "delete", "void", "throw", "case", "do", "else", "yield", "await"])
+import { createRequire } from "node:module"
+import { join } from "node:path"
+import type * as TypeScript from "typescript"
+
+export interface ExtractOptions {
+  /**
+   * The file the code came from. Its extension picks how TypeScript parses it (`.tsx` and `.jsx` allow JSX), and
+   * warnings name it.
+   */
+  readonly fileName?: string
+  /** Gets a warning when a call is kept because its place couldn't be told. Default `console.warn`. */
+  readonly onWarning?: (message: string) => void
+  /**
+   * The `typescript` module to place calls with. By default it's loaded if it can be: from this package, then from
+   * the current directory. `null` skips it, so every call found is extracted, comments and strings included.
+   */
+  readonly typescript?: typeof TypeScript | null
+}
+
+let loaded: typeof TypeScript | null | undefined
+
+/** The `typescript` package, when one can be found; it's optional. */
+function loadTypeScript(): typeof TypeScript | null {
+  if (loaded !== undefined) return loaded
+  loaded = null
+  for (const base of [import.meta.url, join(process.cwd(), "package.json")]) {
+    try {
+      const module = createRequire(base)("typescript") as typeof TypeScript
+      if (typeof module.createSourceFile === "function" && typeof module.SyntaxKind === "object") return (loaded = module)
+    } catch {
+      // Not installed there.
+    }
+  }
+  return loaded
+}
+
+type Place = "code" | "comment" | "string" | "unknown"
+
+/** Where `position` falls in the parsed file: in code, a comment, a string-like token, or somewhere it can't say. */
+function placeOf(ts: typeof TypeScript, file: TypeScript.SourceFile, position: number, functionName: string): Place {
+  const literal = new Set<TypeScript.SyntaxKind>([
+    ts.SyntaxKind.StringLiteral, ts.SyntaxKind.NoSubstitutionTemplateLiteral, ts.SyntaxKind.TemplateHead,
+    ts.SyntaxKind.TemplateMiddle, ts.SyntaxKind.TemplateTail, ts.SyntaxKind.RegularExpressionLiteral,
+    ts.SyntaxKind.JsxText, ts.SyntaxKind.JsxTextAllWhiteSpaces,
+  ])
+  let node: TypeScript.Node = file
+  for (;;) {
+    const child: TypeScript.Node | undefined = node.getChildren(file).find((candidate) => candidate.getFullStart() <= position && position < candidate.end)
+    if (!child) return "unknown"
+    if (child.kind >= ts.SyntaxKind.FirstJSDocNode && child.kind <= ts.SyntaxKind.LastJSDocNode) return "comment"
+    // Between a token's full start and its start is trivia: whitespace and comments. A name isn't whitespace.
+    if (position < child.getStart(file)) return "comment"
+    if (literal.has(child.kind)) return "string"
+    if (child.kind === ts.SyntaxKind.Identifier) return (child as TypeScript.Identifier).text === functionName && child.getStart(file) === position ? "code" : "unknown"
+    node = child
+  }
+}
+
+function scriptKind(ts: typeof TypeScript, fileName: string | undefined): TypeScript.ScriptKind {
+  const extension = /\.[^./\\]+$/.exec(fileName ?? "")?.[0]?.toLowerCase()
+  if (extension === ".tsx") return ts.ScriptKind.TSX
+  if (extension === ".jsx") return ts.ScriptKind.JSX
+  if (extension === ".js" || extension === ".mjs" || extension === ".cjs") return ts.ScriptKind.JS
+  return ts.ScriptKind.TS
+}
 
 /**
  * Find the GraphQL documents in source code: the template literal or string passed to each
  * `graphql(...)` call. Templates with `${...}` interpolation are rejected, because the generated
  * `graphql()` maps each exact document text to its artifact.
  *
- * Only calls in code count. A call inside a line or block comment, or inside the text of another string or
- * template, is skipped; one inside a template's `${...}` is code, and counts. This is a scanner, not a parser:
- * a string that isn't closed by the end of its line is taken to end there, so a stray quote (an apostrophe in
- * JSX text, say) can hide a call on its own line but not on the next.
+ * Every `graphql(` followed by a quote is a candidate. When the `typescript` package can be loaded, the file is
+ * parsed with it (JSX for `.tsx` and `.jsx`), and a candidate inside a comment, or inside the text of another
+ * string, template or regular expression, is skipped. Nothing else is dropped: a candidate whose place the parse
+ * can't tell is kept with a warning, and a file TypeScript can't parse, or a project without TypeScript, keeps
+ * every candidate, as earlier versions did.
  */
-export function extractDocuments(code: string, functionName = "graphql"): string[] {
+export function extractDocuments(code: string, functionName = "graphql", options: ExtractOptions = {}): string[] {
   const documents: string[] = []
-  const call = new RegExp(`${functionName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\(\\s*([\`"'])`, "y")
-  // The brace depth at which each open `${` began; its matching `}` returns to the template's text.
-  const templates: number[] = []
-  let depth = 0
-  // The last significant character of code, to tell a regular expression from a division.
-  let last = -1
-
-  /** Template text from `start`; returns where code resumes, after the closing backtick or after a `${`. */
-  const templateText = (start: number): number => {
-    let index = start
-    while (index < code.length) {
-      const char = code[index]!
-      if (char === "\\") index += 2
-      else if (char === "`") return index + 1
-      else if (char === "$" && code[index + 1] === "{") {
-        templates.push(depth)
-        depth += 1
-        return index + 2
-      } else index += 1
+  const pattern = new RegExp(`\\b${functionName}\\(\\s*([\`"'])`, "g")
+  const ts = options.typescript === undefined ? (pattern.test(code) ? loadTypeScript() : null) : options.typescript
+  pattern.lastIndex = 0
+  const warn = options.onWarning ?? console.warn
+  const where = options.fileName ?? "<document>"
+  let file: TypeScript.SourceFile | null = null
+  if (ts) {
+    file = ts.createSourceFile(options.fileName ?? "document.ts", code, ts.ScriptTarget.Latest, true, scriptKind(ts, options.fileName))
+    // An internal field, read with care: a file with syntax errors may be parsed wrongly, so trust none of it.
+    const errors = (file as unknown as { parseDiagnostics?: readonly unknown[] }).parseDiagnostics
+    if (errors?.length) {
+      file = null
+      if (pattern.test(code)) warn(`${where}: TypeScript couldn't parse this file, so ${functionName}() calls in its comments and strings are extracted too`)
+      pattern.lastIndex = 0
     }
-    return index
   }
-
-  /** The end of a quoted string, or of its line when it isn't closed there. */
-  const stringEnd = (start: number, quote: string): number => {
-    let index = start + 1
-    while (index < code.length) {
-      const char = code[index]!
-      if (char === "\\") index += 2
-      else if (char === quote) return index + 1
-      else if (char === "\n") return index
-      else index += 1
-    }
-    return index
-  }
-
-  /** The end of a regular expression literal starting at `start`, or -1 when the line ends first. */
-  const regexEnd = (start: number): number => {
-    let index = start + 1
-    let inClass = false
-    while (index < code.length) {
-      const char = code[index]!
-      if (char === "\n") return -1
-      if (char === "\\") index += 2
-      else {
-        if (char === "[") inClass = true
-        else if (char === "]") inClass = false
-        else if (char === "/" && !inClass) {
-          index += 1
-          while (index < code.length && IDENTIFIER.test(code[index]!)) index += 1
-          return index
-        }
-        index += 1
+  let match: RegExpExecArray | null
+  while ((match = pattern.exec(code))) {
+    if (ts && file) {
+      const place = placeOf(ts, file, match.index, functionName)
+      if (place === "comment" || place === "string") continue
+      if (place === "unknown") {
+        const line = code.slice(0, match.index).split("\n").length
+        warn(`${where}:${line}: couldn't tell whether this ${functionName}() call is code, a comment or a string, so it was extracted`)
       }
     }
-    return -1
-  }
-
-  const startsExpression = (): boolean => {
-    if (last < 0) return true
-    const char = code[last]!
-    if (BEFORE_EXPRESSION.has(char)) return true
-    if (!IDENTIFIER.test(char)) return false
-    const word = /[A-Za-z_$][A-Za-z0-9_$]*$/.exec(code.slice(Math.max(0, last - 15), last + 1))?.[0]
-    return word !== undefined && KEYWORDS_BEFORE_EXPRESSION.has(word)
-  }
-
-  /** The document a call passes, from just after its opening quote; returns it and the index of the closing quote. */
-  const readDocument = (start: number, quote: string): { text: string; end: number } => {
-    let index = start
+    const quote = match[1]!
+    let index = match.index + match[0].length
     let text = ""
+    let closed = false
     while (index < code.length) {
       const char = code[index]!
       if (char === "\\") {
@@ -95,61 +116,18 @@ export function extractDocuments(code: string, functionName = "graphql"): string
         index += 2
         continue
       }
-      if (char === quote) return { text, end: index }
+      if (char === quote) {
+        closed = true
+        break
+      }
       if (quote === "`" && char === "$" && code[index + 1] === "{")
         throw new Error(`${functionName}() documents cannot interpolate values: ${text.trim().slice(0, 80)}`)
       text += char
       index += 1
     }
-    throw new Error(`Unterminated ${functionName}() document: ${text.trim().slice(0, 80)}`)
-  }
-
-  let index = 0
-  while (index < code.length) {
-    const char = code[index]!
-    const next = code[index + 1]
-    if (char === "/" && next === "/") {
-      const end = code.indexOf("\n", index)
-      index = end < 0 ? code.length : end
-    } else if (char === "/" && next === "*") {
-      const end = code.indexOf("*/", index + 2)
-      index = end < 0 ? code.length : end + 2
-    } else if (char === "/" && startsExpression() && regexEnd(index) >= 0) {
-      index = regexEnd(index)
-      last = index - 1
-    } else if (char === '"' || char === "'") {
-      index = stringEnd(index, char)
-      last = index - 1
-    } else if (char === "`") {
-      index = templateText(index + 1)
-      last = index - 1
-    } else if (char === "{") {
-      depth += 1
-      last = index++
-    } else if (char === "}") {
-      depth -= 1
-      if (templates.length && templates[templates.length - 1] === depth) {
-        templates.pop()
-        index = templateText(index + 1)
-        last = index - 1
-      } else last = index++
-    } else if (IDENTIFIER.test(char)) {
-      const word = /[A-Za-z0-9_$]+/y
-      word.lastIndex = index
-      word.exec(code)
-      const wordEnd = word.lastIndex
-      call.lastIndex = index
-      const match = code.slice(index, wordEnd) === functionName ? call.exec(code) : null
-      if (match) {
-        const { text, end } = readDocument(call.lastIndex, match[1]!)
-        documents.push(text)
-        index = end + 1
-      } else index = wordEnd
-      last = index - 1
-    } else {
-      if (!/\s/.test(char)) last = index
-      index += 1
-    }
+    if (!closed) throw new Error(`Unterminated ${functionName}() document: ${text.trim().slice(0, 80)}`)
+    documents.push(text)
+    pattern.lastIndex = index + 1
   }
   return documents
 }

@@ -124,7 +124,8 @@ its hash. `generate --check` fails when generated output doesn't match. Consumer
 their own.
 *Built:* sorted SDL snapshots, SHA-256 sidecars, read-only drift checks and opt-in generation integrity checks.
 `generate --watch` regenerates after a document, snapshot or config change and reports errors without exiting, and
-generation ignores a `graphql()` call inside a comment or another string
+generation ignores a `graphql()` call inside a comment or another string when TypeScript is installed, never
+dropping a call it can't place
 ([#81](https://github.com/Dastari/graphql-orm-client/issues/81)).
 *Acceptance:* a watch regenerates after each change and survives an invalid document; a commented-out call isn't
 extracted.

@@ -56,7 +56,38 @@ describe("extractDocuments", () => {
 
   it("finds a call after a JSX apostrophe on an earlier line", () => {
     const code = ["const view = <p>Don't panic</p>", "const A = graphql(`query A { x }`)"].join("\n")
-    expect(extractDocuments(code)).toEqual(["query A { x }"])
+    expect(extractDocuments(code, "graphql", { fileName: "view.tsx" })).toEqual(["query A { x }"])
+  })
+
+  // Each of these hid a real document from a hand-written scanner.
+  const hidden: [string, string, string[]][] = [
+    ["JSX text containing /*", "const v = <p>Accepts image/*</p>\nconst A = graphql(`query A { x }`)", ["query A { x }"]],
+    ["a JSX closing tag before a call", "const v = <p><b>x</b>{graphql(`query B { x }`)}</p>", ["query B { x }"]],
+    ["an apostrophe in JSX text on a line opening a template", "const v = <p>Don't</p>; const C = graphql(`\n  query C { x }\n`)", ["\n  query C { x }\n"]],
+    ["a stray backtick in JSX text", "const v = <p>Press ` to open</p>\nconst D = graphql(`query D { x }`)", ["query D { x }"]],
+    ["a regular expression after if (...)", "if (ok) /`/.test(s)\nconst E = graphql(`query E { x }`)", ["query E { x }"]],
+    ["a division after x++", 'x++ / y; "/"; const F = graphql(`query F { x }`)', ["query F { x }"]],
+  ]
+  for (const [label, code, expected] of hidden) {
+    it(`finds a document after ${label}`, () => {
+      const warnings: string[] = []
+      expect(extractDocuments(code, "graphql", { fileName: "view.tsx", onWarning: (message) => warnings.push(message) })).toEqual(expected)
+      expect(warnings).toEqual([])
+      // Without TypeScript every candidate is kept, as before.
+      expect(extractDocuments(code, "graphql", { typescript: null })).toEqual(expected)
+    })
+  }
+
+  it("keeps every candidate, comments and strings included, without TypeScript", () => {
+    const code = "// graphql(`query Old { x }`)\nconst A = graphql(`query A { x }`)\nconst s = \"graphql('query S { x }')\""
+    expect(extractDocuments(code, "graphql", { typescript: null })).toEqual(["query Old { x }", "query A { x }", "query S { x }"])
+  })
+
+  it("keeps every candidate, with a warning naming the file, when TypeScript can't parse it", () => {
+    const warnings: string[] = []
+    const code = "// graphql(`query Old { x }`)\nconst A = graphql(`query A { x }`)\nconst = = ;"
+    expect(extractDocuments(code, "graphql", { fileName: "src/broken.ts", onWarning: (message) => warnings.push(message) })).toEqual(["query Old { x }", "query A { x }"])
+    expect(warnings).toEqual([expect.stringContaining("src/broken.ts")])
   })
 })
 

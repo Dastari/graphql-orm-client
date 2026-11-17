@@ -205,6 +205,20 @@ describe("runDoctor", () => {
       expect(JSON.stringify(report)).not.toContain("abc123")
     })
 
+    it("withholds what graphql-js says about an introspection result it can't build", async () => {
+      const escaped = "Bad\u001b[31mName"
+      const data = introspectionFromSchema(buildSchema(sdl)) as unknown as { __schema: { types: { name: string }[] } }
+      data.__schema.types.find((type) => type.name === "Note")!.name = escaped
+      const fetch = (async () => new Response(JSON.stringify({ data }))) as unknown as typeof globalThis.fetch
+      const server = router()
+      const report = await runDoctor({ ...base, fetch, WebSocket: server.WebSocket })
+      expect(report.schemaProblem).toBe("Introspection failed: the served introspection result isn't a usable schema")
+      expect(JSON.stringify(report)).not.toContain("\\u001b")
+      expect(formatDoctorReport(report)).not.toContain("\u001b")
+      const verbose = await runDoctor({ ...base, serverMessages: true, fetch, WebSocket: server.WebSocket })
+      expect(verbose.schemaProblem).toContain(escaped)
+    })
+
     it("withholds introspection error text and a socket's close reason", async () => {
       const server = router({ served: null, init: (socket) => socket.fire("close", { code: 4403, reason: leaky }) })
       const report = await runDoctor({ ...base, fetch: server.fetch, WebSocket: server.WebSocket })

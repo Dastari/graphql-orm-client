@@ -149,7 +149,12 @@ describe("credentials in clear text", () => {
     expect(result.stderr).toContain("Warning")
     expect(result.stderr).toContain("clear text")
   })
-  it.each(["http://localhost:1", "http://127.0.0.2:1", "http://[::1]:1", "http://app.localhost:1"])("accepts the loopback address %s", async (url) => {
+  it.each(["http://localhost.:1/graphql", "http://api.localhost:1/graphql", "http://localhost.example:1/graphql", "http://[::ffff:10.0.0.1]:1/graphql"])("refuses %s, which can go to DNS or off this machine", async (url) => {
+    const result = await run(project(), ["schema", "pull", "--url", url, "--token-env", "TEST_TOKEN"], token)
+    expect(result.code).toBe(2)
+    expect(result.stderr).toContain("clear text")
+  })
+  it.each(["http://localhost:1", "http://LOCALHOST:1", "http://127.0.0.2:1", "http://127.1:1", "http://[::1]:1", "http://[0:0:0:0:0:0:0:1]:1"])("accepts the loopback address %s", async (url) => {
     const result = await run(project(), ["schema", "pull", "--url", url, "--token-env", "TEST_TOKEN"], token)
     expect(result.code).toBe(3)
     expect(result.stderr).not.toContain("clear text")

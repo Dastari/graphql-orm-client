@@ -23,7 +23,7 @@ The client only works against graphql-orm services and their router.
 2. **Generate.** Add `graphql-orm-client.config.json` (`schema`, `documents`, `out`,
    `scalars`; `keys` for composite or non-`Id` keys on types without `NodeId`; `versions` only for a version field other than graphql-orm's `RecordVersion`, or `null` to stop selecting it).
    Run `graphql-orm-client generate` (`generate --watch` keeps it running and regenerates on each change), and run
-   `generate --check` in CI. A `graphql()` call inside a comment or another string isn't a document. Write every document with
+   `generate --check` in CI. With `typescript` installed, a `graphql()` call inside a comment or another string isn't a document; without it, every call is. Write every document with
    the generated `graphql()`, one operation or fragment per call, so each carries its own types
    and an invalid field fails the build.
 3. **Client.** Create one client per signed-in identity with `createClient`. When the identity

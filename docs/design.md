@@ -171,7 +171,8 @@ are unknown, never a match. Credentials use `--token-env NAME` or repeated
 `--header-env name=NAME`; literal `--token`, `--header` and `--password` are refused.
 
 Both `schema pull` and `doctor` refuse, with exit 2, to send a credential to an `http:` or `ws:` URL whose host isn't
-this machine (`localhost`, a `.localhost` name, 127.0.0.0/8 or `[::1]`), because anyone on the path can read it.
+this machine, because anyone on the path can read it. Only exactly `localhost`, a literal 127.0.0.0/8 address and
+`[::1]` count as this machine: `localhost.` and `*.localhost` names can be sent to a DNS server.
 `--allow-insecure-credentials` sends it anyway, with a warning, for a network you trust such as a container network
 in CI. A refusal, not a warning, because a warning printed in CI goes unread and the credential has gone by then.
 
@@ -201,12 +202,16 @@ artifact per root:
   with full and keys-only projections for each type; legacy generation can retain fragment spreading.
 - **Types.** TypeScript result, variable and fragment-reference types.
 
-`generate` finds documents with a scanner, not a parser: a `graphql()` call counts only in code, so one in a line or
-block comment, or inside the text of another string or template, is skipped, and one inside a template's `${...}`
-counts. A string not closed by the end of its line is taken to end there, so a stray quote, such as an apostrophe
-in JSX text, can hide a call on its own line and no further.
+`generate` takes every `graphql(` followed by a quote as a candidate. When the `typescript` package can be loaded
+(an optional peer dependency, found from this package or the current directory), it parses each file that has one,
+with JSX for `.tsx` and `.jsx`, and skips a candidate in a comment or inside the text of another string, template,
+regular expression or JSX text; one inside a template's `${...}` is code and counts. It never drops a candidate it
+can't place: that one is kept with a warning naming the file and line, and a file TypeScript can't parse keeps every
+candidate, with a warning. Without TypeScript every candidate is kept, comments and strings included. A dropped
+document would silently remove an operation, which is worse than compiling a commented-out one.
 
-`generate --watch` generates, then generates again after a document, the schema snapshot or the config changes,
+`generate --watch` generates, then generates again after a document, the schema snapshot or the config changes
+(a directory moved into or out of `documents` counts),
 debounced by 100 ms. A failed run prints its error and the watch carries on, and a run that produces the same module
 leaves the file alone, so a dev server doesn't reload. It uses `node:fs` `watch` on directories, recursively for
 `documents`. The watched paths come from the config at the start, so a change to `schema`, `documents` or

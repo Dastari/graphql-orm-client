@@ -121,7 +121,16 @@ export async function readServedSchema(options: Pick<DoctorOptions, "url" | "hea
   const body = (await response.json().catch(() => null)) as { data?: IntrospectionQuery; errors?: { message: string }[] } | null
   if ([401, 403, 4401].includes(response.status) || body?.errors?.some((error) => ["401", "403", "4401", "UNAUTHENTICATED", "UNAUTHORIZED", "FORBIDDEN"].includes(String((error as { extensions?: { code?: unknown } }).extensions?.code))))
     throw Object.assign(new Error("Introspection failed: authentication refused"), { schemaCode: "authentication refused", exitCode: 4 })
-  if (body?.data?.__schema) return buildClientSchema(body.data)
+  if (body?.data?.__schema) {
+    try {
+      return buildClientSchema(body.data)
+    } catch (error) {
+      // graphql-js quotes the names it rejects, and they are the server's text, so they're kept apart too.
+      throw Object.assign(new Error("Introspection failed: the served introspection result isn't a usable schema"), {
+        serverMessage: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
   // The message is fixed; what the server said is kept apart, for a caller that has been asked to show it.
   const serverMessage = body?.errors?.map((error) => error.message).join("; ")
   throw Object.assign(new Error(`Introspection failed: introspection unavailable or disabled (HTTP ${response.status})`), {

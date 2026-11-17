@@ -56,10 +56,12 @@ If a script reads `--json` and switches on `verdict`, add `polling`.
 
 - `doctor` reports each error's code and a fixed description, such as "the server refused the stream; its message is
   withheld", instead of the server's message, and a socket's close code without its reason. An introspection failure says
-  "introspection unavailable or disabled (HTTP <status>)". A code that isn't a plain name is left out.
+  "introspection unavailable or disabled (HTTP <status>)", and an introspection result graphql-js can't build says
+  "the served introspection result isn't a usable schema". A code that isn't a plain name is left out.
   `--server-messages` restores the previous text.
 - `doctor` and `schema pull` refuse, with exit 2, to send a credential (`--token-env`, `--header-env`) to an `http:` or `ws:`
-  URL whose host isn't this machine. `localhost`, `.localhost` names, 127.0.0.0/8 and `[::1]` are allowed.
+  URL whose host isn't this machine. Only exactly `localhost`, a literal 127.0.0.0/8 address and `[::1]` are allowed;
+  `localhost.` and `*.localhost` names can go to DNS, so they aren't.
   `--allow-insecure-credentials` sends it with a warning. `doctor --ws-url` now has to be a `ws:` or `wss:` URL without
   embedded credentials.
 
@@ -69,15 +71,19 @@ Migration: a CI job that runs either command with a credential against `http://<
 container network, now fails. Use `https:`, or add `--allow-insecure-credentials`. To see server messages in the doctor's
 report again, add `--server-messages`.
 
-### Added: `generate --watch`, and extraction that skips comments and strings
+### Added: `generate --watch`, and extraction that skips comments and strings when TypeScript is installed
 
 `graphql-orm-client generate --watch` generates, then regenerates after a document, the schema snapshot or the config
-changes. A failed run prints its error and the watch continues. It uses `node:fs` and adds no dependency.
+changes, including a directory moved in or out. A failed run prints its error and the watch continues. It uses `node:fs`
+and adds no dependency.
 
 Fixed with it: generation found `graphql(` followed by a quote anywhere in a file, so a commented-out call was compiled and
-could fail generation or add an operation nothing used. Only calls in code count now; one in a comment, or inside the text
-of another string or template, is skipped ([#81](https://github.com/Dastari/graphql-orm-client/issues/81)). Run `generate`:
-if the module changes, it had an operation or fragment that was only in a comment or a string.
+could fail generation or add an operation nothing used. When the `typescript` package can be loaded (it is now an optional
+peer dependency), each file is parsed with it, JSX for `.tsx` and `.jsx`, and a call in a comment, or inside the text of
+another string, template or regular expression, is skipped ([#81](https://github.com/Dastari/graphql-orm-client/issues/81)).
+Nothing else is dropped: a call whose place can't be told is kept with a warning naming the file and line, and a file
+TypeScript can't parse, or a project without TypeScript, keeps every call, as before. Run `generate`: if the module
+changes, it had an operation or fragment that was only in a comment or a string.
 
 ## 0.1.0-alpha.12 (2026-11-07)
 

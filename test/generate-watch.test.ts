@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from "node:child_process"
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest"
@@ -162,9 +162,19 @@ describe("generate --watch", () => {
       await until(() => writes() === 3, "a schema change")
       expect(generated()).toContain("BrokenQuery")
 
+      // A directory moved in, then out, is one event for a name with no extension.
+      mkdirSync(join(dir, "outside/feature"), { recursive: true })
+      writeFileSync(join(dir, "outside/feature/page.ts"), "graphql(`query Moved { hello }`)")
+      renameSync(join(dir, "outside/feature"), join(dir, "src/feature"))
+      await until(() => writes() === 4, "a directory moved in")
+      expect(generated()).toContain("MovedQuery")
+      renameSync(join(dir, "src/feature"), join(dir, "outside/feature"))
+      await until(() => writes() === 5, "a directory moved out")
+      expect(generated()).not.toContain("MovedQuery")
+
       writeFileSync(join(dir, "src/notes.md"), "not a document")
       await new Promise((resolve) => setTimeout(resolve, 400))
-      expect(writes()).toBe(3)
+      expect(writes()).toBe(5)
       expect(stdout).not.toContain("is current")
     } finally {
       child.kill()
