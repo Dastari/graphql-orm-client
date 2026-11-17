@@ -15,7 +15,11 @@ Status: early alpha. Check the installed `docs/design.md` and `docs/graphql-orm-
    `ws` from graphql-ws. Don't write subscription operations, reconnect handling, restarts or refetches around a stream.
 3. **Regenerate.** `@live` on a type with no usable `Changed` stream fails the build, naming the fragment. Remove `@live`, or declare
    `@poll(reason: "...")` if polling is the honest answer. A fragment on a type that has a stream and isn't live gets a warning, because it won't update: mark it `@live`, or
-   `@live(enabled: false)` if that's meant. Don't leave the warning.
+   `@live(enabled: false)` if that's meant. Don't leave the warning. A type with a stream but no key can't be live, whether `keys: { Type: null }`
+   turns its identity off or the compiler finds none (no `Id` field and no `<Type>KeyInput`). The build says so once for the type, naming
+   its fragments, and `@live` on it fails naming the cause.
+   A field that takes an operation variable (`Label(Locale: $loc)`) can be in a `@live` fragment: the stream leaves it out, since one stream
+   serves every query holding the record, and each holding query reads it again with its own variables.
 4. **Draw what it says.** `useLiveHealth(typename?)` tells you whether the data is being kept current, so a page can show "live updates
    unavailable". Unknown is never drawn as healthy: `unconfirmed` means no update yet, not that all is well.
 5. **Run the doctor before a deploy** (below). What a router admits for an identity can't be known at build time.
@@ -35,8 +39,9 @@ same order and with loaded pages kept. A count or generated aggregate of a live 
     and sets `QueryState.listRefreshTruncated`: show that on screen, because those rows may be stale.
 - **Rate limit:** automatic reads are limited per query by `live.minRereadMs` (2000): one at the start of a burst and one at the end, a read
   already running is followed by one more, and they wait while the page is hidden.
-- **After a burst:** the router can drop frames under a burst with no signal (graphql-orm#359), so after at least 32 events on a type settle,
+- **After a burst:** graphql-orm-router before 0.9.0 can drop frames under a burst with no signal (graphql-orm#359), so after at least 32 events on a type settle,
   the queries holding it read once more. That's one extra read per burst per query, coalesced across types. `live.burstRead` adjusts or turns it off.
+  From router 0.9.0 a drop ends the streams with `SUBSCRIPTION_CONTINUITY_LOST`, and they restart and read on their own.
 - **First load:** a query reads once more after its records first gain a stream (`live.settleMs`, 250 ms), because nothing acknowledges a
   subscribe. This narrows the gap between read and subscribe, and can't close it. `settleMs: false` removes the extra read.
 - **Ended streams** restart by themselves and re-read, whatever ended them, backing off to about once a minute. A reconnected socket
@@ -84,7 +89,8 @@ pnpm exec graphql-orm-client doctor --url https://router.example/graphql --token
 ```
 
 It checks every document against the served schema and opens each live stream for up to `--stream-ms` (3000), for that token's identity. It runs
-introspection and subscriptions only. `--json` prints the report as JSON.
+introspection and subscriptions only. `--json` prints the report as JSON. graphql-orm-router 0.11.0 and later refuse introspection
+unless their configuration sets `"introspection": true`; the doctor then exits 5, `introspection unavailable or disabled`.
 
 | Verdict | Meaning | Exit |
 | --- | --- | --- |
@@ -118,9 +124,9 @@ Each of these changes a default on purpose. Reach for them when you have a reaso
 
 | Setting | Effect |
 | --- | --- |
-| `live: "default"` (generator) | Fragments on keyed object types are live with no directive. `@live(enabled: false)` opts one out. Opt-in, and `{ default: ["src/area/**"] }` limits it to fragments written in files matching those globs, not the files that spread them. The generator warns about a pattern that matches no fragment's file. Each newly live type costs one operation on a connection |
-| `liveSelection: "as-written"` (generator) | Keeps the older stream text. On graphql-orm before 0.92.0 the server refuses it on an entity with `NodeId` |
-| `strict` (generator) | `liveWithoutStream`, `pollWithoutReason`, `rawSubscriptions`, `queryOwnership` and `fragmentNotLive`, each `"error"`, `"warn"` or `"off"`. All default to `"error"` except `fragmentNotLive`, which warns |
+| `live: "default"` (generator) | Fragments on keyed object types are live with no directive. `@live(enabled: false)` opts one out. Opt-in, and `{ default: ["src/area/**"] }` limits it to fragments written in files matching those globs, not the files that spread them. The generator warns about a pattern that matches no fragment's file, and prints one line per pattern: files, fragments, and how many are newly live, already live, opted out, keyless or without a stream. Each newly live type costs one operation on a connection |
+| `liveSelection: "as-written"` (generator) | Keeps the older stream text. On graphql-orm before 0.92.0 the server refuses it on an entity with `NodeId`. A live fragment can't use an operation variable here; the build names the fragment, field and variable |
+| `strict` (generator) | `liveWithoutStream`, `pollWithoutReason`, `rawSubscriptions`, `queryOwnership` and `fragmentNotLive`, each `"error"`, `"warn"` or `"off"`. All default to `"error"` except `fragmentNotLive`, which warns. `fragmentNotLive` also covers fragments on a keyless type that has a stream |
 | `queryOwners`, `subscriptionPaths` (generator) | Globs for where queries and raw subscriptions may be written. Off unless set |
 | `live.maxKeyedSubscriptions` | Per-record streams in `key` mode (50). `0` means one stream per type in `key` and `keys` mode when the argument is optional, at a row-policy check per event per subscriber |
 | `versions: { Type: null }` (generator) | Stops selecting a version field some users can't read |

@@ -118,6 +118,8 @@ impl BatchLoadEntity for Vendor {
 }
 #[derive(Default)]
 struct FaultStreams;
+// From graphql-orm 0.143.0 `schema_roots!` needs a handwritten root's field names.
+#[cfg_attr(feature = "root-field-names", graphql_orm_root_fields)]
 #[async_graphql::Subscription]
 impl FaultStreams {
     // Deterministic test-owned channels exercise the ORM continuity adapter,
@@ -138,6 +140,15 @@ impl FaultStreams {
         let (tx, rx) = tokio::sync::broadcast::channel::<i32>(1);
         drop(tx);
         graphql_orm::graphql::subscriptions::continuity_events(rx)
+    }
+    // Count frames, 1 to Count, as fast as the socket takes them, then complete. Tests whether
+    // the router delivers every frame of a burst or says it lost some (graphql-orm#359).
+    #[graphql(name = "Burst")]
+    async fn burst(
+        &self,
+        #[graphql(name = "Count")] count: i32,
+    ) -> impl graphql_orm::futures::Stream<Item = i32> {
+        graphql_orm::futures::stream::iter(1..=count.clamp(0, 100_000))
     }
 }
 schema_roots! { backend: "sqlite", auth: "none", query_custom_ops: [], extra_subscription_types: [FaultStreams], generated_mutations: "denylist", generated_mutation_denylist: [Slot], entities: [Widget, Vendor, Slot, Ticket], }
@@ -305,7 +316,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for op in graphql_orm_operation_catalog().router_protocol_operations()? {
         builder = builder.operation(op);
     }
-    for field in ["ContinuityLost", "SourceClosed"] {
+    for field in ["ContinuityLost", "SourceClosed", "Burst"] {
         builder = builder.operation(graphql_orm_router_protocol::OperationDescriptor {
             root_type: graphql_orm_router_protocol::RootOperationType::Subscription,
             field_name: field.into(),

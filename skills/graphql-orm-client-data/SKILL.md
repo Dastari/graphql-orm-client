@@ -218,6 +218,8 @@ Adapter, budget and failure behaviour are in the installed design.
 
 - **On sign-out, call `persistence.clear()`, then dispose.** Disposing alone keeps the saved data, and nothing else removes it. `clear()` also stops the identity's other windows saving it.
 - **In a pop-out or other secondary window, pass `readOnly: true`.** It restores and never writes or deletes. Without it, the window's own smaller snapshot can replace the main window's.
+- A snapshot older than `maxAgeMs` (default 7 days since its last write) is deleted and not restored; `maxAgeMs: Infinity` restores any age. Pass `now` to control the clock in tests.
+- A store larger than `maxBytes` (default 1 MiB) saves nothing until it fits again, and reports `PERSISTENCE_SIZE` once. Watch for it in `onDiagnostic` and raise `maxBytes` if the working set is larger.
 
 ## Batched relation names
 
