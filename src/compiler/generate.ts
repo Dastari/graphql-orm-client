@@ -19,7 +19,7 @@ import {
 } from "graphql"
 import type { Selection } from "../artifact.js"
 import { CompileError, compile, type CompileOptions, type LiveAreaReport } from "./compile.js"
-import { printSchemaStable } from "./print.js"
+import { hasDefault, printSchemaStable } from "./print.js"
 
 export interface GenerateOptions extends CompileOptions {
   /** Emit a schema fingerprint for opt-in persistence; schema changes then affect --check. */
@@ -166,7 +166,7 @@ export function generate(schema: GraphQLSchema, sources: readonly string[], opti
         named.set(namedType.name, "")
         const fields = Object.values(namedType.getFields()).map((field) => {
           // A non-null field with a default may be left out (the default applies), but an explicit null is invalid.
-          const optional = !isNonNullType(field.type) || field.defaultValue !== undefined
+          const optional = !isNonNullType(field.type) || hasDefault(field)
           return `readonly ${field.name}${optional ? "?" : ""}: ${inputType(field.type)}`
         })
         named.set(namedType.name, `export type ${namedType.name} = { ${fields.join("; ")}${fields.length ? " " : ""}}`)
