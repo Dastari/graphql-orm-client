@@ -1484,6 +1484,9 @@ watched holders re-read. A fragment whose own record has expired reads null, lik
 emit `StoreOptions.onDiagnostic` code `LIFETIME_UNKNOWN`. They are neither expired nor proved valid.
 A null lifetime is unknown, not an infinite lease. Calendar dates are validated before parsing.
 The store uses one expiry timer, rechecking at the nearest deadline, capped at 2,147,483,647 ms.
+A check reads the clock once, and that one reading decides both whether a record has expired and whether it sets the next deadline,
+so a record the check finds valid always leaves the timer armed. A timer that fires early (Node truncates a fractional delay, and
+its timer clock isn't `Date.now()`) finds the record still valid and arms again.
 Expiry does not delete records or synthesize Changed events; normal version ordering and retention
 still apply. Disposal clears the timer and records. Browser clock correctness is a consumer dependency.
 
