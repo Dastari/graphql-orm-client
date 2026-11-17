@@ -271,7 +271,9 @@ response set them.
 
 `createHttpNetwork` gives each query a deadline of `DEFAULT_READ_DEADLINE_MS` (30 seconds). A read with no response by then fails as
 a failed connection does: `createHttpNetwork` marks it with `markNoResponse`, `classifyError` reports `network`, and the query ends in
-`error`. `reads: { deadlineMs }` changes it and `deadlineMs: null` removes it. The deadline covers reading the body. Writes keep no
+`error`. `reads: { deadlineMs }` changes it and `deadlineMs: null` removes it. The deadline covers reading the body: one that
+passes while the body is still arriving is no response too, with or without `maxResponseBytes`, and the caller's abort then is
+`cancelled`. Writes keep no
 deadline unless `writes.deadlineMs` is set. A custom `Network` sets its own bounds.
 
 `createClient({ reads: { retry } })` is opt-in. With it, a watched query (`watchQuery`, `useQuery`, `loadQuery`, `usePagedQuery`)
@@ -802,8 +804,8 @@ those runs; each timing in each run is itself the median of five samples.
 | One event, 1,000-row list (ms) | 0.151 | 1.2 |
 | One event, 10,000-row list (ms) | 1.255 | 8 |
 | 45,000-line schema + 250 documents (ms) | 694 | 5,000 |
-| Main standalone raw bundle (bytes) | 71,938 | 72,500 |
-| Main standalone gzip bundle (bytes) | 23,239 | 23,500 |
+| Main standalone raw bundle (bytes) | 72,141 | 72,500 |
+| Main standalone gzip bundle (bytes) | 23,301 | 23,500 |
 | React standalone raw bundle (bytes) | 6,969 | 10,000 |
 | React standalone gzip bundle (bytes) | 2,836 | 4,000 |
 
@@ -838,7 +840,7 @@ after incremental reads ([#68](https://github.com/Dastari/graphql-orm-client/iss
 rose from 65,000 to 68,000 bytes (gzip 21,000 to 22,000) for it. On 2026-11-17 the query-read changes
 ([#63](https://github.com/Dastari/graphql-orm-client/issues/63), [#66](https://github.com/Dastari/graphql-orm-client/issues/66),
 [#67](https://github.com/Dastari/graphql-orm-client/issues/67), [#72](https://github.com/Dastari/graphql-orm-client/issues/72))
-took the main bundle from 67,573 to 71,938 bytes (gzip 21,668 to 23,239), and its limit to 72,500 (gzip 23,500).
+took the main bundle from 67,573 to 72,141 bytes (gzip 21,668 to 23,301), and its limit to 72,500 (gzip 23,500).
 
 It includes page/runtime, query snapshots and store allocations; it excludes native renderer
 memory, browser RSS, GPU memory and server cost. It does not establish a bound on a full

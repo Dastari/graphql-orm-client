@@ -75,6 +75,9 @@ records read again ([#67](https://github.com/Dastari/graphql-orm-client/issues/6
   ends the query in `error`, classified `network`, where it used to stay `loading`. **To keep the old behaviour, pass
   `createHttpNetwork({ url, reads: { deadlineMs: null } })`**; to change the time, pass a number. Writes still have no deadline
   unless `writes.deadlineMs` is set. A read that needs longer than 30 seconds needs a larger `reads.deadlineMs`.
+- A deadline that passes while the body is still arriving now fails as no response (`network`, retried with `reads.retry`), and the
+  caller's abort at that point as `cancelled`. Both used to throw `HttpError(200)` without a byte limit, and an unmarked
+  `AbortError` with one.
 - `createClient({ reads: { retry: true } })` (or `{ retries, baseMs, maxMs, random }`) retries a watched query's read that failed
   before any response, up to 3 more times with back-off and jitter. Off unless set. A write is never retried. Closing the query,
   disposing the client or a newer read ends the wait.

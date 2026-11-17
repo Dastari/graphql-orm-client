@@ -389,6 +389,43 @@ describe("read retry", () => {
     expect(network.calls("Foos").length).toBe(2)
     client.dispose()
   })
+
+  it("never resends a mutation watched through watchQuery, on retry or online", async () => {
+    const { clock, network, client } = setup(0)
+    const watched = client.watchQuery<any>(ops.Touch!, { Id: "1" })
+    watched.open()
+    await clock.tick(60_000)
+    expect(watched.getState().status).toBe("error")
+    window.dispatchEvent(new Event("online"))
+    await clock.tick(60_000)
+    expect(network.calls("Touch").length).toBe(1)
+    client.dispose()
+  })
+
+  it("tells the sender once per read, however many attempts it takes", async () => {
+    const { clock, network, client } = setup(2)
+    const watched = client.watchQuery<any>(ops.Foos!, {})
+    watched.open()
+    await clock.tick(60_000)
+    expect(watched.getState().status).toBe("ready")
+    // A re-read's sent callback, as burst repair passes it: counted once for the read, not per request.
+    const resource = [...(client as unknown as { resources: Map<string, { fetch(cause: string, sent: () => void): Promise<void> }> }).resources.values()][0]!
+    const answered = network.calls("Foos").length
+    network.answer("Foos", (() => {
+      let failed = 0
+      return () => {
+        if (failed++ < 2) throw offline()
+        return { data: { Foos: [foo("1")] } }
+      }
+    })())
+    const sent = vi.fn()
+    const read = resource.fetch("burst", sent)
+    await clock.tick(60_000)
+    await read
+    expect(network.calls("Foos").length).toBe(answered + 3)
+    expect(sent).toHaveBeenCalledTimes(1)
+    client.dispose()
+  })
 })
 
 describe("coming back online", () => {
@@ -416,11 +453,15 @@ describe("coming back online", () => {
 
   it("stops listening when the client is disposed", async () => {
     const network = createMockNetwork({ operations: { Foos: () => { throw offline() } } })
+    const added = vi.spyOn(window, "addEventListener")
     const client = createClient({ network })
+    const listener = added.mock.calls.find(([type]) => type === "online")![1]
     const watched = client.watchQuery<any>(ops.Foos!, {})
     watched.open()
     await new Promise((resolve) => setTimeout(resolve, 0))
+    const removed = vi.spyOn(window, "removeEventListener")
     client.dispose()
+    expect(removed).toHaveBeenCalledWith("online", listener)
     window.dispatchEvent(new Event("online"))
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(network.calls("Foos").length).toBe(1)

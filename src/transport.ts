@@ -52,8 +52,10 @@ export function createHttpNetwork(options: HttpNetworkOptions): Network {
       // A timer of our own rather than `AbortSignal.timeout`, so it is cleared once the body is read.
       let deadline: ReturnType<typeof setTimeout> | undefined
       let boundedSignal = signal
+      const timeout = new AbortController()
+      // A deadline that passes while the body is still arriving is no response too, not a bad body.
+      const unanswered = (error: unknown) => timeout.signal.aborted && !signal?.aborted ? markNoResponse(error) : error
       if (deadlineMs !== undefined && deadlineMs !== null) {
-        const timeout = new AbortController()
         deadline = setTimeout(() => timeout.abort(new DOMException(`No response within ${deadlineMs} ms`, "TimeoutError")), deadlineMs)
         ;(deadline as { unref?: () => void }).unref?.()
         boundedSignal = signal ? AbortSignal.any([signal, timeout.signal]) : timeout.signal
@@ -85,12 +87,15 @@ export function createHttpNetwork(options: HttpNetworkOptions): Network {
               if (length > bounds.maxResponseBytes) throw new Error("GraphQL response exceeds configured byte limit")
               chunks.push(next.value)
             }
-          } catch (error) { await reader?.cancel().catch(() => {}); throw error }
+          } catch (error) { await reader?.cancel().catch(() => {}); throw unanswered(error) }
           const joined = new Uint8Array(length)
           let offset = 0
           for (const chunk of chunks) { joined.set(chunk, offset); offset += chunk.length }
           try { body = JSON.parse(new TextDecoder().decode(joined)) } catch { body = null }
-        } else body = await response.json().catch(() => null)
+        } else body = await response.json().catch((error: unknown) => {
+          if (timeout.signal.aborted || signal?.aborted) throw unanswered(error)
+          return null
+        })
         if (!isResponse(body) || (!response.ok && !body.errors?.length)) throw new HttpError(response.status)
         return body
       } finally {

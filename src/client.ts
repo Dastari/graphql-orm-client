@@ -574,6 +574,13 @@ class QueryResource<T> implements WatchedQuery<T> {
   private retryWait: ((cause: ReadCause) => void) | null = null
 
   private async read(controller: AbortController, cause: ReadCause, beforeSend?: () => void): Promise<void> {
+    // Once per read, however many attempts it takes: burst repair counts reads, not requests.
+    let sent = false
+    const once = beforeSend && (() => {
+      if (sent) return
+      sent = true
+      beforeSend()
+    })
     for (let attempt = 0; ; attempt++) {
       let applied = false
       const apply = (snapshot: Snapshot<T>, errors: readonly GraphQLErrorLike[]) => {
@@ -597,7 +604,7 @@ class QueryResource<T> implements WatchedQuery<T> {
       try {
         const { snapshot, errors } = await this.client.execute<T>(this.artifact, this.variables, {
           readCause: attempt > 0 ? "retry" : cause,
-          beforeSend,
+          beforeSend: once,
           signal: controller.signal,
           beforeWrite: () => { this.writing = true },
           afterPublish: apply,
@@ -608,7 +615,8 @@ class QueryResource<T> implements WatchedQuery<T> {
       } catch (error) {
         this.writing = false
         if (controller.signal.aborted) return
-        const delay = this.users > 0 && !this.client.store.isDisposed && hadNoResponse(error) ? this.client.retryDelay(attempt) : null
+        // Only a query is read again: `watchQuery` also takes a mutation's artifact, and a write is never sent twice.
+        const delay = this.artifact.kind === "query" && this.users > 0 && !this.client.store.isDisposed && hadNoResponse(error) ? this.client.retryDelay(attempt) : null
         if (delay === null) {
           this.set({ ...this.state, status: "error", error: asError(error) })
           return
@@ -643,7 +651,7 @@ class QueryResource<T> implements WatchedQuery<T> {
 
   /** Whether a read failed and nothing is retrying it, or a retry is waiting: what the browser's `online` event reads again. */
   get awaitingNetwork(): boolean {
-    return this.users > 0 && (this.retryWait !== null || (this.state.status === "error" && !this.inflight))
+    return this.artifact.kind === "query" && this.users > 0 && (this.retryWait !== null || (this.state.status === "error" && !this.inflight))
   }
 
   /** End a waiting retry, with no state change; the client is being disposed. A request in flight is cancelled by the client. */
