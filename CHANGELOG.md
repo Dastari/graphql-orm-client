@@ -42,6 +42,36 @@ and freed with them; handles for the same variables still share it
 `docs/example.md` builds two related graphql-orm entities, their service, and a page that lists, adds and closes rows and stays
 current, checked against graphql-orm 0.94.0.
 
+### Fixed: `useFragmentList` redid every row on every render
+
+`useFragmentList` compared its references by the array's identity, so the documented `Edges.map(...)`, a new array each
+render, unsubscribed and resubscribed every row and read each one twice on every render of the parent, and one row changing
+read all of them again. It now compares rows by record, fragments, variables and store: a render with the same rows reads
+nothing and changes no subscription, each row keeps its subscription while it stays in the list, and a change to one row reads
+that row ([#69](https://github.com/Dastari/graphql-orm-client/issues/69)). The rows it returns are the same. Nothing to change
+in applications.
+
+### Changed: a socket closed for authentication waits for new credentials
+
+When the server closed the socket with 4401 (the router's answer to a missing, invalid or expired bearer) or 4403, the live
+layer took it for an outage and reconnected with back-off, with the same credentials, for as long as records were held. Now
+every stream stops, every type holding records reports reason `unauthenticated` with `code` `"4401"` or `"4403"`, the queries
+holding them poll (`polling.liveFallbackMs`), and nothing subscribes again on a timer
+([#73](https://github.com/Dastari/graphql-orm-client/issues/73)). `graphqlWsTransport` sees a 4403 at the close event, before
+graphql-ws retries it by itself, and stops those retries. An `UNAUTHENTICATED` error on one stream is unchanged: the router
+sends it when the same connection will recover, and it stays a refusal of that stream.
+
+- Added `client.reconnectLive()`: call it once the socket's credentials are renewed (for graphql-ws, once `connectionParams`
+  returns them). The held types subscribe again and their queries read. A `connected` socket reported by `graphqlWsTransport`
+  starts them again too, and disposing the client for a new identity clears the stop.
+- Added `LiveReason` and `LiveEndReason` `unauthenticated`, `LiveTypeStatus.unauthenticated`, and `closeCode` on a
+  `LiveConnection` change. `createMockStreams().fail(event)` closes every open stream with a given close event.
+
+Migration: an application that recovered by letting the client reconnect, with a `connectionParams` that fetches a fresh token
+on every connect, either calls `client.reconnectLive()` after renewing the token, or sets `live: { unauthenticated: "restart" }`
+for the previous behaviour. A custom `LiveConnection` can pass `closeCode` so a close is seen before its sinks fail. Code that
+switches over `LiveReason` or `LiveEndReason` has one more case.
+
 ## 0.1.0-alpha.12 (2026-11-07)
 
 Install from the GitHub release archive:

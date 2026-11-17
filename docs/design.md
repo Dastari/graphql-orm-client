@@ -155,6 +155,11 @@ In that case the fragment belongs to the adapter that builds the view model, not
   `readFragment(Fragment, ref)`. That is a plain function, not a hook, so it works in mappers.
 - `useFragmentList(Fragment, refs)` subscribes to a list of records and returns view models that
   update when any of their fields change. Tables use it instead of one `useFragment` per row.
+  It compares the references by what they point at (record, fragments, variables and store), not by the
+  array's identity, so `Edges.map(...)` on every render is fine: a render with the same rows reads nothing
+  and changes no subscription. Each row keeps its own store subscription while it stays in the list, so a
+  change to one row reads that row, an added row is read and subscribed, and a removed one is unsubscribed.
+  A row read during render is read again at commit only if a publish came between the two.
 - Components below the adapter receive domain objects and never see GraphQL.
 
 Masking still applies at the adapter boundary: a query that spreads the fragment can't read its
@@ -422,7 +427,7 @@ with no live layer. `client.subscribeLiveHealth(listener)` and `useLiveHealth(ty
 | `idle` | Nothing is held |
 
 - Each type also has `reason` (`no-live-layer`, `no-stream`, `selection-refused`, `refused`, `identity-mismatch`, `over-cap`,
-  `socket-down`, `stream-ended`, `schema-reload`), the server's `code`, `held`, `pollMs`, `lastEventAt`,
+  `socket-down`, `stream-ended`, `schema-reload`, `unauthenticated`), the server's `code`, `held`, `pollMs`, `lastEventAt`,
   `lastReadAt`, `retryAt` and the `fragments` held. A null time means it hasn't happened, not that it was
   long ago. `pollMs` is null if any query holding the type has no poll. `worst` is the worst state of any type.
 - `live` is per type: an event on one record confirms the type until its streams next restart.
@@ -436,6 +441,37 @@ with no live layer. `client.subscribeLiveHealth(listener)` and `useLiveHealth(ty
   `unavailable` or `polling`, naming the fragment. It defaults to `console.warn`, except where
   `process.env.NODE_ENV` is `production`; `null` turns it off. Without `live`, it's the default.
 - Types with no stream are learned from what queries hold, so this needs no regeneration.
+
+### A socket closed for authentication
+
+The router closes a socket with 4401 when its bearer is missing, invalid or expired, and expects the client to "obtain
+a valid token and open a new connection" (graphql-orm-router `docs/operations.md`, router 0.15.5). graphql-transport-ws
+also defines 4403 (Forbidden). Reconnecting with the same credentials can't work, so by default
+(`live.unauthenticated: "wait"`):
+
+- **What it sees.** graphql-ws 6 treats 4401 as fatal and hands each operation's sink the close event. It retries 4403
+  itself (`retryAttempts`, five by default) with the operations still open, and hands them the close event only when it
+  gives up. `graphqlWsTransport` passes the code of every `closed` event to the live layer, so a 4403 stops live delivery
+  at the first close; `graphqlWsSubscribe` alone sees it only once graphql-ws gives up.
+- **What it does.** Every stream stops, which leaves graphql-ws nothing to reconnect for (a lazy client's retry ends
+  without opening a socket), and every waiting restart is cancelled. Every type holding records reports `unavailable`, or
+  `polling` when a poll covers it, with reason `unauthenticated` and `code` `"4401"` or `"4403"`. The queries holding
+  them poll (`polling.liveFallbackMs`), as for any uncovered type.
+- **Until when.** Nothing subscribes again on a timer, and a change to the held records doesn't either. Live delivery
+  starts again when the application calls `client.reconnectLive()` once its credentials are renewed (for graphql-ws,
+  when `connectionParams` returns them), or when `graphqlWsTransport` reports a `connected` socket, which means the
+  server accepted a connection. Either way the held types subscribe, then their queries read, since nothing was
+  delivered meanwhile. Credentials that still fail stop it again, with no timer.
+- **Identity.** The stop belongs to the client's live layer. Disposing the client for a new identity drops it, and the
+  next client subscribes at once.
+- **`UNAUTHENTICATED` is not this.** The router ends a stream with `UNAUTHENTICATED` when it can't confirm a role-bearing
+  connection's scopes for now, and says to retry on the same connection once that recovers. It stays a refusal of that
+  stream, under `refusalBackoff`, and other types keep streaming.
+- **`live.unauthenticated: "restart"`** is the 0.1.0-alpha.12 behaviour, for migration: such a close is a transport
+  failure (`socket-down`) and restarts with back-off. Use it when `connectionParams` fetches a fresh token on every
+  connect and a restart is how the application recovers.
+- **Not covered.** A non-lazy graphql-ws client holds its own lock and keeps retrying a 4403 by itself; give it a
+  `shouldRetry` that returns false for 4401 and 4403. Plain subscriptions (`client.subscribe`) are the application's.
 
 ### The doctor
 

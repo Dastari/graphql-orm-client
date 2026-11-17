@@ -13,6 +13,7 @@ import type { FragmentArtifact, FragmentRefFor, OperationArtifact } from "../art
 import {
   OperationError,
   fragmentSelector,
+  refData,
   pageSizeOf,
   pageVariables,
   pagedState,
@@ -25,7 +26,7 @@ import {
 } from "../client.js"
 import type { LiveHealth, LiveTypeHealth } from "../health.js"
 import { stableStringify, type Variables } from "../store/arguments.js"
-import { recycle, type Snapshot } from "../store/store.js"
+import { recycle, type Selector, type Snapshot, type Store } from "../store/store.js"
 
 const ClientContext = createContext<Client | null>(null)
 
@@ -405,6 +406,11 @@ function graphQLError(name: string, errors: readonly GraphQLErrorLike[]): Error 
 /**
  * View models for a list of references, for tables and adapters that need whole rows. The array
  * keeps its identity until a row changes; unchanged rows keep theirs.
+ *
+ * References are compared by what they point at (record, fragments, variables and store), not by
+ * the array's identity, so `Edges.map(...)` can be passed on every render: a render with the same
+ * rows reads nothing and keeps every row's subscription. Each row has its own subscription, kept
+ * while the row stays in the list, and a change to one row reads that row only.
  */
 export function useFragmentList<D = Record<string, unknown>, N extends string = string>(
   fragment: FragmentArtifact<D, N>,
@@ -414,32 +420,129 @@ export function useFragmentList<T>(
   fragment: FragmentArtifact<any, any>,
   refs: readonly unknown[] | null | undefined
 ): readonly T[] {
-  const cache = useRef<{ refs: readonly unknown[] | null | undefined; rows: readonly T[] } | null>(null)
-  const getSnapshot = useCallback((): readonly T[] => {
-    if (cache.current && cache.current.refs === refs) return cache.current.rows
-    const rows = (refs ?? []).map((ref) => {
-      const { store, selector } = fragmentSelector(fragment, ref)
-      return store.lookup<T>(selector).data
-    })
-    const recycled = cache.current ? recycle(cache.current.rows as T[], rows) : rows
-    cache.current = { refs, rows: recycled }
-    return recycled
-  }, [fragment, refs])
-  const subscribe = useCallback(
-    (notify: () => void) => {
-      const disposers = (refs ?? []).map((ref) => {
-        const { store, selector } = fragmentSelector(fragment, ref)
-        return store.subscribe(store.lookup(selector), () => {
-          // Force a re-read on the next getSnapshot.
-          if (cache.current) cache.current = { refs: null, rows: cache.current.rows }
-          notify()
-        })
-      })
-      return () => disposers.forEach((dispose) => dispose())
-    },
-    [fragment, refs]
-  )
+  const [reader] = useState(() => new FragmentListReader())
+  const rows = reader.rowsFor(fragment, refs ?? [])
+  const getSnapshot = useCallback(() => reader.list(rows) as readonly T[], [reader, rows])
+  const subscribe = useCallback((notify: () => void) => reader.attach(rows, notify), [reader, rows])
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
+}
+
+/** One row of a fragment list: a record read through a fragment, and its subscription while the list is mounted. */
+interface ListRow {
+  readonly ref: unknown
+  readonly store: Store
+  readonly selector: Selector
+  snapshot: Snapshot
+  /** `store.publishes` when `snapshot` was last known to be current. */
+  readAt: number
+  dispose: (() => void) | null
+}
+
+/** Whether two fragment references read the same thing: same record, fragments, variables and store. */
+function sameReference(a: unknown, b: unknown): boolean {
+  if (a === b) return true
+  const left = refData(a)
+  const right = refData(b)
+  if (!left || !right || left.id !== right.id || left.store !== right.store || left.fragments.size !== right.fragments.size) return false
+  for (const name of left.fragments) if (!right.fragments.has(name)) return false
+  return left.variables === right.variables || stableStringify(left.variables) === stableStringify(right.variables)
+}
+
+/**
+ * The rows `useFragmentList` shows, kept across renders. Rows are matched to the previous render's by reference content, so a
+ * row that stays keeps its snapshot and subscription; only an added row is read.
+ */
+class FragmentListReader {
+  private fragment: FragmentArtifact<any, any> | null = null
+  private refs: readonly unknown[] = []
+  private rows: readonly ListRow[] = []
+  private readonly subscribed = new Set<ListRow>()
+  private listed: readonly ListRow[] | null = null
+  private data: readonly unknown[] = []
+  private dirty = false
+  private notify: (() => void) | null = null
+
+  /** The rows for these references: the previous array when they read the same records, else one that reuses every row it can. */
+  rowsFor(fragment: FragmentArtifact<any, any>, refs: readonly unknown[]): readonly ListRow[] {
+    if (fragment === this.fragment && refs.length === this.refs.length && refs.every((ref, index) => sameReference(ref, this.refs[index]))) {
+      this.refs = refs
+      return this.rows
+    }
+    const previous = new Map<string, ListRow[]>()
+    if (fragment === this.fragment) for (const row of [...this.rows, ...this.subscribed]) {
+      const id = row.selector.id
+      const same = previous.get(id)
+      if (!same) previous.set(id, [row])
+      else if (!same.includes(row)) same.push(row)
+    }
+    const rows = refs.map((ref): ListRow => {
+      const reused = previous.get(refData(ref)?.id ?? "")?.find((row) => sameReference(row.ref, ref))
+      if (reused) return this.fresh(reused)
+      const { store, selector } = fragmentSelector(fragment, ref)
+      return { ref, store, selector, snapshot: store.lookup(selector), readAt: store.publishes, dispose: null }
+    })
+    this.fragment = fragment
+    this.refs = refs
+    this.rows = rows
+    return rows
+  }
+
+  /** The row with a current snapshot: subscribed, or read since the last publish; otherwise it is read again. */
+  private fresh(row: ListRow): ListRow {
+    if (row.dispose || row.readAt === row.store.publishes) return row
+    const next = row.store.lookup(row.selector)
+    row.snapshot = { ...next, data: recycle(row.snapshot.data, next.data) }
+    row.readAt = row.store.publishes
+    this.dirty = true
+    return row
+  }
+
+  /** The rows' data, as the same array until a row's data changes. */
+  list(rows: readonly ListRow[]): readonly unknown[] {
+    if (rows === this.listed && !this.dirty) return this.data
+    this.listed = rows
+    this.dirty = false
+    this.data = recycle(this.data, rows.map((row) => row.snapshot.data))
+    return this.data
+  }
+
+  /**
+   * Subscribe the rows not yet subscribed and drop those that left the list. Detaching keeps the subscriptions until a
+   * microtask, so the resubscribe React makes in the same commit (new rows, or StrictMode) changes nothing for rows that stay.
+   */
+  attach(rows: readonly ListRow[], notify: () => void): () => void {
+    this.notify = notify
+    const keep = new Set(rows)
+    for (const row of this.subscribed) {
+      if (keep.has(row)) continue
+      row.dispose?.()
+      row.dispose = null
+      this.subscribed.delete(row)
+    }
+    for (const row of keep) {
+      if (this.subscribed.has(row)) continue
+      // A publish between render and commit could have changed the row; only then is it read again.
+      this.fresh(row)
+      row.dispose = row.store.subscribe(row.snapshot, (next) => {
+        row.snapshot = next
+        row.readAt = row.store.publishes
+        this.dirty = true
+        this.notify?.()
+      })
+      this.subscribed.add(row)
+    }
+    return () => {
+      if (this.notify === notify) this.notify = null
+      queueMicrotask(() => {
+        if (this.notify !== null) return
+        for (const row of this.subscribed) {
+          row.dispose?.()
+          row.dispose = null
+        }
+        this.subscribed.clear()
+      })
+    }
+  }
 }
 
 export { useEphemeralStream } from "./ephemeral.js"

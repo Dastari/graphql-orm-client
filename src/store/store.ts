@@ -357,6 +357,7 @@ export class Store {
       if (this.nextExpiry !== before || (this.expiryTimer === null && this.nextExpiry !== Infinity)) this.armExpiry()
     }
     if (this.changed.size === 0) return
+    this.publishCount += 1
     for (const observer of this.observers) observer()
     const changed = new Set(this.changed)
     this.changed.clear()
@@ -373,6 +374,16 @@ export class Store {
     } finally {
       this.publishing.pop()
     }
+  }
+
+  private publishCount = 0
+
+  /**
+   * How many publishes have changed something. A snapshot read while this number stayed the same is still current, so a reader
+   * that read during render can subscribe at commit without reading again.
+   */
+  get publishes(): number {
+    return this.publishCount
   }
 
   /** The written ids of each publish under way, outermost first. */

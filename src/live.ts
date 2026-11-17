@@ -54,8 +54,11 @@ export interface StreamRestart {
  * - `errored`: GraphQL errors ended a stream that had delivered events.
  * - `transport`: the socket failed, or its reconnect attempts ran out.
  * - `completed`: the server ended the stream with no error.
+ * - `unauthenticated`: the server closed the socket for authentication (graphql-transport-ws close code 4401 or 4403). The
+ *   code is the close code, `"4401"` or `"4403"`. An `UNAUTHENTICATED` GraphQL error isn't this: the router sends it when it
+ *   can't confirm a connection's scopes for now, and the connection recovers, so it ends a stream as any other error does.
  */
-export type LiveEndReason = "reload" | "lost" | "unavailable" | "refused" | "errored" | "transport" | "completed"
+export type LiveEndReason = "reload" | "lost" | "unavailable" | "refused" | "errored" | "transport" | "completed" | "unauthenticated"
 
 /** The last time a type's stream ended without the client asking. */
 export interface LiveEnd {
@@ -70,8 +73,12 @@ export interface LiveEnd {
 export interface LiveConnection {
   /** The socket's state now. */
   state(): LiveSocketState
-  /** Call `listener` when it changes; `reconnected` is true on a connect that recovered a lost socket. */
-  subscribe(listener: (change: { readonly reconnected: boolean }) => void): () => void
+  /**
+   * Call `listener` when it changes; `reconnected` is true on a connect that recovered a lost socket. `closeCode` is the
+   * close event's code when the socket closed, so a close for authentication (4401, 4403) is seen before the transport
+   * retries it.
+   */
+  subscribe(listener: (change: { readonly reconnected: boolean; readonly closeCode?: number }) => void): () => void
 }
 
 export interface LiveOptions {
@@ -147,6 +154,19 @@ export interface LiveOptions {
    * identity changes. Uses `setTimeout` and `clearTimeout` below, so tests can drive the window.
    */
   readonly refusalBackoff?: boolean | RefusalBackoff
+  /**
+   * What happens when the server closes the socket for authentication: graphql-transport-ws close code 4401 (the router's
+   * answer to a missing, invalid or expired bearer) or 4403, seen through a stream's close event or `connection`.
+   *
+   * By default (`"wait"`) every stream stops, every type holding records reports reason `unauthenticated` with the code, the
+   * queries holding them poll (`polling.liveFallbackMs`), and nothing subscribes again on a timer or when the held records
+   * change. Live delivery starts again when the application calls `client.reconnectLive()` with new credentials in place,
+   * or when `connection` reports a socket connected. The stop belongs to the client and goes with it when the identity changes.
+   *
+   * `"restart"` is the 0.1.0-alpha.12 behaviour, for migration: such a close is a transport failure (`socket-down`),
+   * restarted with back-off.
+   */
+  readonly unauthenticated?: "wait" | "restart"
   readonly setTimeout?: (callback: () => void, ms: number) => unknown
   readonly clearTimeout?: (handle: unknown) => void
   /** Clock seam for tests. Defaults to `Date.now`. */
@@ -200,6 +220,11 @@ export interface LiveTypeStatus {
   readonly retryAt: number | null
   /** An event has arrived since the type's streams last started. Nothing else confirms a stream. */
   readonly confirmed: boolean
+  /**
+   * Live delivery stopped because the server closed the socket for authentication. The same for every type; null when it
+   * hasn't stopped. See `LiveOptions.unauthenticated`.
+   */
+  readonly unauthenticated: LiveEnd | null
 }
 
 type Targets = ReadonlyMap<string, ReadonlySet<string>>
@@ -247,6 +272,19 @@ const firstCode = (errors: GraphQLErrors | null): string | null => {
 const RELOAD_CODES = new Set(["SUBSCRIPTION_SCHEMA_RELOAD"])
 /** The router can't serve the stream right now. A connection on a retired graph answers this. */
 const UNAVAILABLE_CODES = new Set(["SERVICE_UNAVAILABLE", "SUBGRAPH_UNAVAILABLE", "SUBSCRIPTION_LIMIT_EXCEEDED"])
+
+/** graphql-transport-ws close codes for a connection whose credentials the server doesn't accept: Unauthorized, Forbidden. */
+const AUTH_CLOSE_CODES: ReadonlySet<number> = new Set([4401, 4403])
+
+/**
+ * The code of a close for authentication, 4401 or 4403, when the failure is a close event: graphql-ws gives each operation's
+ * sink the close event once it stops retrying. Null for anything else, GraphQL errors included.
+ */
+function authenticationCode(failure: unknown): string | null {
+  if (Array.isArray(failure)) return null
+  const code = (failure as { code?: unknown } | null)?.code
+  return typeof code === "number" && AUTH_CLOSE_CODES.has(code) ? String(code) : null
+}
 
 const DEFAULT_RESTART_MIN_MS = 1000
 const DEFAULT_RESTART_MAX_MS = 60_000
@@ -317,9 +355,14 @@ export class LiveManager {
   ) {
     this.artifacts = options.artifacts ?? {}
     this.disconnect =
-      options.connection?.subscribe(({ reconnected }) => {
+      options.connection?.subscribe(({ reconnected, closeCode }) => {
         this.onChange()
-        if (reconnected && !this.disposed) {
+        if (this.disposed) return
+        // graphql-ws retries a 4403 by itself, with the operations still open; stopping them now ends those retries.
+        if (closeCode !== undefined && AUTH_CLOSE_CODES.has(closeCode) && this.waitsOnAuthentication()) return this.stopForAuthentication(String(closeCode))
+        // A connection the server accepted means the credentials work again.
+        if (this.authStop && options.connection?.state() === "connected") return this.reconnect()
+        if (reconnected) {
           this.clearBursts()
           this.resync(new Set([...this.holders.keys(), ...this.lists.keys()]), "reconnect")
         }
@@ -338,9 +381,55 @@ export class LiveManager {
     return typename in this.artifacts
   }
 
-  /** Whether a stream of the type is waiting out a refusal window, so nothing covers its records. */
+  /** Whether a stream of the type is waiting out a refusal window, or live delivery stopped for authentication, so nothing covers its records. */
   refusedNow(typename: string): boolean {
-    return [...this.refused.values()].some((entry) => entry.typename === typename)
+    return this.authStop !== null || [...this.refused.values()].some((entry) => entry.typename === typename)
+  }
+
+  /** Why live delivery stopped for authentication, or null. */
+  private authStop: LiveEnd | null = null
+
+  private waitsOnAuthentication(): boolean {
+    return this.options.unauthenticated !== "restart"
+  }
+
+  /**
+   * The server doesn't accept this connection's credentials. Stop every stream, so the transport has nothing to reconnect
+   * for, and cancel every restart: nothing subscribes again until `reconnect()`.
+   */
+  private stopForAuthentication(code: string): void {
+    if (this.disposed || this.authStop) return
+    this.authStop = { reason: "unauthenticated", code, at: this.now() }
+    for (const restart of this.restarts.values()) {
+      if (restart.handle !== null) this.cancelTimer(restart.handle)
+      restart.handle = null
+      restart.retryAt = null
+    }
+    for (const active of this.active.values()) {
+      if (active.transition) this.cancelTimer(active.transition.handle)
+      active.transition = null
+      const stops = [...active.subscriptions.values()]
+      active.subscriptions.clear()
+      active.coverage.clear()
+      for (const stop of stops) stop()
+    }
+    this.onRefusalChange()
+    this.onChange()
+  }
+
+  /**
+   * Start live delivery again after it stopped for authentication: subscribe what's held, then read the queries holding it,
+   * since nothing was delivered meanwhile. Does nothing when it hasn't stopped.
+   */
+  reconnect(): void {
+    if (this.disposed || !this.authStop) return
+    this.authStop = null
+    for (const restart of this.restarts.values()) restart.attempts = 0
+    this.clearBursts()
+    this.onRefusalChange()
+    this.reconcile()
+    const holders = new Set([...this.holders.keys(), ...this.lists.keys()])
+    if (holders.size) this.resync(holders, "reconnect")
   }
 
   /** Whether held records exceed the keyed cap or lack coverage after a router capacity error. */
@@ -416,6 +505,7 @@ export class LiveManager {
             lastEventAt: restart?.lastEventAt ?? null,
             retryAt: this.retryAt(artifact.typename),
             confirmed: restart !== undefined && restart.lastEventAt !== null && restart.lastEventAt >= restart.startedAt,
+            unauthenticated: this.authStop,
           },
         ]
       })
@@ -547,6 +637,8 @@ export class LiveManager {
       if (active.transition) continue
       // A restart is waiting out its delay: no change to the held records may shorten it.
       if ((this.restarts.get(artifact.typename)?.handle ?? null) !== null) continue
+      // Stopped for authentication: only `reconnect()` subscribes again.
+      if (this.authStop) continue
       const baseline = new Set(active.subscriptions.keys())
       const alreadyCovered = new Set<string>()
       for (const key of baseline) for (const id of active.coverage.get(key) ?? []) alreadyCovered.add(id)
@@ -658,7 +750,7 @@ export class LiveManager {
     const identity = refusalIdentity(artifact, key)
     // A refused stream is not asked for again until its window ends; the end of the window
     // reconciles, so it starts again by itself if the records are still held.
-    if (this.refused.has(identity)) return
+    if (this.refused.has(identity) || this.authStop) return
     this.markStarted(artifact.typename)
     let ended = false
     let stopped = false
@@ -700,7 +792,8 @@ export class LiveManager {
           },
           error: (failure) => {
             const errors = graphQLErrorsOf(failure)
-            end(reasonFor(errors, delivered), firstCode(errors))
+            const auth = errors === null && this.waitsOnAuthentication() ? authenticationCode(failure) : null
+            end(auth !== null ? "unauthenticated" : reasonFor(errors, delivered), auth ?? firstCode(errors))
           },
           complete: () => end(answered ? reasonFor(answered, delivered) : "completed", firstCode(answered)),
         }
@@ -717,6 +810,7 @@ export class LiveManager {
     const state = this.restartState(artifact.typename)
     state.lastEnd = { reason, code, at: this.now() }
     if (reason === "refused") state.lastRefusal = state.lastEnd
+    if (reason === "unauthenticated" && code !== null) return this.stopForAuthentication(code)
     if (reason === "refused" && this.backoffMs(artifact.typename) > 0) return this.remember(artifact, identity)
     // With `restart: false` only lost events restart a stream, as in 0.1.0-alpha.6.
     if (this.options.restart === false && reason !== "lost") return
