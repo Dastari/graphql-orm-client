@@ -57,8 +57,10 @@ execution failure, a timeout, or an error with no code, and should show it as "m
 
 ### Added: `confirm`, for writes whose mutation doesn't select `Success`
 
-`mutateOutcome(mutation, variables, { confirm: data => data.UpdateWidget != null })` confirms a write by a rule the caller names, in
-place of requiring `Success: true` on every root. It's asked only about a response with data and no errors, so partial errors stay
+`mutateOutcome(CloseTicket, variables, { confirm: data => data.CloseTicket != null })`, for a hand-written command that returns the
+changed entity (no `Success` or `Error` field) and raises an error when it doesn't commit, confirms a write by a rule the caller
+names, in place of requiring `Success: true` on every root. Don't use a non-null root as the rule for a result that has its own
+`Success` or `Error` field: it is non-null when the write failed too. It's asked only about a response with data and no errors, so partial errors stay
 `unconfirmed`; `false` or a throw leaves it `unconfirmed`
 ([#60](https://github.com/Dastari/graphql-orm-client/issues/60)). `MutateOptions<T>` is exported for its type. Nothing changes
 without it.
@@ -66,9 +68,12 @@ without it.
 ### Added: `refusedCodes`, so a known refusal skips the reconciliation read
 
 `refusedCodes: ["NOT_FOUND", "CONFLICT"]` on `mutateOutcome` or `commitOutcome` reads a write as `refused`, with no `reconcile`,
-when every error has one of those codes, no error has an `extensions.outcome`, and no selected root returned a value
-([#61](https://github.com/Dastari/graphql-orm-client/issues/61)). A non-null root with an error further down stays `unconfirmed`,
-since it may have committed first. Nothing changes without it.
+when no error has an `extensions.outcome`, every error has one of those codes at the path of a root field (exactly one path
+element), and every root field the operation selects is null with its own such error
+([#61](https://github.com/Dastari/graphql-orm-client/issues/61)). Anything else stays `unconfirmed`: an error further down can null
+a root, or all of `data`, after the root committed, and roots run in order, so an earlier root with no error may have committed
+before a later one was refused. A pathless error counts for no root. On a response with no `data` key the codes add to the
+pre-execution list. Nothing changes without it.
 
 ## 0.1.0-alpha.12 (2026-11-07)
 

@@ -102,8 +102,9 @@ The client can only prove a write's outcome from what the server says. Today tha
   in docs/design.md). Hive Router 0.2.19, pinned by graphql-orm-router 0.8.1 and 0.15.5, answers every pipeline error without
   `data`, including `PLAN_EXECUTION_FAILED` and `GATEWAY_TIMEOUT`, which can follow a commit
   ([#62](https://github.com/Dastari/graphql-orm-client/issues/62)). `writeWithoutData: "refused"` restores the earlier rule.
-- A caller's `refusedCodes` refuse a write when every error has one, no error has an `extensions.outcome`, and no root returned a
-  value.
+- A caller's `refusedCodes` refuse a write only when no error has an `extensions.outcome`, every error has one of the codes at a
+  root field's path (one element), and every root field the operation selects is null with its own such error. Null propagation
+  and in-order root execution mean anything less doesn't prove that nothing committed.
 - Anything else stays `unconfirmed`, including `Success: false`, because a generated result can report an error from after a
   commit.
 

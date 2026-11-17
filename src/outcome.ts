@@ -1,3 +1,4 @@
+import type { Selection } from "./artifact.js"
 import type { GraphQLResponse } from "./client.js"
 
 /** A write's certainty, independent of whether the legacy API returns or throws. */
@@ -66,7 +67,20 @@ const PRE_EXECUTION_CODES: ReadonlySet<string> = new Set((
 export interface WriteEvidence {
   readonly confirm?: ((data: Record<string, unknown>) => boolean) | undefined
   readonly refusedCodes?: readonly string[] | undefined
+  /** The response keys of the root fields the operation selects, or null when they can't be listed. */
+  readonly roots?: readonly string[] | null | undefined
   readonly withoutData?: "by-code" | "refused"
+}
+
+/** Root response keys from the operation's own selections, never from the response. Null for a root fragment spread. */
+export function rootKeys(selections: readonly Selection[]): string[] | null {
+  const keys: string[] = []
+  for (const s of selections) {
+    if (s.kind === "spread") return null
+    if (s.kind === "inline") { const inner = rootKeys(s.selections); if (!inner) return null; keys.push(...inner) }
+    else if (s.responseKey !== "__typename") keys.push(s.responseKey)
+  }
+  return keys
 }
 
 const rootsOf = (data: Record<string, unknown> | null | undefined) => Object.values(data ?? {}).filter(v => v !== "Mutation")
@@ -74,7 +88,7 @@ const rootsOf = (data: Record<string, unknown> | null | undefined) => Object.val
 /**
  * Conservative: null data, HTTP status and free-form error messages prove no write outcome. A response with no `data` key
  * is refused only when every error's code says execution never started: a router can answer an execution failure, after a
- * subgraph committed, without `data` too.
+ * subgraph committed, without `data` too. One with no `data` key and no errors (`{}`) is unconfirmed.
  */
 export function writeStatus(response: GraphQLResponse, evidence: WriteEvidence = {}): WriteStatus {
   const withoutData = !("data" in response)
@@ -85,11 +99,16 @@ export function writeStatus(response: GraphQLResponse, evidence: WriteEvidence =
     if (outcomes.every(o => o === "refused")) return "refused"
     if (outcomes.every(o => o === "failed")) return "failed"
     const refused = evidence.refusedCodes ?? []
-    // What the server says about the outcome wins over any code. A root that returned a value may have committed before a
-    // nested field failed.
-    return outcomes.every(o => o === undefined) && (withoutData || rootsOf(response.data).every(v => v === null)) &&
-      errors.every(({ extensions: e }) => typeof e?.code === "string" &&
-        (refused.includes(e.code) || withoutData && PRE_EXECUTION_CODES.has(e.code))) ? "refused" : "unconfirmed"
+    const data = response.data, roots = evidence.roots
+    // What the server says about the outcome wins over any code. With data, null propagation can erase a root that committed,
+    // and roots run in order, so every selected root must be null with its own error at its own path, and no error may be
+    // deeper than a root.
+    return outcomes.every(o => o === undefined) &&
+      errors.every(({ extensions: e, path }) => typeof e?.code === "string" && (withoutData
+        ? refused.includes(e.code) || PRE_EXECUTION_CODES.has(e.code)
+        : refused.includes(e.code) && path?.length === 1)) &&
+      (withoutData || !!roots?.length && roots.every(root => (data === null || data?.[root] === null) &&
+        errors.some(e => e.path?.[0] === root))) ? "refused" : "unconfirmed"
   }
   if (evidence.confirm && response.data) {
     try { return evidence.confirm(response.data) === true ? "confirmed" : "unconfirmed" }

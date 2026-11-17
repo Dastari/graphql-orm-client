@@ -174,9 +174,10 @@ expect(client.live.status().Ticket.subscriptions).toBe(1)
   `confirmed`, `refused`, `failed` or `unconfirmed`. `mutate` and `commit` are unchanged. A write is never retried: pass `reconcile` to
   read the record again after an `unconfirmed` one, and call again yourself after step-up authentication. A write confirms when
   every root has `Success: true` and there are no errors; for a mutation with no `Success` field, pass `confirm: data => ...` naming
-  what your schema guarantees (say, a non-null root). It's never asked about a response with errors. Pass `refusedCodes` (for
-  example `["NOT_FOUND", "CONFLICT"]`) for codes your server sends only when nothing was written, so they read as `refused` without
-  a re-read. A response with no `data` is `refused` only for parse, validation, auth, persisted-document and limit codes: a router
+  what your schema guarantees (say, a non-null root, but only for a result with no `Success` or `Error` field). It's never asked
+  about a response with errors. Pass `refusedCodes` (for example `["NOT_FOUND", "CONFLICT"]`) for codes your server sends only when
+  nothing was written; a write reads as `refused`, without a re-read, only when every root field the mutation selects is null with
+  its own such error at that root's path. A nested error, a pathless one, or a root with no error of its own stays `unconfirmed`. A response with no `data` is `refused` only for parse, validation, auth, persisted-document and limit codes: a router
   can answer a failure after a commit without `data`.
 - To decide what to do about a failure, use `classifyError(error)`, never the message text. Pass it `query.error`, what `commit`
   rejected with, or `query.errors`. Switch on `kind`: `conflict` (a stale `ExpectedVersion`: reload the record), `cursor-invalid`

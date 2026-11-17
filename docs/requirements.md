@@ -143,7 +143,8 @@ Accepted additions, built:
   `confirm` confirms a clean response without `Success` and is never asked about one with errors.
 - A caller can name error codes that mean its write didn't happen, applied only when the server says nothing about the outcome,
   so a refusal doesn't trigger a pointless reconciliation read ([#61](https://github.com/Dastari/graphql-orm-client/issues/61)).
-  *Acceptance:* `refusedCodes` gives `refused` with no re-read, and a non-null root or an `extensions.outcome` keeps it unconfirmed.
+  *Acceptance:* `refusedCodes` gives `refused` with no re-read when every selected root is null with its own coded error at
+  the root's path; a nested or pathless error, a root without its own error, or an `extensions.outcome` keeps it unconfirmed.
 - A response with no `data` key is refused only when its error codes are known pre-execution failures, because a router can answer
   an execution failure without `data` ([#62](https://github.com/Dastari/graphql-orm-client/issues/62)). *Acceptance:*
   `PLAN_EXECUTION_FAILED` without `data` is unconfirmed and re-read, a validation code is refused, and a client setting restores

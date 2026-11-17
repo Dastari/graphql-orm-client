@@ -131,27 +131,49 @@ it("a confirm that throws leaves the write unconfirmed and doesn't change what m
   expect((await client.mutateOutcome(ops.RenameWidget!, {}, { confirm })).error).toBeUndefined()
 })
 
+const at = (code: string, path: string[], extra: object = {}) => ({ ...coded(code, extra), path })
+
 it.each([
-  [{ data: null, errors: [coded("NOT_FOUND")] }, "refused"],
-  [{ data: { UpdateWidget: null }, errors: [{ ...coded("CONFLICT"), path: ["UpdateWidget"] }] }, "refused"],
+  [{ data: null, errors: [at("NOT_FOUND", ["UpdateWidget"])] }, "refused"],
+  [{ data: { UpdateWidget: null }, errors: [at("CONFLICT", ["UpdateWidget"])] }, "refused"],
   [{ errors: [coded("APP_REJECTED")] }, "refused"],
-  [{ data: null, errors: [coded("NOT_FOUND"), coded("INTERNAL_ERROR")] }, "unconfirmed"],
-  [{ data: null, errors: [coded("NOT_FOUND"), { message: "no code" }] }, "unconfirmed"],
-  [{ data: null, errors: [coded("NOT_FOUND", { outcome: "committed" })] }, "unconfirmed"],
-  [{ data: null, errors: [coded("NOT_FOUND", { outcome: "unknown" })] }, "unconfirmed"],
-  [{ data: { UpdateWidget: { __typename: "WidgetResult", Success: true } }, errors: [{ ...coded("NOT_FOUND"), path: ["UpdateWidget", "Entity"] }] }, "unconfirmed"],
-] as const)("refusedCodes refuse only when the server says nothing else and no root returned (%j)", async (response, status) => {
+  // A pathless error doesn't say which root it belongs to.
+  [{ data: null, errors: [coded("NOT_FOUND")] }, "unconfirmed"],
+  [{ data: null, errors: [at("NOT_FOUND", ["UpdateWidget"]), at("INTERNAL_ERROR", ["UpdateWidget"])] }, "unconfirmed"],
+  [{ data: null, errors: [at("NOT_FOUND", ["UpdateWidget"]), { message: "no code", path: ["UpdateWidget"] }] }, "unconfirmed"],
+  [{ data: null, errors: [at("NOT_FOUND", ["UpdateWidget"], { outcome: "committed" })] }, "unconfirmed"],
+  [{ data: null, errors: [at("NOT_FOUND", ["UpdateWidget"], { outcome: "unknown" })] }, "unconfirmed"],
+  [{ data: { UpdateWidget: { __typename: "WidgetResult", Success: true } }, errors: [at("NOT_FOUND", ["UpdateWidget", "Entity"])] }, "unconfirmed"],
+  // Null propagation can erase a root that committed before a nested field failed.
+  [{ data: { UpdateWidget: null }, errors: [at("FORBIDDEN", ["UpdateWidget", "Entity"])] }, "unconfirmed"],
+  [{ data: null, errors: [at("NOT_FOUND", ["UpdateWidget", "Entity", "Owner"])] }, "unconfirmed"],
+] as const)("refusedCodes refuse only when the server says nothing else and every root was refused (%j)", async (response, status) => {
   const { network } = mockNetwork(() => response as never)
   const client = createClient({ network })
   let rereads = 0
   const result = await client.mutateOutcome(ops.RenameWidget!, {}, {
-    refusedCodes: ["NOT_FOUND", "CONFLICT", "APP_REJECTED"],
+    refusedCodes: ["NOT_FOUND", "CONFLICT", "FORBIDDEN", "APP_REJECTED"],
     reconcile: async () => { rereads++ },
   })
   expect(result.outcome.status).toBe(status)
   expect(rereads).toBe(status === "unconfirmed" ? 1 : 0)
   // Without them, a code is no evidence.
   expect((await client.mutateOutcome(ops.RenameWidget!, {})).outcome.status).toBe("unconfirmed")
+})
+
+it.each([
+  // Roots run in order: a, with no error of its own, may have committed before b was refused.
+  [{ data: null, errors: [at("NOT_FOUND", ["b"])] }, "unconfirmed"],
+  [{ data: { a: null, b: null }, errors: [at("NOT_FOUND", ["b"])] }, "unconfirmed"],
+  [{ data: { a: { __typename: "WidgetResult", Success: true }, b: null }, errors: [at("NOT_FOUND", ["b"])] }, "unconfirmed"],
+  [{ data: { a: null, b: null }, errors: [at("NOT_FOUND", ["a"]), at("NOT_FOUND", ["b"])] }, "refused"],
+  [{ data: null, errors: [at("NOT_FOUND", ["a"]), at("NOT_FOUND", ["b"])] }, "refused"],
+] as const)("with several roots, every selected root needs its own refusal (%j)", async (response, status) => {
+  // The roots come from the operation's selections, not from the response.
+  const root = (responseKey: string) => ({ ...ops.RenameWidget!.normalization[0]!, responseKey })
+  const twoRoots = { ...ops.RenameWidget!, normalization: [root("a"), root("b")] } as typeof ops.RenameWidget & object
+  const client = createClient({ network: mockNetwork(() => response as never).network })
+  expect((await client.mutateOutcome(twoRoots, {}, { refusedCodes: ["NOT_FOUND"] })).outcome.status).toBe(status)
 })
 
 it("a failed headers function reaches the caller as it was thrown, and counts as not sent", async () => {

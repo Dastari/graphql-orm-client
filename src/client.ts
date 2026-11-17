@@ -1,6 +1,6 @@
 import type { ReadCause } from "./health.js"
 import { withoutErrorNulls } from "./partial.js"
-import { wasNotSent, writeStatus, type WriteOutcome } from "./outcome.js"
+import { rootKeys, wasNotSent, writeStatus, type WriteOutcome } from "./outcome.js"
 import type { ConnectionSpec, FragmentArtifact, FragmentRefFor, LinkSelection, OperationArtifact, PagedSpec, Selection } from "./artifact.js"
 import { fieldStorageKey, stableStringify, type Variables } from "./store/arguments.js"
 import { contextOf, identify, normalize } from "./store/normalize.js"
@@ -138,15 +138,19 @@ export interface MutateOptions<T = unknown> {
    * What confirms this write when its result has no `Success` field, in place of the rule that every selected root has
    * `Success: true`. Called only for a response with data and no errors; a response with any error stays unconfirmed.
    * It receives the response's data as the server sent it, before the store reads it, so fields of spread fragments are
-   * there although `T` doesn't name them. Return `true` only for evidence your schema gives, such as a non-null root;
-   * `false` or a throw leaves the write `unconfirmed`. Affects only the outcome, never what `mutate` returns or throws.
+   * there although `T` doesn't name them. Return `true` only for evidence your schema gives, such as a non-null root of a
+   * result with no `Success` or `Error` field (one with them is non-null when the write failed too); `false` or a throw
+   * leaves the write `unconfirmed`. Affects only the outcome, never what `mutate` returns or throws.
    */
   confirm?: (data: T) => boolean
   /**
    * Error codes this server sends only for a write that didn't happen, such as `NOT_FOUND` or `CONFLICT` from a command
-   * that sets no `extensions.outcome`. The write is `refused`, and `reconcile` isn't called, when every error has one of
-   * these codes, no error has an `extensions.outcome`, and no selected root returned a value: a root that did may have
-   * committed before a nested field failed. On a response with no `data` key they add to the known pre-execution codes.
+   * that sets no `extensions.outcome`. With data (or `data: null`), the write is `refused`, and `reconcile` isn't called,
+   * only when no error has an `extensions.outcome`, every error has one of these codes and a path of exactly one root
+   * field, and every root field the operation selects is null with its own such error. Anything else stays `unconfirmed`:
+   * null propagation can erase a root that committed before a nested field failed, and roots run in order, so an earlier
+   * root may have committed before a later one was refused. On a response with no `data` key the codes add to the known
+   * pre-execution codes.
    */
   refusedCodes?: readonly string[]
 }
@@ -159,7 +163,8 @@ export interface ClientOptions {
    * How `mutateOutcome` and `commitOutcome` classify a write response with no `data` key. `by-code` (default): `refused`
    * only when every error's `extensions.code` is a known pre-execution failure (parse, validation, variables, authentication,
    * authorization, persisted document, request limits) or one of the call's `refusedCodes`; otherwise `unconfirmed`, because a
-   * router can answer an execution failure that followed a commit without `data`. `refused`: every such response is
+   * router can answer an execution failure that followed a commit without `data`. A body with no `data` and no errors (`{}`)
+   * is `unconfirmed` too. `refused`: every such response, `{}` included, is
    * `refused`, as 0.1.0-alpha.12 and earlier did. Neither changes what `mutate` or `commit` return or throw.
    */
   readonly writeWithoutData?: "by-code" | "refused"
@@ -1503,6 +1508,7 @@ export class Client {
       const status = response ? writeStatus(response, {
         withoutData: this.writeWithoutData,
         refusedCodes: options.refusedCodes,
+        roots: options.refusedCodes && rootKeys(artifact.normalization),
         confirm: options.confirm as ((data: Record<string, unknown>) => boolean) | undefined,
       }) : wasNotSent(failure) || !sent ? "failed" : "unconfirmed"
       let reconciliation: WriteOutcome["reconciliation"] = status === "unconfirmed" ? "unavailable" : "not-needed"

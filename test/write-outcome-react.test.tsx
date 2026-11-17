@@ -38,7 +38,7 @@ it("commitOutcome passes confirm and refusedCodes through, and commit is unchang
     const confirmed = await result.current.commitOutcome({ Id: "w1", Name: "n" }, { confirm: data => (data as any).UpdateWidget != null })
     expect(confirmed.outcome.status).toBe("confirmed")
   })
-  reply = { data: null, errors: [{ message: "gone", extensions: { code: "NOT_FOUND" } }] }
+  reply = { data: null, errors: [{ message: "gone", path: ["UpdateWidget"], extensions: { code: "NOT_FOUND" } }] }
   await act(async () => {
     expect((await result.current.commitOutcome({ Id: "w1", Name: "n" }, { refusedCodes: ["NOT_FOUND"] })).outcome.status).toBe("refused")
     await expect(result.current.commit({ Id: "w1", Name: "n" }, { refusedCodes: ["NOT_FOUND"] })).rejects.toThrow()
