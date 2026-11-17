@@ -1037,6 +1037,8 @@ export class LiveManager {
       this.store.delete(root)
       for (const embeddedId of embedded) if (embeddedId.startsWith(`${root}.`)) this.store.delete(embeddedId)
     }
+    // The event said the record changed without carrying everything its holders read, so it isn't fresh (`installFreshness`).
+    if (thin || childDeleted || artifact.rereadFragments?.length) this.store.freshness?.outdate(id)
     this.store.publish()
     {
       const holders = listHolders

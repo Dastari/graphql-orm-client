@@ -56,7 +56,10 @@ export class OperationError extends Error {
  * the store with `MutationPolicy` `no-store`.
  */
 export type FetchPolicy =
-  /** Serve complete stored data; fetch only what is missing. */
+  /**
+   * Serve complete stored data; fetch when something is missing, restored from persistence, or past its type's
+   * `installFreshness` setting. A watched query decides when it opens, and shows stored data while that read is under way.
+   */
   | "store-or-network"
   /** Serve stored data while fetching. */
   | "store-and-network"
@@ -577,7 +580,7 @@ class QueryResource<T> implements WatchedQuery<T> {
     if (this.state.status === "ready") this.watch(this.client.store.lookup<T>(selectorOf(this.artifact, this.variables)))
     this.release = this.client.store.retain(this.key, selectorOf(this.artifact, this.variables))
     if (this.artifact.lists) this.client.live?.holdLists(this.key, this.artifact.lists)
-    if (this.state.stale || this.state.status !== "ready" || this.policy !== "store-or-network") void this.fetch("first")
+    if (this.state.stale || this.state.status !== "ready" || this.policy !== "store-or-network" || this.client.store.freshness?.fresh(selectorOf(this.artifact, this.variables)) === false) void this.fetch("first")
     this.holdLive()
     this.schedulePoll()
   }
@@ -1524,7 +1527,8 @@ export class Client {
 
   /**
    * Read a query outside React. `store-or-network` (the default) answers from complete stored
-   * data without a request; the other policies always fetch. The records stay for the retention
+   * data without a request, unless it was restored from persistence or is past its type's `installFreshness` setting; the other
+   * policies always fetch. The records stay for the retention
    * period, like a preload. Rejects with `OperationError` when the server returns no data;
    * errors that arrive with data are in `errors`.
    */
@@ -1542,7 +1546,7 @@ export class Client {
     if ((options.policy ?? "store-or-network") === "store-or-network") {
       this.store.configureLifetimes(artifact.lifetimes)
       const stored = this.store.lookup<T>(selector)
-      if (!stored.missing && !stored.stale) return { data: stored.data, errors: [] }
+      if (!stored.missing && !stored.stale && this.store.freshness?.fresh(selector) !== false) return { data: stored.data, errors: [] }
     }
     const release = this.store.retain(`query:${queryKey(artifact, variables)}`, selector)
     try {

@@ -1,6 +1,6 @@
 ---
 name: graphql-orm-client-data
-description: Write components and data flows with graphql-orm-client. Use whenever a component shows or changes server data: fragments and route roots (loadQuery), pagination (@paged, @connection), refetching records (@refetchable), mutations and write outcomes, secrets (@sensitive), batched relations (@batch), readAll, deleted rows, persistence, porting from Apollo, and testing with graphql-orm-client/test.
+description: Data flows with graphql-orm-client. Use whenever a component shows or changes server data: fragments and route roots (loadQuery), pagination (@paged, @connection), refetching (@refetchable), mutations, write outcomes, secrets (@sensitive), batched relations (@batch), readAll, deleted rows, freshness (installFreshness), persistence, porting from Apollo, and testing (graphql-orm-client/test).
 ---
 
 # Fragments, roots, pagination and mutations
@@ -185,6 +185,8 @@ expect(client.live.status().Ticket.subscriptions).toBe(1)
   socket drop the transport recovers from by itself, where nothing ends: use it with `onReconnect`.
 - `clock.advance(ms)` fires timers without letting promises settle; use `clock.tick(ms)` when a request is
   involved.
+- `clock.store` carries the clock's `now`, so lifetime expiry and freshness ages follow it. To keep `Date.now` for those, pass
+  `store: { ...clock.store, now: Date.now }`.
 
 ## Secrets, write outcomes and partial results
 
@@ -234,6 +236,26 @@ A query passed `pollMs` declares why: `query Name @poll(reason: "...") { ... }`.
 Declare generator `lifetimes` only when the service guarantees the field's meaning and format.
 Regenerate to adopt. Handle `QueryState.lifetime` (`expired` or `unknown`); unknown time values
 are not proved valid. Formats and diagnostics are in the installed design.
+
+## Freshness
+
+`store-or-network` (what `loadQuery` and `client.query` use) answers from complete stored data however old it is. To read again
+once a type's records are older than some period, install freshness once, right after `createClient` and before any read:
+
+```ts
+import { installFreshness } from "graphql-orm-client/freshness"
+installFreshness(client, { staleMs: { Ticket: 60_000 } })
+```
+
+- A `store-or-network` read then answers from the store only while every `Ticket` it reaches, and every list that can hold
+  one, was written by a response or an event within the last minute. Otherwise it reads, showing the stored data meanwhile.
+- A watched query decides when it opens. An open query doesn't read again when its records age: use `@live` or `pollMs` for that.
+- Types left out behave as without it. `store-and-network` and `network-only` are unchanged.
+- An optimistic write, a restored record, and a stream with no event don't make a record fresh. A keys-only event or a
+  `PROPAGATED` delete makes it stale. A lifetime field still expires a fresh record.
+- An event or a mutation response restarts the age of the record it writes even when it carries only some of the fields a query
+  reads. Leave out a type whose events often carry less than its queries show.
+- In tests, `store: clock.store` from `createTestClock()` drives the ages.
 
 ## Persistence
 

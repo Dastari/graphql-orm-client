@@ -142,6 +142,7 @@ catalogue. This client is built on those guarantees.
 | Every row up to a stated limit | `readAll` | `/read-all` |
 | Progress, AI text deltas, terminal output, search results | `createStream`, `useEphemeralStream` | `/streams`, `/react` |
 | Offline start, and lifetime fields | `persistClient`, generator `lifetimes` | `/persistence` |
+| Reading again once a type's stored records are older than a period | `installFreshness(client, { staleMs })` | `/freshness` |
 | One record's refresh | `@refetchable`, `useRefetchableFragment` | `/react` |
 | Reading again only the views showing some records | `refetchQueries([{ query, variables }])` | main |
 | Reads that survive a dropped connection | `reads: { retry }` on `createClient`; a default read deadline | main |

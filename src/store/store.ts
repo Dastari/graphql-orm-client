@@ -35,10 +35,19 @@ export interface OptimisticLayer {
   readonly written: Map<string, Map<string, StoredValue>>
 }
 
+/** @internal What `installFreshness` gives the store, so the main bundle carries only the calls into it. */
+export interface StoreFreshness {
+  wrote(id: string, typename: string, selections?: readonly Selection[]): void
+  /** The record changed on the server and the store doesn't hold the change. */
+  outdate(id: string): void
+  /** Whether everything `selector` reaches is fresh enough to answer from the store. */
+  fresh(selector: Selector): boolean
+}
+
 export interface StoreOptions {
   /** Explicit per-type expiry policies; also carried by generated artifacts. */
   readonly lifetimes?: Readonly<Record<string, LifetimePolicy>>
-  /** Clock for lifetime evaluation. */
+  /** Clock for lifetime evaluation and for record ages under `installFreshness`. Default `Date.now`. */
   readonly now?: () => number
   /** Reports values with unknown lifetime. */
   readonly onDiagnostic?: (diagnostic: { code: string; message: string }) => void
@@ -132,10 +141,22 @@ export class Store {
     this.configureLifetimes(options.lifetimes)
   }
 
+  /** Ages records for `store-or-network` reads; installed by the optional freshness entry point. */
+  freshness?: StoreFreshness
+
+  /**
+   * Note a server write of a record: a response or a live event, never an optimistic layer. `selections` are given for a record
+   * without a key (a list, an edge, an embedded object).
+   */
+  wrote(id: string, typename: string, selections?: readonly Selection[]): void {
+    if (!this.journal) this.freshness?.wrote(id, typename, selections)
+  }
+
   private readonly policies = new Map<string, LifetimePolicy>()
   private readonly lifetimeStates = new Map<string, LifetimeState>()
   private expiryTimer: unknown = null
-  private readonly now: () => number
+  /** The store clock: lifetime evaluation and record ages. */
+  readonly now: () => number
   private readonly diagnostic?: StoreOptions["onDiagnostic"]
 
   /** Register generator-declared policies before normalisation. */
@@ -518,6 +539,7 @@ export class Store {
     if (this.expiryTimer !== null) this.clearTimer(this.expiryTimer)
     this.expiryTimer = null
     this.lifetimeStates.clear()
+    this.freshness = undefined
     for (const retention of this.retained.values()) {
       if (retention.timer !== null) this.clearTimer(retention.timer)
     }

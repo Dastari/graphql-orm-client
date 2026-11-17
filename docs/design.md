@@ -18,10 +18,10 @@ Status: partly built. Implemented and tested:
 - pagination: `@connection` (keyset or offset), `loadMore`, `hasMore` and `loadingMore`;
 - page-number navigation: `@paged`, `watchPagedQuery` and `usePagedQuery`;
 - optimistic mutations, `no-store` mutations, interval polling, and the live polling fallback;
-- `@refetchable` fragments: `client.refetchFragment` and `useRefetchableFragment`.
+- `@refetchable` fragments: `client.refetchFragment` and `useRefetchableFragment`;
+- per-type freshness for `store-or-network` reads: `installFreshness` from `graphql-orm-client/freshness`.
 
-Proposed, not built: per-type
-`staleMs` policy ([R30](requirements.md)), a store inspector ([R31](requirements.md)), Suspense ([R29](requirements.md)), the `scope` store option, sending operations by persisted hash,
+Proposed, not built: a store inspector ([R31](requirements.md)), Suspense ([R29](requirements.md)), the `scope` store option, sending operations by persisted hash,
 batching writes per tick, refetching a parent on a `PROPAGATED` event, and marking records stale after a failed lookup. Sections below label these. What the client still
 needs is in [requirements.md](requirements.md).
 
@@ -314,9 +314,9 @@ them, so going back within that period needs no request.
 
 ### Cache policy
 
-`store.retainMs` controls retention. Lifetime and persistence are opt-in; see the R17 sections
+`store.retainMs` controls retention. Lifetime, freshness and persistence are opt-in; see the R17 and R30 sections
 below. One client belongs to one identity: dispose it before exposing a new identity's client.
-Per-type `staleMs` (R30 in [the requirements](requirements.md)) and automatic `store.scope` switching remain proposed.
+Automatic `store.scope` switching remains proposed.
 
 ### Query states
 
@@ -1486,6 +1486,76 @@ A null lifetime is unknown, not an infinite lease. Calendar dates are validated 
 The store uses one expiry timer, rechecking at the nearest deadline, capped at 2,147,483,647 ms.
 Expiry does not delete records or synthesize Changed events; normal version ordering and retention
 still apply. Disposal clears the timer and records. Browser clock correctness is a consumer dependency.
+
+## Freshness (R30)
+
+Without it, `store-or-network` answers from complete stored data however old it is. `installFreshness` gives types a period
+after which their records count as stale:
+
+```ts
+import { installFreshness } from "graphql-orm-client/freshness"
+
+const client = createClient({ network, live })
+installFreshness(client, { staleMs: { Ticket: 60_000, Vendor: 10 * 60_000 } })
+```
+
+A `store-or-network` read (`client.query`, `loadQuery`, `watchQuery(..., "store-or-network")` when it opens, a `@paged` page with that
+policy) answers from the store only when its data is complete, not restored, and fresh: every record it reaches, through child
+fragments too, whose type has a setting was written by the server within that setting. Otherwise it reads. A watched query shows the
+stored data while it does, as it does for restored data. `store-and-network` and `network-only` don't change. A type left out never
+goes stale this way, and a client without `installFreshness` behaves as before. Install it right after `createClient` and before any
+read; a record written before then has no age and counts as stale. `0` makes every such read of the type go to the network, and
+`Infinity` keeps a record fresh once a response in this client has written it. A negative or non-numeric value throws.
+
+**Where the setting lives.** It is a runtime setting of one client, not generator configuration. Lifetimes are in the generator
+because the compiler has to select the lifetime field; freshness selects nothing, so it needs no regeneration and adds nothing to
+the artifacts. It is the application's tolerance for old data, not a fact about the schema, and a test can set it per client. The
+cost is that a misspelled type name isn't caught at build time: it is simply never matched. It is its own entry point because the
+main bundle is watched for growth: main carries only the calls into it (332 bytes, 124 gzip, measured at 84,893 / 27,292), and the
+entry is 4,942 / 2,249 bytes standalone, most of it the store reader that main already has, which a bundler shares.
+
+**What restarts a record's age.** A write the store accepts from a query or refetch response, a mutation's response, a `@batch`
+relation's read, or a live event. Not an optimistic write, which is a guess; not a response the store refused because it carried
+an older record version, which says nothing about the newer one; not a restore; not a direct `store.setField`. A response with the
+same version as the stored one is a confirmation and restarts it. An event or response restarts the age of the whole record even
+when it carries only some of the fields a query reads, since ages are kept per record; leave out a type whose events usually carry
+much less than its queries show. A deleted or collected record forgets its age.
+
+**Lists.** A list's membership is not a field of its rows: an event that keeps every row fresh says nothing about rows created
+since. So a record without a key that holds a list able to reach a type with a setting (a connection, or an embedded object with a
+plural field) gets an age of its own: the smallest setting it can reach, from when a response last replaced all of its rows. A
+`loadMore` page doesn't restart it, nor does a first page that keeps the pages loaded after it; the loaded-range read that a
+`store-or-network` open sends does, because it replaces every loaded row. An empty list ages too. Other records without a key
+(edges, an embedded object with only singular links) take no age: they are written with the record or list above them. A plural
+field held directly by a record with a key, or by the query root, isn't aged apart from its rows; graphql-orm serves lists as
+connections, so this affects only a hand-built schema. A singular link (`Ticket.Assignee`, a root `Ticket(Id:)`) is a field of
+the record holding it and shares its age.
+
+**Streams don't keep a record fresh.** A record covered by an open stream that has sent nothing is not fresh: only what a stream
+delivers restarts an age. There is no subscribe acknowledgement (graphql-orm#341), so a quiet stream looks the same as one the
+server never admitted; graphql-orm-router before 0.9.0 can drop frames with no signal (graphql-orm#359); and a write made around
+the ORM sends no event. Counting coverage as freshness would make live delivery the only path to correct data for a covered type,
+which the client never allows. An event that says a record changed without carrying what its readers need makes the record stale
+at once, whatever its age: a keys-only event (after the server refused the full selection), a `DELETED` with change kind
+`PROPAGATED`, and any event of a type whose stream leaves out fields some fragment reads (`rereadFragments`). Open holders read
+again as before, and that read restarts the age; a closed query reaching the record reads when it next opens. A reconnect's
+re-read restarts the age like any other read.
+
+**Persistence.** A restored record has no age until the network writes it, so a restored snapshot is never fresh, however recent
+its `savedAt`. `savedAt` is when the snapshot was last flushed, not when each record in it was last written by the server, so it
+can't prove any record's age; and restored data is already re-read (`QueryState.stale`). Ages are not persisted.
+
+**When it is decided.** When a read starts. An open watched query doesn't read again when its records age: `@live` keeps it current,
+and `pollMs` reads on a timer. A second handle opening an already open query doesn't read either. Lifetime fields (R17) still decide
+expiry: an expired record reads as missing, and so is read, however fresh it is.
+
+**Cost.** Ages are kept in one `Map` from record id to deadline, only for records of a type with a setting and for the lists
+described above, so a type without a setting costs nothing. A deadline is stored as an offset from when freshness was installed,
+which keeps it a small integer that V8 holds in the map entry for about twelve days of a client's life. Measured with Node 24 on a
+10,000-row connection whose row type has a setting: 488 KB more heap (about 49 bytes a row, 5% of that store). Deciding a read
+reads its selector once more with fragments inlined, only when freshness is installed and the policy is `store-or-network`: 4 to 17 ms
+for those 10,000 rows. The ages use the store clock (`store.now`); `createTestClock().store` carries it, so tests drive ages and
+lifetime expiry with the clock.
 
 ## Persistence (R17)
 

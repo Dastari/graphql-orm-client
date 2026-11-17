@@ -165,6 +165,7 @@ function writeObject(
   if (id === path) context.embedded?.add(id)
   const record = store.getOrCreate(id, typename)
   const write = accepts(record, value, context.versions[typename], context.versionCompare?.[typename])
+  if (write) store.wrote(id, typename, id === path ? selections : undefined)
   // Older data never replaces newer data, but nested records carry their own versions.
   writeFields(store, record, typename, selections, value, context, write)
   return id
@@ -230,6 +231,9 @@ function writeConnection(
     store.setField(record, HEAD_LENGTH, incoming.length)
   }
   store.setField(record, edgesKey, { __refs: merged })
+  // The list's age restarts only when this response replaced every row it holds: a next page, or a first page that kept the
+  // pages loaded after it, doesn't say the rows read earlier are still the list's rows.
+  if (!appending && !keepPageInfo) store.wrote(id, typename, selection.selections)
 
   if (pageInfoSelection) {
     const pageInfoKey = fieldStorageKey(pageInfoSelection, context.variables)

@@ -64,6 +64,8 @@ same order and with loaded pages kept. A count or generated aggregate of a live 
 - A write made around the ORM (in-memory state, raw SQL) sends no event. Record the gap instead of adding a hand-written subscription.
 - `Changed` fires on writes, not on clock expiry. For a lifetime field, see the data skill.
 - For data that isn't an entity (progress, AI text, terminal output), use the [streams skill](../graphql-orm-client-streams/SKILL.md).
+- With `installFreshness` (data skill), an event restarts the age of the record it writes, but an open stream with no event
+  doesn't: nothing acknowledges a subscribe, so a quiet stream can't prove the record is unchanged.
 
 ## Drawing status
 
