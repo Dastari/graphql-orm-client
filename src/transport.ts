@@ -3,6 +3,9 @@ import type { GraphQLResponse, Network, OperationRequest } from "./client.js"
 import type { LiveSocketState } from "./health.js"
 import type { LiveConnection, SubscriptionSink } from "./live.js"
 
+/** How long `createHttpNetwork` waits for a query's response unless `reads.deadlineMs` says otherwise. */
+export const DEFAULT_READ_DEADLINE_MS = 30_000
+
 /** The server answered with an HTTP status and no GraphQL result. */
 export class HttpError extends Error {
   constructor(readonly status: number) {
@@ -14,9 +17,13 @@ export class HttpError extends Error {
 export interface HttpNetworkOptions {
   /** The router's GraphQL endpoint. */
   readonly url: string | URL
-  /** Opt-in read bounds; omitted fields preserve the previous unlimited behaviour. */
-  readonly reads?: { readonly deadlineMs?: number; readonly maxResponseBytes?: number }
-  /** Independent write bounds. No request is automatically retried. */
+  /**
+   * Read bounds. `deadlineMs` defaults to `DEFAULT_READ_DEADLINE_MS` (30 seconds): a query with no response by then fails, as a
+   * failed connection does, and `classifyError` reports `network`. `null` removes it, which restores the earlier behaviour. `maxResponseBytes`
+   * is unlimited unless set.
+   */
+  readonly reads?: { readonly deadlineMs?: number | null; readonly maxResponseBytes?: number }
+  /** Independent write bounds, both unlimited unless set. A write past its deadline is `unconfirmed`. The network never sends a request twice; a client can retry reads (`reads.retry` on `createClient`), never writes. */
   readonly writes?: { readonly deadlineMs?: number; readonly maxResponseBytes?: number }
   /** Defaults to the global `fetch`. Pass a wrapper for logging or additional bounds; mutation requests must never be retried. */
   readonly fetch?: typeof globalThis.fetch
@@ -41,42 +48,54 @@ export function createHttpNetwork(options: HttpNetworkOptions): Network {
         if (signal?.aborted) throw signal.reason
       } catch (error) { throw markNotSent(error) }
       const bounds = request.kind === "mutation" ? options.writes : options.reads
-      const boundedSignal = bounds?.deadlineMs === undefined ? signal
-        : signal ? AbortSignal.any([signal, AbortSignal.timeout(bounds.deadlineMs)]) : AbortSignal.timeout(bounds.deadlineMs)
-      const headers = new Headers(extra)
-      headers.set("content-type", "application/json")
-      headers.set("accept", "application/graphql-response+json, application/json;q=0.9")
-      let response: Response
+      const deadlineMs = request.kind === "mutation" ? options.writes?.deadlineMs : options.reads?.deadlineMs === undefined ? DEFAULT_READ_DEADLINE_MS : options.reads.deadlineMs
+      // A timer of our own rather than `AbortSignal.timeout`, so it is cleared once the body is read.
+      let deadline: ReturnType<typeof setTimeout> | undefined
+      let boundedSignal = signal
+      if (deadlineMs !== undefined && deadlineMs !== null) {
+        const timeout = new AbortController()
+        deadline = setTimeout(() => timeout.abort(new DOMException(`No response within ${deadlineMs} ms`, "TimeoutError")), deadlineMs)
+        ;(deadline as { unref?: () => void }).unref?.()
+        boundedSignal = signal ? AbortSignal.any([signal, timeout.signal]) : timeout.signal
+      }
       try {
-        response = await send(options.url, {
-          method: "POST",
-          headers,
-          credentials: options.credentials ?? "same-origin",
-          body: JSON.stringify({ operationName: request.name, query: request.text, variables: request.variables }),
-          ...(boundedSignal ? { signal: boundedSignal } : {}),
-        })
-      } catch (error) { throw signal?.aborted ? error : markNoResponse(error) }
-      let body: unknown
-      if (bounds?.maxResponseBytes !== undefined) {
-        const reader = response.body?.getReader()
-        const chunks: Uint8Array[] = []
-        let length = 0
+        const headers = new Headers(extra)
+        headers.set("content-type", "application/json")
+        headers.set("accept", "application/graphql-response+json, application/json;q=0.9")
+        let response: Response
         try {
-          while (reader) {
-            const next = await reader.read()
-            if (next.done) break
-            length += next.value.byteLength
-            if (length > bounds.maxResponseBytes) throw new Error("GraphQL response exceeds configured byte limit")
-            chunks.push(next.value)
-          }
-        } catch (error) { await reader?.cancel().catch(() => {}); throw error }
-        const joined = new Uint8Array(length)
-        let offset = 0
-        for (const chunk of chunks) { joined.set(chunk, offset); offset += chunk.length }
-        try { body = JSON.parse(new TextDecoder().decode(joined)) } catch { body = null }
-      } else body = await response.json().catch(() => null)
-      if (!isResponse(body) || (!response.ok && !body.errors?.length)) throw new HttpError(response.status)
-      return body
+          response = await send(options.url, {
+            method: "POST",
+            headers,
+            credentials: options.credentials ?? "same-origin",
+            body: JSON.stringify({ operationName: request.name, query: request.text, variables: request.variables }),
+            ...(boundedSignal ? { signal: boundedSignal } : {}),
+          })
+        } catch (error) { throw signal?.aborted ? error : markNoResponse(error) }
+        let body: unknown
+        if (bounds?.maxResponseBytes !== undefined) {
+          const reader = response.body?.getReader()
+          const chunks: Uint8Array[] = []
+          let length = 0
+          try {
+            while (reader) {
+              const next = await reader.read()
+              if (next.done) break
+              length += next.value.byteLength
+              if (length > bounds.maxResponseBytes) throw new Error("GraphQL response exceeds configured byte limit")
+              chunks.push(next.value)
+            }
+          } catch (error) { await reader?.cancel().catch(() => {}); throw error }
+          const joined = new Uint8Array(length)
+          let offset = 0
+          for (const chunk of chunks) { joined.set(chunk, offset); offset += chunk.length }
+          try { body = JSON.parse(new TextDecoder().decode(joined)) } catch { body = null }
+        } else body = await response.json().catch(() => null)
+        if (!isResponse(body) || (!response.ok && !body.errors?.length)) throw new HttpError(response.status)
+        return body
+      } finally {
+        clearTimeout(deadline)
+      }
     },
   }
 }

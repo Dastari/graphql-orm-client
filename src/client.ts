@@ -1,6 +1,7 @@
 import type { ReadCause } from "./health.js"
+import { RESPONSE_FIELD_MISSING, missingFieldMessage, missingFields } from "./missing.js"
 import { withoutErrorNulls } from "./partial.js"
-import { wasNotSent, writeStatus, type WriteOutcome } from "./outcome.js"
+import { hadNoResponse, markNoResponse, wasNotSent, writeStatus, type WriteOutcome } from "./outcome.js"
 import type { ConnectionSpec, FragmentArtifact, FragmentRefFor, LinkSelection, OperationArtifact, PagedSpec, Selection } from "./artifact.js"
 import { fieldStorageKey, stableStringify, type Variables } from "./store/arguments.js"
 import { contextOf, identify, normalize } from "./store/normalize.js"
@@ -111,6 +112,11 @@ export interface ExecuteOptions {
   isolated?: boolean
   observeResponse?: (response: GraphQLResponse) => void
   beforeSend?: () => void
+  /**
+   * Internal: called as soon as the response is in the store, before `execute` resolves, with the errors it will resolve with. A
+   * watched query sets its data and errors here in one state change.
+   */
+  afterPublish?: (snapshot: Snapshot<any>, errors: readonly GraphQLErrorLike[]) => void
 }
 
 export interface ClientOptions {
@@ -121,6 +127,49 @@ export interface ClientOptions {
   /** Keep records read through `@live` fragments current with generated Changed subscriptions. */
   readonly live?: LiveOptions
   readonly polling?: PollingOptions
+  /**
+   * What to do when a response leaves out a field the operation selects (a non-conformant server, a gateway that drops a field, a
+   * schema that changed under the client). The data is incomplete either way. `warn` logs once per operation and path, naming the
+   * operation, type, record and response key. `error` adds an error at that path to the result's `errors`, with
+   * `extensions.code` `RESPONSE_FIELD_MISSING`, as a GraphQL error there would be. `off` says nothing. Left unset, it warns unless
+   * `process.env.NODE_ENV` is `production`. A null is a value, so a null at a nullable field is never reported, nor is a field under
+   * a legacy `@skip` or `@include`, or one at or below a path an error names.
+   */
+  readonly missingFields?: "warn" | "error" | "off"
+  /** How watched queries read. */
+  readonly reads?: ReadOptions
+}
+
+/** How watched queries (`watchQuery`, `useQuery`, `loadQuery`, `usePagedQuery`) read. */
+export interface ReadOptions {
+  /**
+   * Opt-in: send a watched query's read again when it failed before any response arrived (a failed connection or a passed deadline,
+   * as `createHttpNetwork` marks them, or `markNoResponse` in a custom network). `true` uses the defaults. A read that got a response,
+   * GraphQL errors or an HTTP error included, isn't retried, and a write never is. Closing the query, disposing the client or a newer
+   * read of the query (a `refetch`, say) ends the wait. The query keeps its status (`loading` or `refreshing`) while it waits.
+   * Waits use `live.setTimeout`, else `store.setTimeout`, else the global timer.
+   */
+  readonly retry?: boolean | ReadRetryOptions
+  /**
+   * Read open queries in `error` again when the browser says it's back online (the window's `online` event), and send a waiting
+   * retry at once. Default true; `false` restores the earlier behaviour of waiting for a refetch.
+   */
+  readonly refetchOnOnline?: boolean
+}
+
+/** Bounded back-off for `reads.retry`. */
+export interface ReadRetryOptions {
+  /** Attempts after the first. Default 3. */
+  readonly retries?: number
+  /**
+   * The wait before the first retry. Each later wait doubles, up to `maxMs`, and each is jittered to between half and all of
+   * that. Default 1000.
+   */
+  readonly baseMs?: number
+  /** Default 30000. */
+  readonly maxMs?: number
+  /** A number from 0 to 1 for the jitter. Default `Math.random`; pass one for repeatable tests. */
+  readonly random?: () => number
 }
 
 export interface PollingOptions {
@@ -149,6 +198,21 @@ export interface WatchOptions {
   /** Refetch on this interval while the query is open. */
   readonly pollMs?: number
 }
+
+/**
+ * Which open queries `refetchQueries` reads again: every open instance of an operation (its artifact
+ * or name), or `{ query, variables }` for the instances whose variables match. `variables` is a
+ * predicate given each instance's variables, or an object whose every field must equal the
+ * instance's variable of that name (compared as values, so `{ Id: "a" }` matches
+ * `{ Id: "a", Page: { limit: 20 } }`). Without `variables` it selects every instance.
+ */
+export type RefetchQuery<V extends Variables = any> =
+  | OperationArtifact<any, any>
+  | string
+  | {
+      readonly query: OperationArtifact<any, V> | string
+      readonly variables?: ((variables: V) => boolean) | Partial<V>
+    }
 
 /** A shared, retained view of one query and its variables. */
 export interface WatchedQuery<T> {
@@ -447,7 +511,7 @@ class QueryResource<T> implements WatchedQuery<T> {
       .execute<T>(this.artifact, next, { readCause: "pagination" })
       .then(() => this.set({ ...this.state, loadingMore: false, hasMore: this.connection()?.hasMore ?? false }))
       .catch((error: unknown) => {
-        this.set({ ...this.state, loadingMore: false, error: error instanceof Error ? error : new Error(String(error)) })
+        this.set({ ...this.state, loadingMore: false, error: asError(error) })
       })
       .finally(() => {
         this.loadingMore = null
@@ -487,16 +551,35 @@ class QueryResource<T> implements WatchedQuery<T> {
   }
 
   fetch(cause: ReadCause = "manual", beforeSend?: () => void): Promise<void> {
+    // A newer read replaces a retry that is waiting: it is sent now, with its own attempts.
+    if (this.retryWait) {
+      this.retryWait(cause)
+      return this.inflight!
+    }
     if (this.inflight) return this.inflight
     if (this.loadingMore) return this.loadingMore.then(() => (this.users > 0 ? this.fetch(cause, beforeSend) : undefined))
     if (this.state.data !== undefined) this.set({ ...this.state, status: "refreshing" })
     const controller = new AbortController()
     this.controller = controller
-    const connection = this.artifact.lists ? this.connection() : null
-    this.inflight = this.client
-      .execute<T>(this.artifact, this.variables, { readCause: cause, beforeSend, signal: controller.signal, ...(connection && connection.variable && connection.spec.limit ? { refreshConnection: { loaded: Math.max(connection.loaded, this.loadedRange), ...this.client.connectionRereadLimits, onTruncated: (value: boolean) => this.set({ ...this.state, listRefreshTruncated: value }) } } : {}) })
-      .then(({ snapshot, errors }) => {
-        if (controller.signal.aborted) return
+    this.inflight = this.read(controller, cause, beforeSend).finally(() => {
+      if (this.controller !== controller) return
+      this.controller = null
+      this.inflight = null
+    })
+    return this.inflight
+  }
+
+  /** Our own response is being written: the store watch leaves the state to `afterPublish`, which sets data and errors together. */
+  private writing = false
+  private retryWait: ((cause: ReadCause) => void) | null = null
+
+  private async read(controller: AbortController, cause: ReadCause, beforeSend?: () => void): Promise<void> {
+    for (let attempt = 0; ; attempt++) {
+      let applied = false
+      const apply = (snapshot: Snapshot<T>, errors: readonly GraphQLErrorLike[]) => {
+        this.writing = false
+        if (controller.signal.aborted || this.client.store.isDisposed) return
+        applied = true
         this.lastReadAt = this.client.now()
         this.watch(snapshot)
         this.set({
@@ -509,17 +592,63 @@ class QueryResource<T> implements WatchedQuery<T> {
           errors,
           hasMore: this.connection()?.hasMore ?? false,
         })
-      })
-      .catch((error: unknown) => {
+      }
+      const connection = this.artifact.lists ? this.connection() : null
+      try {
+        const { snapshot, errors } = await this.client.execute<T>(this.artifact, this.variables, {
+          readCause: attempt > 0 ? "retry" : cause,
+          beforeSend,
+          signal: controller.signal,
+          beforeWrite: () => { this.writing = true },
+          afterPublish: apply,
+          ...(connection && connection.variable && connection.spec.limit ? { refreshConnection: { loaded: Math.max(connection.loaded, this.loadedRange), ...this.client.connectionRereadLimits, onTruncated: (value: boolean) => this.set({ ...this.state, listRefreshTruncated: value }) } } : {}),
+        })
+        if (!applied) apply(snapshot, errors)
+        return
+      } catch (error) {
+        this.writing = false
         if (controller.signal.aborted) return
-        this.set({ ...this.state, status: "error", error: error instanceof Error ? error : new Error(String(error)) })
-      })
-      .finally(() => {
-        if (this.controller !== controller) return
-        this.controller = null
-        this.inflight = null
-      })
-    return this.inflight
+        const delay = this.users > 0 && !this.client.store.isDisposed && hadNoResponse(error) ? this.client.retryDelay(attempt) : null
+        if (delay === null) {
+          this.set({ ...this.state, status: "error", error: asError(error) })
+          return
+        }
+        const woken = await this.waitRetry(delay, controller.signal)
+        if (controller.signal.aborted || this.client.store.isDisposed) return
+        if (woken) {
+          // The newer read starts its own count, under its own cause.
+          attempt = -1
+          cause = woken
+        }
+      }
+    }
+  }
+
+  /** Wait `ms` before a retry. Resolves early with a newer read's cause, or with null when the time is up or the read is cancelled. */
+  private waitRetry(ms: number, signal: AbortSignal): Promise<ReadCause | null> {
+    return new Promise((resolve) => {
+      const wake = (cause: ReadCause | null) => {
+        if (this.retryWait !== wake) return
+        this.retryWait = null
+        cancel()
+        signal.removeEventListener("abort", aborted)
+        resolve(cause)
+      }
+      const aborted = () => wake(null)
+      this.retryWait = wake
+      const cancel = this.client.afterRetry(aborted, ms)
+      signal.addEventListener("abort", aborted, { once: true })
+    })
+  }
+
+  /** Whether a read failed and nothing is retrying it, or a retry is waiting: what the browser's `online` event reads again. */
+  get awaitingNetwork(): boolean {
+    return this.users > 0 && (this.retryWait !== null || (this.state.status === "error" && !this.inflight))
+  }
+
+  /** End a waiting retry, with no state change; the client is being disposed. A request in flight is cancelled by the client. */
+  stop(): void {
+    if (this.retryWait) this.controller?.abort()
   }
 
   private rereadCause: ReadCause = "stale"
@@ -585,6 +714,8 @@ class QueryResource<T> implements WatchedQuery<T> {
     this.unsubscribeStore?.()
     this.holdLive()
     this.unsubscribeStore = this.client.store.subscribe(snapshot, (next, { structural }) => {
+      // This query's own response: `afterPublish` sets its data with its errors, in one change, once the write is done.
+      if (this.writing) return
       this.set({ ...this.state, data: next.data as T, stale: next.stale, lifetime: next.lifetime, hasMore: this.connection()?.hasMore ?? false })
       // Which records the query reaches through `@live` fragments changes only with a link, a new record or a removed one among the
       // records it reaches. A changed scalar leaves what it holds as it was, and reading the whole query again for each one costs as
@@ -805,7 +936,7 @@ export class Client {
   private readonly subscriptions = new Set<() => void>()
   private readonly subscribeTransport: LiveOptions["subscribe"] | null
   private mutationCount = 0
-  private readCounts: Readonly<Record<ReadCause, number>> = { first: 0, manual: 0, poll: 0, stale: 0, confirm: 0, restart: 0, reconnect: 0, burst: 0, pagination: 0, relation: 0 }
+  private readCounts: Readonly<Record<ReadCause, number>> = { first: 0, manual: 0, poll: 0, stale: 0, confirm: 0, restart: 0, reconnect: 0, burst: 0, pagination: 0, relation: 0, retry: 0, online: 0 }
 
   private countRead(cause: ReadCause): void {
     if (this.live) this.readCounts = { ...this.readCounts, [cause]: this.readCounts[cause] + 1 }
@@ -851,6 +982,48 @@ export class Client {
     this.clock = options.live?.now ?? Date.now
     const fallback = options.live?.onDiagnostic === undefined ? defaultDiagnostic : options.live.onDiagnostic
     this.onDiagnostic = fallback
+    this.missingFields = options.missingFields ?? (isProduction() ? "off" : "warn")
+    const retry = options.reads?.retry
+    this.retry = retry ? { retries: 3, baseMs: 1000, maxMs: 30_000, random: Math.random, ...(retry === true ? {} : retry) } : null
+    this.retryTimers = options.live?.setTimeout ? options.live : options.store?.setTimeout ? options.store : null
+    if (options.reads?.refetchOnOnline !== false && typeof window !== "undefined" && typeof window.addEventListener === "function") {
+      const online = () => {
+        if (this.store.isDisposed) return
+        for (const resource of [...this.resources.values()]) {
+          if (!resource.awaitingNetwork) continue
+          this.store.refreshRelations?.(selectorOf(resource.artifact, resource.variables))
+          void resource.fetch("online")
+        }
+      }
+      window.addEventListener("online", online)
+      this.subscriptions.add(() => window.removeEventListener("online", online))
+    }
+  }
+
+  /** What a response that leaves out a selected field does. */
+  private readonly missingFields: "warn" | "error" | "off"
+  /** Operation and path of each left-out field already warned about. */
+  private readonly warnedMissing = new Set<string>()
+  private readonly retry: Required<ReadRetryOptions> | null
+  private readonly retryTimers: { setTimeout?: (callback: () => void, ms: number) => unknown; clearTimeout?: (handle: unknown) => void } | null
+
+  /** How long a watched query waits before retry `attempt` (from 0) of a read that got no response, or null for no retry. */
+  retryDelay(attempt: number): number | null {
+    const retry = this.retry
+    if (!retry || attempt >= retry.retries) return null
+    const cap = Math.min(retry.maxMs, retry.baseMs * 2 ** attempt)
+    return cap / 2 + (cap / 2) * Math.min(1, Math.max(0, retry.random()))
+  }
+  /** Schedule a retry on the live or store timer seam, else the global timer; returns its cancel. */
+  afterRetry(callback: () => void, ms: number): () => void {
+    const timers = this.retryTimers
+    if (timers?.setTimeout) {
+      const handle = timers.setTimeout(callback, ms)
+      return () => (timers.clearTimeout ?? clearTimeout)(handle as ReturnType<typeof setTimeout>)
+    }
+    const timer = setTimeout(callback, ms)
+    timer.unref?.()
+    return () => clearTimeout(timer)
   }
 
   /** Interval for automatic stale and confirming reads. */
@@ -966,16 +1139,28 @@ export class Client {
   }
 
   /**
-   * Refetch the open queries of these operations (by artifact or operation name), or every open
-   * query for `"active"`. Resolves when they have been read again; failures go to each query's
-   * state, not here. Queries nobody has open are not fetched.
+   * Refetch the open queries of these operations, or every open query for `"active"`. An entry is an
+   * artifact or an operation name, which selects every open instance of it, or
+   * `{ query, variables }`, which selects only the instances whose variables match: a predicate, or
+   * an object whose every field equals the instance's variable of that name. Resolves when they
+   * have been read again; failures go to each query's state, not here. Queries nobody has open are
+   * not fetched.
    */
-  async refetchQueries(include: "active" | readonly (OperationArtifact<any, any> | string)[]): Promise<void> {
-    const matches = (artifact: OperationArtifact<any, any>) =>
+  async refetchQueries(include: "active" | readonly RefetchQuery[]): Promise<void> {
+    const same = (artifact: OperationArtifact<any, any>, query: OperationArtifact<any, any> | string) =>
+      typeof query === "string" ? artifact.name === query : artifact === query || artifact.hash === query.hash
+    const matches = (resource: QueryResource<unknown>) =>
       include === "active" ||
-      include.some((entry) => (typeof entry === "string" ? artifact.name === entry : artifact === entry || artifact.hash === entry.hash))
+      include.some((entry) => {
+        if (typeof entry === "string" || !("query" in entry)) return same(resource.artifact, entry)
+        if (!same(resource.artifact, entry.query)) return false
+        const { variables } = entry
+        if (variables === undefined) return true
+        if (typeof variables === "function") return variables(resource.variables) === true
+        return Object.entries(variables).every(([name, value]) => stableStringify(resource.variables[name]) === stableStringify(value))
+      })
     await Promise.all(
-      [...this.resources.values()].filter((resource) => resource.users > 0 && matches(resource.artifact)).map((resource) => resource.refetch())
+      [...this.resources.values()].filter((resource) => resource.users > 0 && matches(resource)).map((resource) => resource.refetch())
     )
   }
 
@@ -1154,6 +1339,21 @@ export class Client {
     return connectionTailFrom
   }
 
+  /** Report fields the response leaves out, per `missingFields`; returns the errors to resolve with. */
+  private checkFields(artifact: OperationArtifact<any, any>, data: Record<string, unknown>, errors: readonly GraphQLErrorLike[]): readonly GraphQLErrorLike[] {
+    const missing = missingFields(artifact, data, errors)
+    if (!missing.length) return errors
+    if (this.missingFields === "error")
+      return [...errors, ...missing.map((field) => ({ message: missingFieldMessage(artifact.name, field), path: field.path, extensions: { code: RESPONSE_FIELD_MISSING } }))]
+    for (const field of missing) {
+      const key = `${artifact.name}\u0000${field.path.map((part) => (typeof part === "number" ? "[]" : part)).join(".")}`
+      if (this.warnedMissing.has(key)) continue
+      this.warnedMissing.add(key)
+      console.warn(missingFieldMessage(artifact.name, field))
+    }
+    return errors
+  }
+
   /** Send an operation and write its response into the store. */
   async execute<T = unknown, V extends Variables = Variables>(
     artifact: OperationArtifact<T, V>,
@@ -1215,9 +1415,10 @@ export class Client {
         ? await this.readLoadedRange(artifact, variables as Variables, response.data, options.refreshConnection, controller.signal, options.readCause ?? "manual")
         : undefined
       if (this.store.isDisposed || controller.signal.aborted) throw new DOMException("The request was cancelled", "AbortError")
-      const errors = response.errors ?? []
+      let errors = response.errors ?? []
       options.beforeWrite?.()
       if (!response.data) throw new OperationError(artifact.name, errors)
+      if (this.missingFields !== "off") errors = this.checkFields(artifact, response.data, errors)
       if (artifact.sensitive) return {
         snapshot: { data: response.data as T, missing: false, seen: new Set(), selector: selectorOf(artifact, variables) },
         errors,
@@ -1229,6 +1430,7 @@ export class Client {
       target.publish()
       const snapshot = target.lookup<T>(selectorOf(artifact, variables, rootId))
       if (rootId !== ROOT_ID) target.delete(rootId)
+      options.afterPublish?.(snapshot, errors)
       return { snapshot, errors, response: response.data }
     } finally {
       options.signal?.removeEventListener("abort", abort)
@@ -1422,10 +1624,11 @@ export class Client {
       /** Cancels the request; the optimistic layer is rolled back. */
       signal?: AbortSignal
       /**
-       * Open queries to read again once the mutation succeeds (by artifact or operation name), as
-       * for `client.refetchQueries`. The mutation resolves after they have been read.
+       * Open queries to read again once the mutation succeeds: artifacts, operation names or
+       * `{ query, variables }` entries, as for `client.refetchQueries`. The mutation resolves after
+       * they have been read.
        */
-      refetchQueries?: readonly (OperationArtifact<any, any> | string)[]
+      refetchQueries?: readonly RefetchQuery[]
       /** `store` (default) or `no-store`: return the response without writing any of it into the store. */
       policy?: MutationPolicy
       /** Observe certainty without changing this method's returned/thrown behaviour. */
@@ -1532,7 +1735,10 @@ export class Client {
 
   dispose(): void {
     for (const stop of [...this.subscriptions]) stop()
-    for (const resource of this.resources.values()) resource.cancelRereads()
+    for (const resource of this.resources.values()) {
+      resource.cancelRereads()
+      resource.stop()
+    }
     this.live?.dispose()
     for (const controller of this.controllers) controller.abort()
     this.controllers.clear()
@@ -1618,6 +1824,16 @@ export function readFragment(fragment: FragmentArtifact<any, any>, ref: unknown,
 }
 
 const defaultActive = () => typeof document === "undefined" || document.visibilityState !== "hidden"
+
+/** A failure as an `Error`. One that isn't (a `DOMException` from another realm, say) is wrapped, keeping its name and whether a response arrived. */
+function asError(error: unknown): Error {
+  if (error instanceof Error) return error
+  const message = (error as { message?: unknown } | null)?.message
+  const wrapped = new Error(typeof message === "string" ? message : String(error))
+  const name = (error as { name?: unknown } | null)?.name
+  if (typeof name === "string") wrapped.name = name
+  return hadNoResponse(error) ? markNoResponse(wrapped) : wrapped
+}
 
 /** Follow stored links from a record to the first `@connection` field the selections read. */
 function findConnection(

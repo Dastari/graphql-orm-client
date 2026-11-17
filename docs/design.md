@@ -260,6 +260,34 @@ A root reports `idle` (skipped), `loading`, `ready`, `refreshing` or `error`. `u
 variables within the same hold scope (a new search term on the same vendor), as
 `refreshing` instead of blanking. A different scope never shows another scope's records.
 
+A response reaches a watched query's state in one change: its data, `errors`, `status: "ready"` and `error: null` together. The
+store still tells every other reader of the records as it writes them, but the query that sent the read takes its own data from the
+response, after the write, so no listener sees the new data with the previous response's errors
+([#63](https://github.com/Dastari/graphql-orm-client/issues/63)). This holds under both `partialResults` modes. A later write to the
+same records by something else (another query, a mutation, a live event) updates `data` and leaves `errors` as the query's own last
+response set them.
+
+### Reads that fail before a response (#72)
+
+`createHttpNetwork` gives each query a deadline of `DEFAULT_READ_DEADLINE_MS` (30 seconds). A read with no response by then fails as
+a failed connection does: `createHttpNetwork` marks it with `markNoResponse`, `classifyError` reports `network`, and the query ends in
+`error`. `reads: { deadlineMs }` changes it and `deadlineMs: null` removes it. The deadline covers reading the body. Writes keep no
+deadline unless `writes.deadlineMs` is set. A custom `Network` sets its own bounds.
+
+`createClient({ reads: { retry } })` is opt-in. With it, a watched query (`watchQuery`, `useQuery`, `loadQuery`, `usePagedQuery`)
+whose read failed before any response sends it again: `retries` more times (default 3), waiting `min(maxMs, baseMs * 2^attempt)`
+jittered to between half and all of that (`baseMs` 1000, `maxMs` 30000 by default). The query keeps its status (`loading`, or
+`refreshing` with its rows) while it waits, and the loop ends in `error` with the last failure. Only failures marked as having no
+response are retried: an HTTP error, GraphQL errors and a response with no data are answers. A write is never retried, and nor are
+`client.query`, `loadMore` or `refetchFragment`. Closing the query or disposing the client ends the wait, with nothing sent after
+it. A newer read of the query (`refetch`, the `online` event) ends the wait and is sent at once, with its own attempts. The wait uses
+`live.setTimeout`, else `store.setTimeout`, else the global timer, so `createTestClock` drives it. Retries count as `retry` in
+`liveHealth().reads`.
+
+In a browser, the client listens for the window's `online` event. When it fires, every open query in `error`, and every one waiting
+to retry, is read again (`online` in the read counters). `reads: { refetchOnOnline: false }` turns this off. Disposing the client
+removes the listener.
+
 ## Live layer
 
 Streams in `keys` mode keep each key in its chunk until released. Replacing a stream starts
@@ -520,6 +548,11 @@ await client.mutate(RenameWidgetMutation, { Id: id, Name: name }, {
 - **Refetching after.** `mutate(..., { refetchQueries: [TicketsPageQuery, "CatalogPage"] })` reads
   those open queries again once the mutation succeeds, and resolves after them.
   `client.refetchQueries([...])` does the same at any time, and `"active"` refetches every open query.
+  An artifact or name selects every open instance of the operation, whatever its variables. To read
+  only some, pass `{ query, variables }`: a predicate given each instance's variables
+  (`{ query: TicketDetail, variables: (v) => changed.has(v.Id) }`), or an object whose every field must
+  equal the instance's variable of that name, compared as values (`{ query: "TicketDetail", variables: { Id: "a" } }`)
+  ([#67](https://github.com/Dastari/graphql-orm-client/issues/67)).
 - **Cancelling.** `mutate(..., { signal })` cancels the request and rolls back the optimistic layer.
 - **Results without a key.** A result type without a key (a hand-written `…Result` object, a list of
   rows, a scalar) is stored inside the mutation's own root, so it never collides with another
@@ -729,8 +762,9 @@ fragments.
 - The store is disposed synchronously when the identity changes. No read runs under the
   outgoing identity.
 - Responses can be bounded by time and size: `createHttpNetwork({ url, reads, writes })` takes
-  `{ deadlineMs, maxResponseBytes }` for each kind. Both are off unless set, so by default a request that never
-  answers keeps its query loading (#72 proposes a default). The deadline covers reading the body as well as the
+  `{ deadlineMs, maxResponseBytes }` for each kind. Reads have a 30-second deadline unless `reads.deadlineMs`
+  says otherwise (`null` removes it, the earlier behaviour); the other bounds are off unless set. See
+  [reads that fail before a response](#reads-that-fail-before-a-response-72). The deadline covers reading the body as well as the
   headers. A response larger than `maxResponseBytes` is cancelled as it streams in and fails the request. A write
   that passes its deadline is `unconfirmed` and is not sent again.
 - Opt-in persistence is keyed by an explicit identity and deleted by `clear()`, which an application calls on
@@ -768,8 +802,8 @@ those runs; each timing in each run is itself the median of five samples.
 | One event, 1,000-row list (ms) | 0.151 | 1.2 |
 | One event, 10,000-row list (ms) | 1.255 | 8 |
 | 45,000-line schema + 250 documents (ms) | 694 | 5,000 |
-| Main standalone raw bundle (bytes) | 67,147 | 68,000 |
-| Main standalone gzip bundle (bytes) | 21,521 | 22,000 |
+| Main standalone raw bundle (bytes) | 71,938 | 72,500 |
+| Main standalone gzip bundle (bytes) | 23,239 | 23,500 |
 | React standalone raw bundle (bytes) | 6,969 | 10,000 |
 | React standalone gzip bundle (bytes) | 2,836 | 4,000 |
 
@@ -801,7 +835,10 @@ and one socket per additional window**. This supports keeping the R19 decision f
 The burst, per-event and main bundle rows were measured again on 2026-11-13, on the same machine without the window run,
 after incremental reads ([#68](https://github.com/Dastari/graphql-orm-client/issues/68)). Before that change one event cost
 0.25 ms at 100 rows, 1.6 ms at 1,000 and 25 ms at 10,000, because each event read the whole list twice. The main bundle limit
-rose from 65,000 to 68,000 bytes (gzip 21,000 to 22,000) for it.
+rose from 65,000 to 68,000 bytes (gzip 21,000 to 22,000) for it. On 2026-11-17 the query-read changes
+([#63](https://github.com/Dastari/graphql-orm-client/issues/63), [#66](https://github.com/Dastari/graphql-orm-client/issues/66),
+[#67](https://github.com/Dastari/graphql-orm-client/issues/67), [#72](https://github.com/Dastari/graphql-orm-client/issues/72))
+took the main bundle from 67,573 to 71,938 bytes (gzip 21,668 to 23,239), and its limit to 72,500 (gzip 23,500).
 
 It includes page/runtime, query snapshots and store allocations; it excludes native renderer
 memory, browser RSS, GPU memory and server cost. It does not establish a bound on a full
@@ -910,9 +947,9 @@ runtime/mutation.rs marks post-commit payload denial/failure/timeout with
 Generated operations.rs uses boolean Success and free-form Error; these are insufficient for
 uniform refusal classification. No client inference from error text is used.
 
-HTTP limits are opt-in to preserve existing applications: configure
+Write limits are opt-in to preserve existing applications: configure
 `createHttpNetwork({ url, writes: { deadlineMs: 15000, maxResponseBytes: 1048576 } })`.
-`reads` has independent bounds; omitted bounds retain unlimited behaviour.
+`reads` has independent bounds: a 30-second deadline by default, and no size limit unless set.
 Limits cover response streaming and are not mutation retries. Custom networks must implement
 their own bounds and must not automatically retry mutations.
 
@@ -966,6 +1003,18 @@ also exposes an `OperationError` in `error`. No-data responses still throw. `rea
 `useFragment` return only masked data, not operation errors. The query owner must pass error
 state to fragment components; use `errorsAtPath(query.errors, ["alias", ...])` to select it.
 Pathless errors apply to every path. Do not render missing data as empty or zero.
+
+A response that leaves out a field the operation selects is not a GraphQL error, and the data reads as incomplete (the store's
+`missing`), with the typed field `undefined`. The client says so
+([#66](https://github.com/Dastari/graphql-orm-client/issues/66)): by default it warns, outside production, once per operation and
+path (list indices count as one path), naming the operation, the type, the record's NodeId and the response key.
+`createClient({ missingFields: "error" })` adds an error at that path to the result's `errors` instead, with `extensions.code`
+`RESPONSE_FIELD_MISSING` (`classifyError` kind `unknown`), so `errorsAtPath` finds it; the query is still `ready` with partial data,
+as with a GraphQL error at a path. `missingFields: "off"` says nothing. A null is a value, so a null at a nullable field is never
+reported. Nor is a field under `@skip` or `@include` compiled with `conditionalDirectives: "legacy"` (the compiler marks those
+selections `conditional`; a module generated before this skips the check for documents using them), a `@batch` relation, or a field
+at or below a path an error names. It applies to every operation's response, mutations included, but not to subscription events.
+The warning causes no read: a query showing an incomplete record reads again only when a write to that record leaves it missing, as before.
 
 Previously (and by default), error-associated nulls overwrite good cached fields. Opt into
 `createClient({ network, partialResults: "preserve-errors" })` to omit null writes at error paths
@@ -1358,7 +1407,8 @@ counts for this client: `first` (opened query fetch), `manual` (refetch, execute
 imperative reads), `poll` (interval including fallback), `stale` (event, missing record or
 list invalidation), `confirm` (new coverage), `restart` (ended stream), `reconnect` (socket
 recovery), `burst` (burst repair), and `pagination` (load-more). Loaded keyset refresh pages
-count individually under the initiating cause. A request which fails still counts; one
+count individually under the initiating cause. `retry` counts a watched query's retry of a read that got no
+response, and `online` a read sent because the browser came back online. A request which fails still counts; one
 cancelled before sending, absorbed by an in-flight read, or coalesced in the limiter does
 not. The first pending cause owns a coalesced request; per-type `burstReads` can additionally
 identify its participation in burst repair. Counters never double-count a shared request.

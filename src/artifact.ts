@@ -15,6 +15,8 @@ export interface ScalarSelection {
   readonly responseKey: string
   readonly fieldName: string
   readonly args: readonly ArgumentSpec[]
+  /** The selection has `@skip` or `@include`, kept under `conditionalDirectives: "legacy"`: the response can leave it out. */
+  readonly conditional?: true
 }
 
 /** A paginated list field marked `@connection`: its pages merge into one stored list. */
@@ -88,6 +90,8 @@ export interface LinkSelection {
   /** Selected node response key on schema-derived connection edges, for deleted-node omission. */
   readonly listNode?: string
   readonly connection?: ConnectionSpec
+  /** The selection has `@skip` or `@include`, kept under `conditionalDirectives: "legacy"`: the response can leave it out. */
+  readonly conditional?: true
 }
 
 export interface InlineFragmentSelection {
@@ -97,6 +101,8 @@ export interface InlineFragmentSelection {
   /** Concrete types the condition matches; null when there is no condition. */
   readonly possibleTypes: readonly string[] | null
   readonly selections: readonly Selection[]
+  /** The selection has `@skip` or `@include`, kept under `conditionalDirectives: "legacy"`: the response can leave it out. */
+  readonly conditional?: true
 }
 
 /** A spread of another fragment. Readers return a masked reference; normalisers inline it. */
@@ -105,6 +111,8 @@ export interface FragmentSpreadSelection {
   readonly name: string
   readonly typeCondition: string
   readonly possibleTypes: readonly string[]
+  /** The selection has `@skip` or `@include`, kept under `conditionalDirectives: "legacy"`: the response can leave it out. */
+  readonly conditional?: true
 }
 
 export type Selection =

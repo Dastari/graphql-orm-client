@@ -51,8 +51,13 @@ period makes none, and signing out clears every record.
 
 ## Network bounds
 
-`createHttpNetwork({ url, reads, writes })` takes `{ deadlineMs, maxResponseBytes }` for each. Both are off unless set, and a write past
-its deadline is `unconfirmed`, not retried. See the data skill for `@sensitive`, write outcomes and partial results.
+`createHttpNetwork({ url, reads, writes })` takes `{ deadlineMs, maxResponseBytes }` for each. A read has a 30-second deadline unless
+`reads.deadlineMs` says otherwise (`null` removes it); a query past it ends in `error`, classified `network`. Everything else is off
+unless set, and a write past its deadline is `unconfirmed`, not retried. See the data skill for `@sensitive`, write outcomes and partial results.
+
+`createClient({ reads: { retry: true } })` retries a watched query's read that got no response (a failed connection or a passed
+deadline) with back-off, up to three times; writes are never retried. Queries in `error` read again when the browser comes back
+online; `reads: { refetchOnOnline: false }` turns that off.
 
 
 ## Build policies and the live setting

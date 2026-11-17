@@ -989,6 +989,8 @@ function convert(
 ): Selection[] {
   const result: Selection[] = []
   for (const selection of selectionSet.selections) {
+    // Only `conditionalDirectives: "legacy"` lets these through: mark them, so a response that leaves one out isn't reported.
+    const conditional = selection.directives?.some((d) => d.name.value === "skip" || d.name.value === "include") ? { conditional: true as const } : {}
     if (selection.kind === Kind.FIELD) {
       const name = selection.name.value
       const responseKey = selection.alias?.value ?? name
@@ -996,7 +998,7 @@ function convert(
       if (!selection.selectionSet && selection.directives?.some(d => d.name.value === "batch"))
         throw new CompileError([`${parent.name}.${name}: @batch requires a singular relation selection`])
       if (name === "__typename" || !selection.selectionSet) {
-        result.push({ kind: "scalar", responseKey, fieldName: name, args })
+        result.push({ kind: "scalar", responseKey, fieldName: name, args, ...conditional })
         continue
       }
       const fieldDef = "getFields" in parent ? parent.getFields()[name] : undefined
@@ -1018,6 +1020,7 @@ function convert(
         types: possibleTypes(schema, named),
         selections: convert(schema, selection.selectionSet, named, fragments, inlineSpreads, options),
         ...(connectionSpec(selection, options, fieldDef) ? { connection: connectionSpec(selection, options, fieldDef)! } : {}),
+        ...conditional,
       })
     } else if (selection.kind === Kind.INLINE_FRAGMENT) {
       const typeCondition = selection.typeCondition?.name.value ?? null
@@ -1027,6 +1030,7 @@ function convert(
         typeCondition,
         possibleTypes: typeCondition ? possibleTypes(schema, target) : null,
         selections: convert(schema, selection.selectionSet, target, fragments, inlineSpreads, options),
+        ...conditional,
       })
     } else {
       const definition = fragments.get(selection.name.value)!
@@ -1038,6 +1042,7 @@ function convert(
           typeCondition,
           possibleTypes: possibleTypes(schema, target),
           selections: convert(schema, definition.selectionSet, target, fragments, true, options),
+          ...conditional,
         })
       } else {
         const target = schema.getType(typeCondition) as GraphQLCompositeType
@@ -1046,6 +1051,7 @@ function convert(
           name: selection.name.value,
           typeCondition,
           possibleTypes: possibleTypes(schema, target),
+          ...conditional,
         })
       }
     }
