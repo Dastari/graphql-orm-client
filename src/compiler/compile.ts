@@ -632,10 +632,10 @@ function compileLive(
     }
     const { fieldName, entity, action, changeKind, arg, mode } = stream
     if (options.liveSelection === "as-written") {
-      const problems = names.flatMap((name) => variableUses(schema, fragmentNodes, name).map(({ field, fragment, variable }) =>
-        `Fragment ${name} is live, but ${field}${fragment === name ? "" : ` (in fragment ${fragment})`} takes the operation variable $${variable}. ` +
+      const problems = names.flatMap((name) => variableUses(schema, fragmentNodes, name).map(({ site, verb, fragment, variable }) =>
+        `Fragment ${name} is live, but ${site}${fragment === name ? "" : ` (in fragment ${fragment})`} ${verb} the operation variable $${variable}. ` +
         `With liveSelection: "as-written" the ${typename} stream spreads ${name}, and one stream is shared by every query that holds a ${typename}, so it can't carry one query's variables. ` +
-        `Pass a literal argument, move the field to a fragment that isn't live, mark ${name} @live(enabled: false), or remove liveSelection: "as-written": ` +
+        `Pass a literal value, move the selection to a fragment that isn't live, mark ${name} @live(enabled: false), or remove liveSelection: "as-written": ` +
         `the default stream projection leaves the field out and the queries holding the record read it again with their own variables.`))
       if (problems.length) throw new CompileError(problems)
     }
@@ -752,29 +752,38 @@ function keylessCause(typename: string, options: CompileOptions): { cause: strin
     : { cause: `the compiler finds no key fields for it (no Id field and no ${typename}KeyInput)`, fix: `Name them in keys: { ${typename}: [...] }` }
 }
 
-/** Fields in a fragment, and the fragments it spreads, whose arguments or directives use an operation variable. */
+/**
+ * Where a fragment, or a fragment it spreads, uses an operation variable: in a field's arguments or
+ * directives, or in a directive on a fragment spread or inline fragment.
+ */
 function variableUses(
   schema: GraphQLSchema,
   fragmentNodes: ReadonlyMap<string, FragmentDefinitionNode>,
   name: string
-): { field: string; fragment: string; variable: string }[] {
-  const uses: { field: string; fragment: string; variable: string }[] = []
+): { site: string; verb: "takes" | "uses"; fragment: string; variable: string }[] {
+  const uses: { site: string; verb: "takes" | "uses"; fragment: string; variable: string }[] = []
+  const note = (node: import("graphql").ASTNode, site: string, verb: "takes" | "uses", fragment: string) => {
+    const variables = new Set<string>()
+    visit(node, { Variable(variable) { variables.add(variable.name.value) } })
+    for (const variable of variables) uses.push({ site, verb, fragment, variable })
+  }
   const seen = new Set<string>()
   const walk = (set: SelectionSetNode, parent: GraphQLCompositeType | undefined, fragment: string) => {
     for (const selection of set.selections) {
       if (selection.kind === Kind.FRAGMENT_SPREAD) {
+        for (const directive of selection.directives ?? []) note(directive, `the spread ...${selection.name.value}`, "uses", fragment)
         const spread = fragmentNodes.get(selection.name.value)
         if (spread && !seen.has(spread.name.value)) {
           seen.add(spread.name.value)
           walk(spread.selectionSet, schema.getType(spread.typeCondition.name.value) as GraphQLCompositeType, spread.name.value)
         }
       } else if (selection.kind === Kind.INLINE_FRAGMENT) {
-        walk(selection.selectionSet, selection.typeCondition ? schema.getType(selection.typeCondition.name.value) as GraphQLCompositeType : parent, fragment)
+        const target = selection.typeCondition ? schema.getType(selection.typeCondition.name.value) as GraphQLCompositeType : parent
+        for (const directive of selection.directives ?? []) note(directive, `an inline fragment on ${target?.name ?? "?"}`, "uses", fragment)
+        walk(selection.selectionSet, target, fragment)
       } else {
         const def = parent && "getFields" in parent ? parent.getFields()[selection.name.value] : undefined
-        const variables = new Set<string>()
-        visit({ ...selection, selectionSet: undefined }, { Variable(node) { variables.add(node.name.value) } })
-        for (const variable of variables) uses.push({ field: `${parent?.name ?? "?"}.${selection.name.value}`, fragment, variable })
+        note({ ...selection, selectionSet: undefined }, `${parent?.name ?? "?"}.${selection.name.value}`, "takes", fragment)
         if (selection.selectionSet) walk(selection.selectionSet, def ? getNamedType(def.type) as GraphQLCompositeType : undefined, fragment)
       }
     }

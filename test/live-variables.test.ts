@@ -84,13 +84,19 @@ describe("a live fragment whose field takes an operation variable", () => {
     const [problem] = (error as CompileError).problems
     expect(problem).toContain("Fragment FooL is live, but Foo.Label takes the operation variable $loc")
     expect(problem).toContain("one stream is shared by every query that holds a Foo")
-    expect(problem).toContain("literal argument")
+    expect(problem).toContain("literal value")
     expect(problem).toContain("@live(enabled: false)")
     expect(problem).toContain('remove liveSelection: "as-written"')
     expect(problem).not.toContain("LiveFoo")
     // A spread fragment's variable is named where it is written.
     const nested = ["fragment Label on Foo { Label(Locale: $loc) }", "fragment FooR on Foo @live { Name ...Label }", "query R($loc: String) { Foos { ...FooR } }"]
     expect(() => compile(schema, nested, { liveSelection: "as-written" })).toThrow("Fragment FooR is live, but Foo.Label (in fragment Label) takes the operation variable $loc")
+    // A directive on a spread or an inline fragment, possible with conditionalDirectives: "legacy", is named too.
+    const legacy = { liveSelection: "as-written", conditionalDirectives: "legacy" } as const
+    const spread = ["fragment Label on Foo { Label }", "fragment FooS on Foo @live { Name ...Label @include(if: $show) }", "query S($show: Boolean!) { Foos { ...FooS } }"]
+    expect(() => compile(schema, spread, legacy)).toThrow("Fragment FooS is live, but the spread ...Label uses the operation variable $show")
+    const inline = ["fragment FooI on Foo @live { Name ... on Foo @skip(if: $hide) { Label } }", "query I($hide: Boolean!) { Foos { ...FooI } }"]
+    expect(() => compile(schema, inline, legacy)).toThrow("Fragment FooI is live, but an inline fragment on Foo uses the operation variable $hide")
     // A literal argument is fine as written.
     expect(compile(schema, ['fragment FooE on Foo @live { Name Label(Locale: "en") }'], { liveSelection: "as-written" }).live.Foo).toBeDefined()
   })

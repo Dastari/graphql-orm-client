@@ -15,8 +15,9 @@ Status: early alpha. Check the installed `docs/design.md` and `docs/graphql-orm-
    `ws` from graphql-ws. Don't write subscription operations, reconnect handling, restarts or refetches around a stream.
 3. **Regenerate.** `@live` on a type with no usable `Changed` stream fails the build, naming the fragment. Remove `@live`, or declare
    `@poll(reason: "...")` if polling is the honest answer. A fragment on a type that has a stream and isn't live gets a warning, because it won't update: mark it `@live`, or
-   `@live(enabled: false)` if that's meant. Don't leave the warning. A type with a stream that `keys: { Type: null }` makes keyless can't
-   be live: the build says so once for the type, naming its fragments, and `@live` on it fails naming the keys entry.
+   `@live(enabled: false)` if that's meant. Don't leave the warning. A type with a stream but no key can't be live, whether `keys: { Type: null }`
+   turns its identity off or the compiler finds none (no `Id` field and no `<Type>KeyInput`). The build says so once for the type, naming
+   its fragments, and `@live` on it fails naming the cause.
    A field that takes an operation variable (`Label(Locale: $loc)`) can be in a `@live` fragment: the stream leaves it out, since one stream
    serves every query holding the record, and each holding query reads it again with its own variables.
 4. **Draw what it says.** `useLiveHealth(typename?)` tells you whether the data is being kept current, so a page can show "live updates
