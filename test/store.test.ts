@@ -42,7 +42,7 @@ describe("store and client", () => {
     const client = createClient({ network })
     const { snapshot } = await client.execute<CatalogData>(ops.CatalogPage, {})
     const node = snapshot.data.Widgets.Edges[0]!.Node as Record<string, unknown>
-    expect(Object.keys(node).sort()).toEqual(["Id", "__typename"])
+    expect(Object.keys(node).sort()).toEqual(["__typename"])
     expect(() => readFragment(frags.WidgetDetail, node)).toThrow(/not produced by a spread of WidgetDetail/)
     const row = readFragment<{ Vendor: object }>(frags.WidgetRow, node)
     expect(readFragment<{ DisplayName: string }>(frags.VendorBadge, row.Vendor).DisplayName).toBe("Acme")

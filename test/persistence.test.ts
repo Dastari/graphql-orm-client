@@ -164,3 +164,116 @@ it("keeps connection cursors only within the same declared server release",async
  const next=client();await persistClient(next,{...options,serverRelease:'next-release',adapter:a}).ready
  expect(next.store.size).toBe(0);c.dispose();same.dispose();next.dispose()
 })
+
+const saved=(a:{values:Map<string,string>})=>JSON.parse([...a.values.values()][0]!)
+const byId=(records:readonly {id:string}[])=>[...records].sort((x,y)=>x.id<y.id?-1:1)
+const sameAsStore=(a:{values:Map<string,string>},c:{store:{persistenceSnapshot():readonly {id:string}[]|null}})=>
+ expect(byId(saved(a).records)).toEqual(JSON.parse(JSON.stringify(byId(c.store.persistenceSnapshot()!))))
+it("an over-budget store is measured, not serialised again, until it fits, and then saves every record",async()=>{
+ const a=adapter(),diagnostic=vi.fn(),c=client(),p=persistClient(c,{...options,adapter:a,maxBytes:4000,onDiagnostic:diagnostic});await p.ready
+ await c.execute(ops.WidgetPage!,{Id:"w"});await p.flush();expect(a.values.size).toBe(1)
+ const big=c.store.getOrCreate("big","Widget");c.store.setField(big,"Name","x".repeat(5000));c.store.publish();await p.flush()
+ expect(a.values.size).toBe(0);expect(diagnostic.mock.calls.filter(([d])=>d.code==="PERSISTENCE_SIZE")).toHaveLength(1)
+ a.set.mockClear();a.delete.mockClear();const stringify=vi.spyOn(JSON,"stringify")
+ try {
+  for(const name of ["one","two"]){c.store.setField(c.store.getOrCreate("small","Widget"),"Name",name);c.store.publish();await p.flush()}
+  // Only the written record is serialised, to measure it.
+  expect(stringify).toHaveBeenCalled();expect(stringify.mock.results.every(r=>String(r.value).length<200)).toBe(true)
+ } finally { stringify.mockRestore() }
+ expect(a.set).not.toHaveBeenCalled();expect(a.delete).not.toHaveBeenCalled()
+ expect(diagnostic.mock.calls.filter(([d])=>d.code==="PERSISTENCE_SIZE")).toHaveLength(1)
+ c.store.delete("big");c.store.publish();await p.flush()
+ sameAsStore(a,c);expect(JSON.stringify(saved(a))).toContain('"two"');c.dispose()
+})
+it("measures the budget in UTF-8 bytes of the whole payload",async()=>{
+ const write=async(maxBytes:number)=>{
+  const a=adapter(),diagnostic=vi.fn(),c=client(),p=persistClient(c,{...options,adapter:a,maxBytes,now:()=>1_000,onDiagnostic:diagnostic});await p.ready
+  c.store.setField(c.store.getOrCreate("text","Widget"),"Name","é😀中".repeat(50));c.store.publish();await p.flush();c.dispose()
+  return {a,diagnostic}
+ }
+ const fits=await write(1e6),bytes=new TextEncoder().encode([...fits.a.values.values()][0]!).length
+ expect((await write(bytes)).a.values.size).toBe(1)
+ const over=await write(bytes-1);expect(over.a.values.size).toBe(0);expect(over.diagnostic).toHaveBeenCalledWith(expect.objectContaining({code:"PERSISTENCE_SIZE"}))
+})
+it("the saved records follow the store through writes, deletions, collection and rollback",async()=>{
+ const a=adapter(),c=client(),before=c.store.getOrCreate("before","Widget");c.store.setField(before,"Name","written before attaching");c.store.publish()
+ const p=persistClient(c,{...options,adapter:a});await p.ready
+ await c.execute(ops.WidgetPage!,{Id:"w"});await p.flush();sameAsStore(a,c)
+ expect(JSON.stringify(saved(a))).toContain("written before attaching")
+ const layer=c.store.optimistic(()=>{c.store.setField(c.store.getOrCreate("before","Widget"),"Name","optimistic");c.store.getOrCreate("created","Widget")})
+ await p.flush();c.store.rollback(layer);c.store.delete("before");c.store.publish()
+ c.store.setField(c.store.getOrCreate("after","Widget"),"Name","after");c.store.publish();await p.flush()
+ sameAsStore(a,c);expect(JSON.stringify(saved(a))).not.toContain("optimistic");expect(JSON.stringify(saved(a))).not.toContain('"created"')
+ c.store.collect();await p.flush();sameAsStore(a,c);expect(JSON.stringify(saved(a))).not.toContain('"after"');c.dispose()
+})
+it("writes savedAt, and restores a snapshot up to maxAgeMs old",async()=>{
+ const a=adapter();let time=1_000_000
+ const first=client(),p=persistClient(first,{...options,adapter:a,now:()=>time});await p.ready
+ await first.execute(ops.WidgetPage!,{Id:"w"});await p.flush();first.dispose()
+ expect(saved(a).savedAt).toBe(1_000_000)
+ time+=7*24*3600_000;const c=client();await persistClient(c,{...options,adapter:a,now:()=>time}).ready
+ expect(c.store.size).toBeGreaterThan(0);c.dispose()
+ // A clock stepped back by up to a minute, as time synchronisation can, keeps a fresh snapshot.
+ time=1_000_000-60_000;const skewed=client();await persistClient(skewed,{...options,adapter:a,now:()=>time}).ready
+ expect(skewed.store.size).toBeGreaterThan(0);expect(a.values.size).toBe(1);skewed.dispose()
+})
+it.each([
+ ["older than maxAgeMs",{maxAgeMs:60_000},60_001],
+ ["older than the 7-day default",{},7*24*3600_000+1],
+ ["saved more than a minute later than the clock says it is now",{},-60_001],
+])("deletes without restoring a snapshot %s",async(_name,extra,age)=>{
+ const a=adapter(),first=client(),p=persistClient(first,{...options,adapter:a,now:()=>1_000_000});await p.ready
+ await first.execute(ops.WidgetPage!,{Id:"w"});await p.flush();first.dispose()
+ const diagnostic=vi.fn(),c=client();await persistClient(c,{...options,...extra,adapter:a,now:()=>1_000_000+age,onDiagnostic:diagnostic}).ready
+ expect(c.store.size).toBe(0);expect(a.values.size).toBe(0);expect(diagnostic).toHaveBeenCalledWith(expect.objectContaining({code:"PERSISTENCE_EXPIRED"}))
+ c.dispose()
+})
+it.each([
+ ["a read-only window",true,false],
+ ["a window after clear()",false,true],
+] as const)("%s keeps no record of what it writes",async(_name,readOnly,clear)=>{
+ // Writes and deletions leave the store empty; count the ids put into sets, against a client with no persistence.
+ const adds=async(attach:boolean)=>{
+  const c=client()
+  if(attach){const p=persistClient(c,{...options,readOnly,adapter:adapter()});await p.ready;if(clear)await p.clear()}
+  const add=vi.spyOn(Set.prototype,"add");let count=0
+  try {
+   for(let i=0;i<200;i++){c.store.setField(c.store.getOrCreate(`leak-${i}`,"Widget"),"Name","x");c.store.publish();c.store.delete(`leak-${i}`);c.store.publish()}
+   count=add.mock.calls.filter(([v])=>typeof v==="string"&&v.startsWith("leak-")).length
+  } finally { add.mockRestore() }
+  expect(c.store.size).toBe(0);c.dispose();return count
+ }
+ expect(await adds(true)).toBe(await adds(false))
+})
+it("a window that saves does collect what it writes, for its next flush",async()=>{
+ const counts:number[]=[]
+ for(const attach of [false,true]){
+  const c=client();if(attach)await persistClient(c,{...options,adapter:adapter()}).ready
+  const add=vi.spyOn(Set.prototype,"add")
+  try { c.store.setField(c.store.getOrCreate("leak-0","Widget"),"Name","x");c.store.publish();counts.push(add.mock.calls.filter(([v])=>v==="leak-0").length) } finally { add.mockRestore() }
+  c.dispose()
+ }
+ expect(counts[1]).toBeGreaterThan(counts[0]!)
+})
+it("maxAgeMs: Infinity restores a snapshot of any age, and a read-only window leaves an expired one",async()=>{
+ const a=adapter(),first=client(),p=persistClient(first,{...options,adapter:a,now:()=>0});await p.ready
+ await first.execute(ops.WidgetPage!,{Id:"w"});await p.flush();first.dispose()
+ const popout=client();await persistClient(popout,{...options,readOnly:true,adapter:a,now:()=>1e12}).ready
+ expect(popout.store.size).toBe(0);expect(a.values.size).toBe(1);popout.dispose()
+ const c=client();await persistClient(c,{...options,maxAgeMs:Infinity,adapter:a,now:()=>1e12}).ready
+ expect(c.store.size).toBeGreaterThan(0);c.dispose()
+})
+it.each([
+ ["an earlier format with no savedAt",(e:Record<string,unknown>)=>{e.format=1;delete e.savedAt}],
+ ["no savedAt",(e:Record<string,unknown>)=>{delete e.savedAt}],
+ ["a savedAt that isn't a time",(e:Record<string,unknown>)=>{e.savedAt="yesterday"}],
+])("deletes without restoring an envelope with %s",async(_name,edit)=>{
+ const a=adapter(),first=await seed(a);first.c.dispose()
+ const envelope=saved(a);edit(envelope);a.values.set([...a.values.keys()][0]!,JSON.stringify(envelope))
+ const diagnostic=vi.fn(),c=client();await persistClient(c,{...options,maxAgeMs:Infinity,adapter:a,onDiagnostic:diagnostic}).ready
+ expect(c.store.size).toBe(0);expect(a.values.size).toBe(0);expect(diagnostic).toHaveBeenCalledWith(expect.objectContaining({code:"PERSISTENCE_RESTORE"}))
+ c.dispose()
+})
+it.each([0,-1,Number.NaN])("rejects maxAgeMs %s",(maxAgeMs)=>{
+ const c=client();expect(()=>persistClient(c,{...options,maxAgeMs,adapter:adapter()})).toThrow(/maxAgeMs/);c.dispose()
+})

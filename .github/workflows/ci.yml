@@ -28,3 +28,22 @@ jobs:
         with:
           name: package
           path: artifacts/*.tgz
+
+  # The peer range admits graphql 16 and 17. The lockfile pins 16; this job swaps in 17 without writing the lockfile.
+  graphql-17:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm add --save-dev --lockfile=false graphql@^17.0.0
+      - run: node -e 'import("graphql").then((g) => { console.log("graphql", g.version); if (!g.version.startsWith("17.")) process.exit(1) })'
+      - run: pnpm check
+      - run: pnpm build

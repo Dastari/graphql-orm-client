@@ -48,8 +48,12 @@ function Page({ loaded }: { loaded: LoadedQuery<TicketsPageQuery> }) {
 - Select only the fields the component renders. To render a child component, spread the
   child's fragment (`...WidgetHealth`) and pass the reference down. Do not select the child's
   fields in the parent.
-- You don't need to select `NodeId` or the key fields; the compiler adds them. A type without a
-  `NodeId` or a complete key is stored inside its parent, not as its own record.
+- You don't need to select `NodeId`, the key fields or `RecordVersion` for the store; the compiler
+  adds them to the request. They aren't in your data unless you select them: select `Id` where you
+  read it, as a React key on a list row (`Node { Id ...Row }`) or after a mutation. That keeps a
+  row's version, which every `Changed` event advances, out of the list's data. `identityFields:
+  "always"` in the generator config reads them everywhere, as 0.1.0-alpha.12 and earlier did. A type
+  without a `NodeId` or a complete key is stored inside its parent, not as its own record.
 
 ## Roots own the request
 
@@ -220,6 +224,8 @@ Adapter, budget and failure behaviour are in the installed design.
 
 - **On sign-out, call `persistence.clear()`, then dispose.** Disposing alone keeps the saved data, and nothing else removes it. `clear()` also stops the identity's other windows saving it.
 - **In a pop-out or other secondary window, pass `readOnly: true`.** It restores and never writes or deletes. Without it, the window's own smaller snapshot can replace the main window's.
+- A snapshot older than `maxAgeMs` (default 7 days since its last write) is deleted and not restored; `maxAgeMs: Infinity` restores any age. Pass `now` to control the clock in tests.
+- A store larger than `maxBytes` (default 1 MiB) saves nothing until it fits again, and reports `PERSISTENCE_SIZE` once. Watch for it in `onDiagnostic` and raise `maxBytes` if the working set is larger.
 
 ## Batched relation names
 

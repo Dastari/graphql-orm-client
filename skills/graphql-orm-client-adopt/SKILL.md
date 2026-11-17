@@ -8,7 +8,7 @@ description: Install graphql-orm-client in an application: pin a version, pull t
 Status: early alpha. Check the installed package's `docs/design.md` and changelog before
 writing code, and do not invent APIs it does not list.
 
-Install a versioned GitHub release archive (`pnpm add https://github.com/Dastari/graphql-orm-client/releases/download/v<version>/graphql-orm-client-<version>.tgz`), pin that exact version, and keep the lockfile. While the package is pre-1.0, read the changelog's migration steps for each version you move to. Then read the installed `README.md`, `docs/design.md` and `docs/graphql-orm-contract.md`.
+Install a versioned GitHub release archive (`pnpm add https://github.com/Dastari/graphql-orm-client/releases/download/v<version>/graphql-orm-client-<version>.tgz`), pin that exact version, and keep the lockfile. It needs one copy of `graphql`, version 16 or 17; generated output and schema snapshots are the same with either. While the package is pre-1.0, read the changelog's migration steps for each version you move to. Then read the installed `README.md`, `docs/design.md` and `docs/graphql-orm-contract.md`.
 The client only works against graphql-orm services and their router.
 
 1. **Schema snapshot.** Keep the router's SDL in the repository (for example
@@ -16,10 +16,14 @@ The client only works against graphql-orm services and their router.
    Set `schema` in the project config first. Commit the SDL and its `.sha256` sidecar.
    Use `schema pull --check` in CI for server drift; it never writes and an unreachable server fails.
    Credentials come from `--token-env NAME` or `--header-env name=NAME`, never literal flags.
+   It reads the schema by introspection, which graphql-orm-router 0.11.0 and later refuse unless their configuration sets
+   `"introspection": true` (exit 5).
    Once the hash exists, `generate --check` also verifies snapshot integrity and provenance.
    After pulling a changed schema, run `generate`. Existing projects without a sidecar keep working.
 2. **Generate.** Add `graphql-orm-client.config.json` (`schema`, `documents`, `out`,
-   `scalars`; `keys` for composite or non-`Id` keys on types without `NodeId`; `versions` only for a version field other than graphql-orm's `RecordVersion`, or `null` to stop selecting it).
+   `scalars`; `keys` for composite or non-`Id` keys on types without `NodeId`; `versions` only for a version field other than graphql-orm's `RecordVersion`, or `null` to stop selecting it). A `versions`
+   field must be `Int` or `Float`, or generation fails; for a decimal integer sent as a string write
+   `{ "field": "Revision", "compare": "decimal" }`.
    Run `graphql-orm-client generate`, and run `generate --check` in CI. Write every document with
    the generated `graphql()`, one operation or fragment per call, so each carries its own types
    and an invalid field fails the build.

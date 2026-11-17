@@ -111,6 +111,11 @@ export interface ExecuteOptions {
   isolated?: boolean
   observeResponse?: (response: GraphQLResponse) => void
   beforeSend?: () => void
+  /**
+   * @internal Also read these selections from the operation's root, at the same moment as the snapshot, so nothing written
+   * after the response (another read of the same query, a live event) comes between the two. Returned as `alsoRead`.
+   */
+  alsoRead?: readonly Selection[]
 }
 
 /** Options for `Client.mutate` and `Client.mutateOutcome`, and React `useMutation`'s `commit` and `commitOutcome`. */
@@ -1223,7 +1228,7 @@ export class Client {
     artifact: OperationArtifact<T, V>,
     variables: V,
     options: ExecuteOptions = {}
-  ): Promise<{ snapshot: Snapshot<T>; errors: readonly GraphQLErrorLike[]; response: Record<string, unknown> }> {
+  ): Promise<{ snapshot: Snapshot<T>; errors: readonly GraphQLErrorLike[]; response: Record<string, unknown>; alsoRead?: unknown }> {
     if (this.store.isDisposed) throw new Error("This client was disposed with its identity")
     if (options.isolated && artifact.kind !== "mutation")
       throw new Error(`${artifact.name} is not a mutation; only mutations can skip the store`)
@@ -1282,8 +1287,9 @@ export class Client {
       normalize(target, artifact.normalization, this.partialResults === "preserve-errors" ? withoutErrorNulls(response.data, errors) : response.data, { ...contextOf(artifact, variables), connectionTailFrom }, rootId, artifact.rootType)
       target.publish()
       const snapshot = target.lookup<T>(selectorOf(artifact, variables, rootId))
+      const alsoRead = options.alsoRead ? target.lookup({ ...snapshot.selector, selections: options.alsoRead }).data : undefined
       if (rootId !== ROOT_ID) target.delete(rootId)
-      return { snapshot, errors, response: response.data }
+      return { snapshot, errors, response: response.data, ...(options.alsoRead ? { alsoRead } : {}) }
     } finally {
       options.signal?.removeEventListener("abort", abort)
       this.controllers.delete(controller)
