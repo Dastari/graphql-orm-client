@@ -167,10 +167,15 @@ export interface OperationArtifact<TData = unknown, TVariables = Record<string, 
   readonly lists?: readonly string[]
   /** Key fields per concrete type, in primary-key order. */
   readonly keys: Readonly<Record<string, readonly string[]>>
-  /** Record-version field per type, where the type has one. */
   /** Explicit lifetime policy selected by the generator. */
   readonly lifetimes?: Readonly<Record<string, import("./store/lifetime.js").LifetimePolicy>>
+  /** Record-version field per type, where the type has one. */
   readonly versions: Readonly<Record<string, string>>
+  /**
+   * Types whose version is a decimal integer, sent as a string or a number and compared exactly. Versions of other
+   * types are compared as numbers. Absent when no type declares it.
+   */
+  readonly versionCompare?: Readonly<Record<string, "decimal">>
   /** Fragments referenced anywhere in this operation, by name. */
   readonly fragments: Readonly<Record<string, FragmentArtifact>>
   /** The operation's `@paged` list field, when it has one. */

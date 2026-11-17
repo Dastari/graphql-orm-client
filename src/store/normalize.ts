@@ -9,18 +9,21 @@ export interface NormalizeContext {
   readonly keys: Readonly<Record<string, readonly string[]>>
   readonly lifetimes?: OperationArtifact["lifetimes"]
   readonly versions: Readonly<Record<string, string>>
+  /** Types whose version is a decimal integer, compared exactly. */
+  readonly versionCompare?: OperationArtifact["versionCompare"]
   readonly variables: Variables
   /** Collects the ids of objects stored under a path because they have no key. */
   readonly embedded?: Set<string>
 }
 
 export function contextOf(artifact: OperationArtifact, variables: Variables): NormalizeContext {
-  return { keys: artifact.keys, versions: artifact.versions, lifetimes: artifact.lifetimes, variables }
+  return { keys: artifact.keys, versions: artifact.versions, versionCompare: artifact.versionCompare, lifetimes: artifact.lifetimes, variables }
 }
 
 /**
- * The NodeId of an object in a response: the server's `NodeId` field when the object carries one,
- * else encoded from its key fields; null when its type has no complete key in it.
+ * The NodeId of an object in a response: the server's `NodeId` field when the object carries one for its own type,
+ * else encoded from its key fields; null when its type has no complete key in it. A `NodeId` that names another type
+ * is ignored, so one object can never be written over a record of another type.
  */
 export function identify(
   value: Record<string, unknown>,
@@ -28,7 +31,7 @@ export function identify(
 ): string | null {
   const typename = value.__typename
   if (typeof typename !== "string") return null
-  if (typeof value.NodeId === "string" && decodeNodeId(value.NodeId)) return value.NodeId
+  if (typeof value.NodeId === "string" && decodeNodeId(value.NodeId)?.typename === typename) return value.NodeId
   const fields = keys[typename]
   if (!fields || fields.length === 0) return null
   const parts: KeyPart[] = []
@@ -57,17 +60,29 @@ export function normalize(
   writeFields(store, root, rootTypename, selections, data, context, true)
 }
 
-/** False when the stored record is newer than the incoming one. */
+/** False when the stored record is newer than the incoming one. Versions that can't be compared accept the write. */
 function accepts(
   record: StoredRecord,
   value: Record<string, unknown>,
-  versionField: string | undefined
+  versionField: string | undefined,
+  compare: "decimal" | undefined
 ): boolean {
   if (!versionField) return true
   const incoming = value[versionField]
   const stored = record.fields.get(versionField)
+  if (compare === "decimal") {
+    const next = decimal(incoming), previous = decimal(stored)
+    return next === null || previous === null || next >= previous
+  }
   if (typeof incoming !== "number" || typeof stored !== "number") return true
   return incoming >= stored
+}
+
+/** A decimal integer version as a bigint, so values past 2^53 compare exactly; null when it isn't one. */
+function decimal(value: unknown): bigint | null {
+  if (typeof value === "number") return Number.isSafeInteger(value) ? BigInt(value) : null
+  // A version is an integer of a few dozen digits at most; a longer string isn't one.
+  return typeof value === "string" && /^-?\d{1,64}$/.test(value) ? BigInt(value) : null
 }
 
 function writeFields(
@@ -143,7 +158,7 @@ function writeObject(
   const id = identify(value, context.keys) ?? path
   if (id === path) context.embedded?.add(id)
   const record = store.getOrCreate(id, typename)
-  const write = accepts(record, value, context.versions[typename])
+  const write = accepts(record, value, context.versions[typename], context.versionCompare?.[typename])
   // Older data never replaces newer data, but nested records carry their own versions.
   writeFields(store, record, typename, selections, value, context, write)
   return id

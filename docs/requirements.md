@@ -211,6 +211,21 @@ and the router's codes to an `ErrorKind`, with `unknown` for anything else. Miss
 `Success: false` carries only free text (`Error: "Entity not found"`); requested as
 [graphql-orm#385](https://github.com/Dastari/graphql-orm/issues/385).
 
+**R27. Version ordering can't turn off unseen.** A configured version field the store can't compare fails generation, naming
+the type and field, unless its comparison is declared; decimal integers sent as strings can be declared and are compared exactly
+([#74](https://github.com/Dastari/graphql-orm-client/issues/74)). *Built:* `versions` entries are checked against the schema;
+`{ field, compare: "decimal" | "number" }` declares the comparison. A value that can't be compared leaves last-write-wins.
+*Acceptance:* a non-numeric version field without a declared comparison fails generation with a message naming the type and
+field, and with `compare: "decimal"` an older string-versioned write arriving after a newer one is dropped.
+
+**R28. Data holds what the document selects.** The key, `NodeId` and version fields the compiler adds for identity and ordering
+are sent and stored, but aren't part of what a query or fragment reads unless its document selects them, so a version advancing
+behind a fragment doesn't change the data of the list spreading it
+([#87](https://github.com/Dastari/graphql-orm-client/issues/87)). *Built:* the default; `identityFields: "always"` restores
+reading them everywhere. *Acceptance:* a `Changed` event for a versioned row whose fields are all behind fragments neither
+changes the list query's data nor notifies its subscribers through the store (the list's own R3 re-read, coalesced by
+`live.minRereadMs`, still runs), and a document that selects `Id` or the version reads it.
+
 ## 4. Proving it
 
 **R20. A test kit.** `graphql-orm-client/test`: a mock transport keyed by operation name that validates

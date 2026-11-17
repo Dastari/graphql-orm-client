@@ -32,6 +32,9 @@ export async function readAll<T, V extends Variables>(
   const cursorField = info?.selections.find(s => s.kind === "scalar" && s.fieldName === spec.endCursor)
   if (!info || !edges || !node || !total || total.kind !== "scalar") throw new Error("readAll requires Node and PageInfo.TotalCount selections")
   if (!moreField || moreField.kind !== "scalar" || (!spec.offset && !cursorField)) throw new Error("readAll requires selected continuation PageInfo fields")
+  const scalars = (selections: readonly Selection[]): Selection[] => selections.flatMap((s): Selection[] =>
+    s.kind === "scalar" ? [s] : s.kind === "inline" ? [{ ...s, selections: scalars(s.selections) }] : [])
+  const identityRead: LinkSelection = { ...root, selections: [{ ...edges, selections: [{ ...node, selections: scalars(node.selections) }] }] }
   const rows = new Map<string, ReadAllRow<T>>()
   let next: Variables = { ...variables, [arg.variable]: { ...(variables[arg.variable] as object), [spec.limit]: Math.min(options.limit, pageSize), ...(spec.offset ? { [spec.offset]: 0 } : { [spec.after]: null }) } }
   let offset = 0
@@ -45,12 +48,16 @@ export async function readAll<T, V extends Variables>(
     if (!Number.isSafeInteger(count) || count < 0) throw new Error("readAll requires an exact TotalCount from the server")
     const batch = connection[edges.responseKey] as Record<string, any>[]
     const snapshot = (result.snapshot.data as any)[root.responseKey]
+    // A row's data holds its key only when the document selects it, so its identity is read beside it: the same list read
+    // through the row's identity fields alone, which reaches the same rows in the same order.
+    const identities = (client.store.lookup({ ...result.snapshot.selector, selections: [identityRead] }).data as any)?.[root.responseKey]?.[edges.responseKey] ?? []
     const normalized = new Map<string, ReadAllRow<T>>()
-    for (const edge of snapshot[edges.responseKey]) {
+    ;(snapshot[edges.responseKey] as any[]).forEach((edge, index) => {
       const row = edge?.[node.responseKey]
-      const id = refData(row)?.id ?? (row && identify(row, artifact.keys ?? {}))
+      const keyed = identities[index]?.[node.responseKey]
+      const id = refData(row)?.id ?? (keyed && identify(keyed, artifact.keys ?? {}))
       if (id) normalized.set(id, row)
-    }
+    })
     for (const edge of batch) {
       const row = edge[node.responseKey]
       const id = row && identify(row, artifact.keys ?? {})
