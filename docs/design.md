@@ -21,7 +21,7 @@ Status: partly built. Implemented and tested:
 - `@refetchable` fragments: `client.refetchFragment` and `useRefetchableFragment`.
 
 Proposed, not built: per-type
-`staleMs` policy, the `scope` store option, sending operations by persisted hash,
+`staleMs` policy ([R30](requirements.md)), a store inspector ([R31](requirements.md)), Suspense ([R29](requirements.md)), the `scope` store option, sending operations by persisted hash,
 batching writes per tick, refetching a parent on a `PROPAGATED` event, and marking records stale after a failed lookup. Sections below label these. What the client still
 needs is in [requirements.md](requirements.md).
 
@@ -109,7 +109,7 @@ Migration is opt-in per route: replace `preload` plus `useQuery` with `loadQuery
 `useLoadedQuery`, forward cancellation, and handle `idle`, `loading` and `error` states. The old
 `preload` remains an awaitable warm-up that closes on completion. A subsequent default `useQuery`
 uses `store-and-network` and may read again. Its legacy StrictMode effect replay can restart a request;
-the loader hook avoids that. Suspense is not implemented.
+the loader hook avoids that. Suspense is not implemented; R29 in [the requirements](requirements.md) records it.
 
 ### Conditional selections and fragment arguments
 
@@ -125,7 +125,8 @@ required it, and flattened live projections could select it unconditionally. Thi
 not conditional-selection support. `conditionalDirectives: "legacy"` in generator config (or compile
 options) temporarily preserves that previous behaviour for migration. Split conditional selections
 into separate route roots, remove the setting and regenerate. Proper variable-aware conditional
-readers, optional generated fields and stream projections remain proposed. The hook's `skip` option
+readers, optional generated fields and stream projections remain proposed (R27 in [the requirements](requirements.md));
+fragment arguments are R28. The hook's `skip` option
 skips a whole operation and is unaffected.
 
 ### Framework server shells
@@ -257,7 +258,7 @@ them, so going back within that period needs no request.
 
 `store.retainMs` controls retention. Lifetime and persistence are opt-in; see the R17 sections
 below. One client belongs to one identity: dispose it before exposing a new identity's client.
-Per-type `staleMs` and automatic `store.scope` switching remain proposed.
+Per-type `staleMs` (R30 in [the requirements](requirements.md)) and automatic `store.scope` switching remain proposed.
 
 ### Query states
 
