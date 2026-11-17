@@ -123,6 +123,41 @@ describe("a socket closed for authentication", () => {
     expect(streams.started.length).toBe(started)
   })
 
+  it("reports no retryAt while stopped, and a refusal window that ends meanwhile reads nothing", async () => {
+    const { client, clock, streams, open } = setup()
+    await open()
+    streams.one("LiveTicket").refuse("FORBIDDEN")
+    expect(client.liveTypeHealth("Ticket").retryAt).not.toBeNull()
+    streams.fail(unauthorized)
+    expect(client.liveTypeHealth("Ticket")).toMatchObject({ reason: "unauthenticated", retryAt: null })
+    expect(client.live!.status().Ticket!.retryAt).toBeNull()
+    const restarts = client.liveHealth().reads!.restart
+    const started = streams.started.length
+    // The window ends during the stop: no stream, and no restart read.
+    await clock.tick(7 * 60_000)
+    expect(client.liveHealth().reads!.restart).toBe(restarts)
+    expect(streams.started.length).toBe(started)
+    client.reconnectLive()
+    await clock.tick(1)
+    expect(streams.find("LiveTicket")).toHaveLength(1)
+    expect(streams.find("LiveNote")).toHaveLength(1)
+  })
+
+  it("keeps a refusal window still running when reconnectLive is called", async () => {
+    const { client, clock, streams, open } = setup()
+    await open()
+    streams.one("LiveTicket").refuse("FORBIDDEN")
+    streams.fail(unauthorized)
+    client.reconnectLive()
+    await clock.tick(1)
+    expect(streams.find("LiveNote")).toHaveLength(1)
+    expect(streams.find("LiveTicket")).toHaveLength(0)
+    expect(client.liveTypeHealth("Ticket")).toMatchObject({ reason: "refused", code: "FORBIDDEN" })
+    expect(client.liveTypeHealth("Ticket").retryAt).not.toBeNull()
+    await clock.tick(7 * 60_000)
+    expect(streams.find("LiveTicket")).toHaveLength(1)
+  })
+
   it("does nothing on reconnectLive when it hasn't stopped", async () => {
     const { client, clock, network, streams, open } = setup()
     await open()
@@ -203,6 +238,51 @@ describe("graphqlWsTransport and an authentication close", () => {
     expect(inner.open.size).toBe(2)
     expect(network.calls("NotePage").length).toBeGreaterThan(reads)
     expect(client.liveTypeHealth("Note")).toMatchObject({ state: "unconfirmed", reason: null })
+  })
+
+  it("resumes by itself once per stop: a server that accepts and then closes again can't make a loop", async () => {
+    const { ws, inner, emit } = fake()
+    const { client, clock, open } = setup({ live: graphqlWsTransport(ws) })
+    await open()
+    emit("connected", {}, {}, false)
+    emit("closed", { code: 4403, reason: "Forbidden", wasClean: true })
+    emit("connected", {}, {}, true)
+    await clock.tick(1)
+    expect(inner.open.size).toBe(2)
+    // Accepted, then closed again at once, as graphql-ws's own retries would bring about every few seconds.
+    for (let round = 0; round < 3; round += 1) {
+      await clock.tick(2000)
+      emit("closed", { code: 4403, reason: "Forbidden", wasClean: true })
+      emit("connected", {}, {}, true)
+      await clock.tick(1)
+      expect(inner.open.size).toBe(0)
+      expect(client.liveTypeHealth("Ticket")).toMatchObject({ reason: "unauthenticated", code: "4403" })
+    }
+    const started = inner.started.length
+    await clock.tick(10 * 60_000)
+    expect(inner.started.length).toBe(started)
+
+    // The application renews and reconnects; that resets it, so a later stop can resume by itself once again.
+    client.reconnectLive()
+    await clock.tick(1)
+    expect(inner.open.size).toBe(2)
+    emit("closed", { code: 4401, reason: "Unauthorized", wasClean: true })
+    emit("connected", {}, {}, true)
+    await clock.tick(1)
+    expect(inner.open.size).toBe(2)
+  })
+
+  it("resumes by itself again when the last resume held for the longest restart delay", async () => {
+    const { ws, inner, emit } = fake()
+    const { clock, open } = setup({ live: graphqlWsTransport(ws) })
+    await open()
+    emit("closed", { code: 4403, reason: "Forbidden", wasClean: true })
+    emit("connected", {}, {}, true)
+    await clock.tick(60_000)
+    emit("closed", { code: 4403, reason: "Forbidden", wasClean: true })
+    emit("connected", {}, {}, true)
+    await clock.tick(1)
+    expect(inner.open.size).toBe(2)
   })
 
   it("leaves other close codes to the ordinary handling", async () => {

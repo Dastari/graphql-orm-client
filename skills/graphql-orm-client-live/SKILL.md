@@ -47,7 +47,7 @@ same order and with loaded pages kept. A count or generated aggregate of a live 
   stream: nothing reconnects with credentials that can't work. Every type holding records reports reason `unauthenticated` with `code`
   `"4401"` or `"4403"`, and polls meanwhile. Send the user to sign in or renew the token, make graphql-ws's `connectionParams` return the
   new one, then call `client.reconnectLive()`: the streams start again and their queries read. A `connected` socket reported by
-  `graphqlWsTransport` starts them again too. Disposing the client for a new identity clears it. An `UNAUTHENTICATED` error on one stream
+  `graphqlWsTransport` starts them again too, once: if that connection is closed again within a minute, only `reconnectLive()` resumes. Disposing the client for a new identity clears it. An `UNAUTHENTICATED` error on one stream
   isn't this: the router recovers it on the same connection, so it's a refusal like any other.
 
 ## Limits to design around

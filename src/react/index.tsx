@@ -236,16 +236,17 @@ const idleState = () => IDLE
 const resolved = () => Promise.resolve()
 
 function useFragmentSnapshot(fragment: FragmentArtifact<any, any>, ref: unknown): Snapshot | null {
-  const cache = useRef<{ ref: unknown; fragment: FragmentArtifact<any, any>; snapshot: Snapshot | null } | null>(null)
+  const cache = useRef<{ ref: unknown; fragment: FragmentArtifact<any, any>; snapshot: Snapshot | null; disposed: boolean } | null>(null)
   const getSnapshot = useCallback((): Snapshot | null => {
     if (ref === null || ref === undefined) return null
     const current = cache.current
-    if (current && current.ref === ref && current.fragment === fragment) return current.snapshot
     const { store, selector } = fragmentSelector(fragment, ref)
+    // A snapshot read before its store was disposed with the identity is never shown after: it is read again, once.
+    if (current && current.ref === ref && current.fragment === fragment && (current.disposed || !store.isDisposed)) return current.snapshot
     const snapshot = store.lookup(selector)
     const data = current?.snapshot ? recycle(current.snapshot.data, snapshot.data) : snapshot.data
     const next = { ...snapshot, data }
-    cache.current = { ref, fragment, snapshot: next }
+    cache.current = { ref, fragment, snapshot: next, disposed: store.isDisposed }
     return next
   }, [fragment, ref])
   const subscribe = useCallback(
@@ -253,8 +254,9 @@ function useFragmentSnapshot(fragment: FragmentArtifact<any, any>, ref: unknown)
       const snapshot = getSnapshot()
       if (!snapshot || ref === null || ref === undefined) return () => {}
       const { store } = fragmentSelector(fragment, ref)
+      if (store.isDisposed) return () => {}
       return store.subscribe(snapshot, (next) => {
-        cache.current = { ref, fragment, snapshot: next }
+        cache.current = { ref, fragment, snapshot: next, disposed: false }
         notify()
       })
     },
@@ -438,12 +440,16 @@ interface ListRow {
   dispose: (() => void) | null
 }
 
-/** Whether two fragment references read the same thing: same record, fragments, variables and store. */
+/**
+ * Whether two fragment references read the same thing: same record, fragments, variables and store. A reference into a store
+ * disposed with its identity is never the same as anything, so what was read from it before is not kept.
+ */
 function sameReference(a: unknown, b: unknown): boolean {
-  if (a === b) return true
   const left = refData(a)
   const right = refData(b)
-  if (!left || !right || left.id !== right.id || left.store !== right.store || left.fragments.size !== right.fragments.size) return false
+  if (!left || !right || left.store.isDisposed) return false
+  if (a === b) return true
+  if (left.id !== right.id || left.store !== right.store || left.fragments.size !== right.fragments.size) return false
   for (const name of left.fragments) if (!right.fragments.has(name)) return false
   return left.variables === right.variables || stableStringify(left.variables) === stableStringify(right.variables)
 }
@@ -487,8 +493,16 @@ class FragmentListReader {
     return rows
   }
 
-  /** The row with a current snapshot: subscribed, or read since the last publish; otherwise it is read again. */
+  /**
+   * The row with a current snapshot: subscribed to a live store, or read since the store's last publish and not before its
+   * disposal; otherwise it is read again.
+   */
   private fresh(row: ListRow): ListRow {
+    if (row.dispose && row.store.isDisposed) {
+      // Its subscription went with the store.
+      row.dispose = null
+      this.subscribed.delete(row)
+    }
     if (row.dispose || row.readAt === row.store.publishes) return row
     const next = row.store.lookup(row.selector)
     row.snapshot = { ...next, data: recycle(row.snapshot.data, next.data) }
@@ -523,6 +537,8 @@ class FragmentListReader {
       if (this.subscribed.has(row)) continue
       // A publish between render and commit could have changed the row; only then is it read again.
       this.fresh(row)
+      // A disposed store's records are gone and it notifies nobody: never subscribe to one.
+      if (row.store.isDisposed) continue
       row.dispose = row.store.subscribe(row.snapshot, (next) => {
         row.snapshot = next
         row.readAt = row.store.publishes

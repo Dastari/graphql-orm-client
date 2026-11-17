@@ -161,7 +161,9 @@ export interface LiveOptions {
    * By default (`"wait"`) every stream stops, every type holding records reports reason `unauthenticated` with the code, the
    * queries holding them poll (`polling.liveFallbackMs`), and nothing subscribes again on a timer or when the held records
    * change. Live delivery starts again when the application calls `client.reconnectLive()` with new credentials in place,
-   * or when `connection` reports a socket connected. The stop belongs to the client and goes with it when the identity changes.
+   * or when `connection` reports a socket connected. A connected socket ends a stop only once: a stop within `restart.maxMs`
+   * (60 s) of that waits for `reconnectLive()`. `retryAt` is null while stopped. The stop belongs to the client and goes with it
+   * when the identity changes.
    *
    * `"restart"` is the 0.1.0-alpha.12 behaviour, for migration: such a close is a transport failure (`socket-down`),
    * restarted with back-off.
@@ -360,8 +362,12 @@ export class LiveManager {
         if (this.disposed) return
         // graphql-ws retries a 4403 by itself, with the operations still open; stopping them now ends those retries.
         if (closeCode !== undefined && AUTH_CLOSE_CODES.has(closeCode) && this.waitsOnAuthentication()) return this.stopForAuthentication(String(closeCode))
-        // A connection the server accepted means the credentials work again.
-        if (this.authStop && options.connection?.state() === "connected") return this.reconnect()
+        // A connection the server accepted means the credentials work again; once per stop, so a server that accepts and then
+        // closes again can't make a loop of it.
+        if (this.authStop && this.autoResume && options.connection?.state() === "connected") {
+          this.autoResumedAt = this.now()
+          return this.resume()
+        }
         if (reconnected) {
           this.clearBursts()
           this.resync(new Set([...this.holders.keys(), ...this.lists.keys()]), "reconnect")
@@ -388,6 +394,9 @@ export class LiveManager {
 
   /** Why live delivery stopped for authentication, or null. */
   private authStop: LiveEnd | null = null
+  /** Whether a connected socket may end this stop by itself. Not when the stop came soon after the last time it did. */
+  private autoResume = true
+  private autoResumedAt: number | null = null
 
   private waitsOnAuthentication(): boolean {
     return this.options.unauthenticated !== "restart"
@@ -400,6 +409,9 @@ export class LiveManager {
   private stopForAuthentication(code: string): void {
     if (this.disposed || this.authStop) return
     this.authStop = { reason: "unauthenticated", code, at: this.now() }
+    // Stopped again within the longest restart delay of resuming by itself: that connection didn't really work, so only
+    // `reconnect()` ends this stop.
+    this.autoResume = this.autoResumedAt === null || this.now() - this.autoResumedAt >= this.restartMaxMs()
     for (const restart of this.restarts.values()) {
       if (restart.handle !== null) this.cancelTimer(restart.handle)
       restart.handle = null
@@ -419,9 +431,15 @@ export class LiveManager {
 
   /**
    * Start live delivery again after it stopped for authentication: subscribe what's held, then read the queries holding it,
-   * since nothing was delivered meanwhile. Does nothing when it hasn't stopped.
+   * since nothing was delivered meanwhile. A refusal window still running applies as before. Does nothing when it hasn't
+   * stopped.
    */
   reconnect(): void {
+    this.autoResumedAt = null
+    this.resume()
+  }
+
+  private resume(): void {
     if (this.disposed || !this.authStop) return
     this.authStop = null
     for (const restart of this.restarts.values()) restart.attempts = 0
@@ -503,7 +521,8 @@ export class LiveManager {
             lastEnd: restart?.lastEnd ?? null,
             lastRefusal: restart?.lastRefusal ?? null,
             lastEventAt: restart?.lastEventAt ?? null,
-            retryAt: this.retryAt(artifact.typename),
+            // Nothing is retried while stopped for authentication.
+            retryAt: this.authStop ? null : this.retryAt(artifact.typename),
             confirmed: restart !== undefined && restart.lastEventAt !== null && restart.lastEventAt >= restart.startedAt,
             unauthenticated: this.authStop,
           },
@@ -868,6 +887,8 @@ export class LiveManager {
       this.refused.delete(identity)
       if (this.disposed) return
       this.onRefusalChange()
+      // Stopped for authentication: nothing starts or reads now; `reconnect()` subscribes it with the rest.
+      if (this.authStop) return
       // Nothing was delivered during the window, so the records may have changed.
       this.restartNow(artifact.typename)
     }, ms)

@@ -48,8 +48,9 @@ current, checked against graphql-orm 0.94.0.
 render, unsubscribed and resubscribed every row and read each one twice on every render of the parent, and one row changing
 read all of them again. It now compares rows by record, fragments, variables and store: a render with the same rows reads
 nothing and changes no subscription, each row keeps its subscription while it stays in the list, and a change to one row reads
-that row ([#69](https://github.com/Dastari/graphql-orm-client/issues/69)). The rows it returns are the same. Nothing to change
-in applications.
+that row ([#69](https://github.com/Dastari/graphql-orm-client/issues/69)). A row from a client disposed with its identity is
+read again and never subscribed, here and in `useFragment`, so it can't show the previous identity's data. The rows it returns
+are otherwise the same. Nothing to change in applications.
 
 ### Changed: a socket closed for authentication waits for new credentials
 
@@ -63,7 +64,9 @@ sends it when the same connection will recover, and it stays a refusal of that s
 
 - Added `client.reconnectLive()`: call it once the socket's credentials are renewed (for graphql-ws, once `connectionParams`
   returns them). The held types subscribe again and their queries read. A `connected` socket reported by `graphqlWsTransport`
-  starts them again too, and disposing the client for a new identity clears the stop.
+  starts them again too, once per stop: a stop within a minute of such a resume waits for `reconnectLive()`. Disposing the
+  client for a new identity clears the stop. `retryAt` is null while stopped, and a refusal window still running at resume
+  applies as before.
 - Added `LiveReason` and `LiveEndReason` `unauthenticated`, `LiveTypeStatus.unauthenticated`, and `closeCode` on a
   `LiveConnection` change. `createMockStreams().fail(event)` closes every open stream with a given close event.
 

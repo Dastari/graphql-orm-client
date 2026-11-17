@@ -379,8 +379,8 @@ export class Store {
   private publishCount = 0
 
   /**
-   * How many publishes have changed something. A snapshot read while this number stayed the same is still current, so a reader
-   * that read during render can subscribe at commit without reading again.
+   * How many publishes have changed something; disposal counts as one. A snapshot read while this number stayed the same is
+   * still current, so a reader that read during render can subscribe at commit without reading again.
    */
   get publishes(): number {
     return this.publishCount
@@ -505,6 +505,8 @@ export class Store {
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
+    // Every record goes, so a snapshot read before this is out of date.
+    this.publishCount += 1
     for (const dispose of this.disposers) dispose()
     this.disposers.clear(); this.observers.clear(); this.restored.clear(); this.layers.clear(); this.restoreBlocked = null
     if (this.expiryTimer !== null) this.clearTimer(this.expiryTimer)

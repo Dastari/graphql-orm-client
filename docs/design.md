@@ -159,7 +159,9 @@ In that case the fragment belongs to the adapter that builds the view model, not
   array's identity, so `Edges.map(...)` on every render is fine: a render with the same rows reads nothing
   and changes no subscription. Each row keeps its own store subscription while it stays in the list, so a
   change to one row reads that row, an added row is read and subscribed, and a removed one is unsubscribed.
-  A row read during render is read again at commit only if a publish came between the two.
+  A row read during render is read again at commit only if a publish came between the two. A reference into a
+  store disposed with its identity is never kept: its row is read again from the empty store and never subscribed,
+  and `useFragment` does the same.
 - Components below the adapter receive domain objects and never see GraphQL.
 
 Masking still applies at the adapter boundary: a query that spreads the fragment can't read its
@@ -461,7 +463,12 @@ also defines 4403 (Forbidden). Reconnecting with the same credentials can't work
   starts again when the application calls `client.reconnectLive()` once its credentials are renewed (for graphql-ws,
   when `connectionParams` returns them), or when `graphqlWsTransport` reports a `connected` socket, which means the
   server accepted a connection. Either way the held types subscribe, then their queries read, since nothing was
-  delivered meanwhile. Credentials that still fail stop it again, with no timer.
+  delivered meanwhile. Credentials that still fail stop it again, with no timer. A `connected` socket ends a stop by
+  itself only once: a stop that comes within the longest restart delay (`live.restart.maxMs`, 60 s) of such a resume
+  waits for `client.reconnectLive()`, so a server that accepts a connection and then closes it can't make a loop.
+- **Refusal windows.** `retryAt` is null while stopped, since nothing is retried. A window that ends during the stop
+  starts nothing and reads nothing; the stream starts with the rest on resume. A window still running at resume
+  applies as before.
 - **Identity.** The stop belongs to the client's live layer. Disposing the client for a new identity drops it, and the
   next client subscribes at once.
 - **`UNAUTHENTICATED` is not this.** The router ends a stream with `UNAUTHENTICATED` when it can't confirm a role-bearing

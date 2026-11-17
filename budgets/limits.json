@@ -89,13 +89,13 @@
     },
     "mainRawBytes": {
       "max": 70000,
-      "measured": 69347,
-      "margin": "Minified standalone entry closure, external peers. Streams and readAll have their own entries to stay under this. The burst read brought it to about 62500, classifyError to 64882, and incremental reads (2026-11-13, a 20-fold drop in the cost of an event on a 10,000-row list) to 67147, for which the limit rose from 65000. Main was 67573 on 2026-11-17; stopping live delivery on a socket closed for authentication, and resuming it (#73), took it to 69347, for which the limit rose from 68000. Growth past this needs a reason."
+      "measured": 69621,
+      "margin": "Minified standalone entry closure, external peers. Streams and readAll have their own entries to stay under this. The burst read brought it to about 62500, classifyError to 64882, and incremental reads (2026-11-13, a 20-fold drop in the cost of an event on a 10,000-row list) to 67147, for which the limit rose from 65000. Main was 67573 on 2026-11-17; stopping live delivery on a socket closed for authentication, and resuming it (#73), took it to 69621, for which the limit rose from 68000. Growth past this needs a reason."
     },
     "mainGzipBytes": {
       "max": 22500,
-      "measured": 22122,
-      "margin": "Gzip of the same closure. Raised from 21000 with the raw limit on 2026-11-13, and from 22000 with it for #73 on 2026-11-17 (21668 before, 22122 after)."
+      "measured": 22193,
+      "margin": "Gzip of the same closure. Raised from 21000 with the raw limit on 2026-11-13, and from 22000 with it for #73 on 2026-11-17 (21668 before, 22193 after)."
     },
     "reactRawBytes": {
       "max": 10000,
