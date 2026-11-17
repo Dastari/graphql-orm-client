@@ -38,7 +38,7 @@ import type {
   PagedSpec,
   Selection,
 } from "../artifact.js"
-import { printStable } from "./print.js"
+import { hasDefault, printStable } from "./print.js"
 
 /** Severity of a project policy diagnostic. */
 export type StrictLevel = "error" | "warn" | "off"
@@ -813,7 +813,7 @@ function changedStreamOf(schema: GraphQLSchema, typename: string, options: Compi
   const mode: LiveMode = keysArg ? "keys" : keyArg ? "key" : "unkeyed"
   const arg = keysArg ?? keyArg
   // A stream needing another required argument cannot be generated from the ORM key contract.
-  if (field.args.some((candidate) => candidate !== arg && isNonNullType(candidate.type) && candidate.defaultValue === undefined)) return undefined
+  if (field.args.some((candidate) => candidate !== arg && isNonNullType(candidate.type) && !hasDefault(candidate))) return undefined
   return { fieldName, entity, action, changeKind, arg, mode }
 }
 
