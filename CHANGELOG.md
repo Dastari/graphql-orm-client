@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+## 0.1.0-alpha.13 (2026-11-17)
+
+Install from the GitHub release archive:
+`pnpm add https://github.com/Dastari/graphql-orm-client/releases/download/v0.1.0-alpha.13/graphql-orm-client-0.1.0-alpha.13.tgz`.
+
+Regenerate (`graphql-orm-client generate`), then fix what the type checker reports. A module generated earlier keeps working
+as it did, apart from the runtime defaults below. Each entry further down has its own steps; in short:
+
+- **After regenerating:** data holds `Id`, `NodeId` and `RecordVersion` only where the document selects them; select them where
+  you read them, or set `identityFields: "always"`. A `versions` entry for a field that isn't `Int` or `Float` fails generation
+  until it declares `compare`. Non-null input fields with a default become optional.
+- **Runtime defaults that change:** queries have a 30-second read deadline (`reads: { deadlineMs: null }` on `createHttpNetwork`
+  restores none); queries in `error` read again on the browser's `online` event (`reads: { refetchOnOnline: false }`); a socket
+  closed with 4401 or 4403 stops live delivery until `client.reconnectLive()` (`live: { unauthenticated: "restart" }`); a saved
+  snapshot older than 7 days isn't restored (`maxAgeMs: Infinity`), and snapshots from earlier releases are discarded once; a
+  response that leaves out a selected field prints a development warning (`missingFields: "off"`); `refetchFragment` calls in
+  one tick share a `nodes` request (`refetchBatch: false`).
+- **CLI:** `doctor` and `schema pull` won't send a credential to a plain `http:` or `ws:` URL on another machine
+  (`--allow-insecure-credentials`), and the doctor withholds server error text (`--server-messages`).
+- `graphql` 17 is accepted as a peer, and `typescript` is an optional peer used only by the generator's document extraction.
+
 ### Added: `classifyError`, to tell one failure from another
 
 `classifyError(error)` and `classifyErrors(error)` take a `QueryState.error`, what `mutate` or `commit` rejected with, or
