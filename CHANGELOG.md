@@ -42,6 +42,221 @@ and freed with them; handles for the same variables still share it
 `docs/example.md` builds two related graphql-orm entities, their service, and a page that lists, adds and closes rows and stays
 current, checked against graphql-orm 0.94.0.
 
+### Changed: conformance runs against graphql-orm 0.170.0 and router 0.15.5
+
+The real-server suite now runs on `graphql-orm-v0.90.1`, `v0.94.0`, `v0.126.0` (router 0.11.0) and `v0.170.0` (router 0.15.5)
+([#56](https://github.com/Dastari/graphql-orm-client/issues/56), [#78](https://github.com/Dastari/graphql-orm-client/issues/78)).
+The package's behaviour doesn't change. What the runs found, recorded in `docs/graphql-orm-contract.md`:
+
+- From router 0.11.0, `schema pull` and the doctor need `"introspection": true` in the router's configuration; without it they
+  exit 5.
+- From router 0.8.3 a schema reload no longer sends `complete` after `error`, so Node clients need no `allowSynchronousEvents: false`.
+- From router 0.9.0 a router that drops frames ends the streams with `SUBSCRIPTION_CONTINUITY_LOST`, and they restart and read.
+  `live.burstRead` stays on by default, still needed for routers before 0.9.0.
+- `node` for a missing row is null once an owner field is selected, so `refetchFragment` of a row deleted elsewhere removes it.
+
+Nothing to change in applications.
+
+### Added: graphql 17 as a peer
+
+The `graphql` peer range is now `^16.9.0 || ^17.0.0`, so an application on graphql 17 no longer gets a peer warning or a second
+copy of `graphql` ([#80](https://github.com/Dastari/graphql-orm-client/issues/80)). CI runs `pnpm check` and `pnpm build` with
+both.
+
+What you get from `generate` and `schema pull` is the same text with either version. graphql 17 prints an object value as
+`{ a: 1 }` where 16 prints `{a: 1}`, and prints a schema default as written where 16 prints it coerced, with the input fields' own
+defaults filled in. Left alone, that would have changed operation text and hashes, the persistence `schemaHash`, and the schema
+snapshot and its `.sha256` whenever a project changed graphql version, so `generate --check` and `schema pull --check` would fail
+for a team on mixed versions. The compiler and `schema pull` now print both as graphql 16 does. Nothing changes for a project on 16.
+
+Moving an application to graphql 17:
+
+1. Install graphql 17 and remove any override that held it at 16.
+2. Run `graphql-orm-client generate --check` and `graphql-orm-client schema pull --check`; both should pass with no changes.
+3. graphql 17 validates more of a schema than 16 did, for example argument and input field defaults. A router snapshot 16
+   accepted can fail `generate` on 17; the message names the default to fix, and the fix belongs in the service's schema.
+4. Validation messages from `generate` and `doctor` come from graphql and read differently on 17. Don't match on their text.
+
+### Fixed: a keyless type with a `Changed` stream was skipped without a word
+
+A type can have a usable `Changed` stream and still have no key, usually because the project set `keys: { Type: null }`. Its fragments
+can't be live, and under `live: "default"`, an area pattern or `strict.fragmentNotLive` nothing said so. The compiler now reports each
+such type once, naming its unmarked fragments and the configured identity, at the `strict.fragmentNotLive` level (`"warn"` unless set).
+An explicit `@live` on one fails under `strict.liveWithoutStream` saying the identity is configured off, where it used to say the type
+had no usable `Changed` stream ([#58](https://github.com/Dastari/graphql-orm-client/issues/58)).
+
+No regeneration needed to keep working. On regenerating:
+
+- If you set `strict.fragmentNotLive: "error"`, the build fails for these fragments. Mark each one `@live(enabled: false)` if it's meant
+  to stay as it is, or remove the `keys` entry, or set `fragmentNotLive: "warn"` to get the earlier build back.
+- A test matching the old `@live` error text ("no usable Changed stream") on such a type needs the new text.
+
+### Added: a summary line per `live.default` pattern
+
+`generate` prints one line per pattern in `live: { default: [...] }`, for example
+`live.default "src/area/**": 3 files, 11 fragments: 4 newly live, 5 opted out, 1 keyless, 1 without a stream`, so a trial says what it
+changed without a diff of the generated module. `compile(...).liveAreas` holds the same report with fragment names, and
+`GenerateOptions.onSummary` receives the lines (default `console.log`)
+([#59](https://github.com/Dastari/graphql-orm-client/issues/59)). Nothing prints under `"explicit"` or `"default"`. A script that reads
+`graphql-orm-client generate`'s standard output under an area pattern sees these lines before `Wrote ...`.
+
+### Fixed: a live fragment with an operation variable failed naming a generated operation
+
+With the default stream projection, a `@live` fragment may select a field that takes an operation variable (`Label(Locale: $loc)`): the
+stream leaves it out, and each query holding the record reads it again with its own variables. This already worked; it is now tested
+and documented. Under `liveSelection: "as-written"`, whose stream spreads the fragment, it failed with `Variable "$loc" is not defined by
+operation "LiveFoo"`, naming an operation nobody wrote. It now fails naming the fragment, the field and the variable, why (one stream
+serves every holder), and the fixes: a literal argument, moving the field to a fragment that isn't live, `@live(enabled: false)`, or
+leaving `"as-written"` ([#64](https://github.com/Dastari/graphql-orm-client/issues/64)). Nothing to change in applications.
+
+### Fixed: generated input types required non-null fields that have a default
+
+An input object field that is non-null with a default, such as `Limit: Int! = 50` or `Tags: [String!]! = []`, may be left out: the
+server applies the default. The generated type made it required, so callers repeated server defaults. It is now optional and not
+nullable (`readonly Limit?: number`), in nested inputs and lists of inputs as well, as a variable with a default already was
+([#65](https://github.com/Dastari/graphql-orm-client/issues/65)).
+
+Regenerate to get the new types. A module generated before keeps compiling and working; nothing changes at run time. After
+regenerating, callers that pass these fields still compile and may drop them. Code that reads such a field from a value typed as the
+generated input type now sees `number | undefined` and needs a fallback.
+
+### Fixed: persistence copied and encoded the whole store on every flush, and kept doing so over budget
+
+Each flush copied every record, serialised it and encoded the result again only to measure it. A store over `maxBytes`
+paid that on every flush, deleted the saved snapshot each time and reported `PERSISTENCE_SIZE` each time
+([#70](https://github.com/Dastari/graphql-orm-client/issues/70)). Now a flush serialises only the records written since
+the last one and measures UTF-8 length without encoding. Over budget it reports `PERSISTENCE_SIZE` and deletes the
+saved snapshot once, then saves nothing until the store fits, when it saves a complete snapshot again. Nothing partial
+is saved. Nothing to change in applications. If you counted `PERSISTENCE_SIZE` diagnostics, expect one each time the
+store goes over, not one per flush.
+
+### Changed: a saved snapshot older than 7 days isn't restored
+
+The persistence envelope now records `savedAt`, the time of its last write, and `persistClient` takes `maxAgeMs`
+([#75](https://github.com/Dastari/graphql-orm-client/issues/75)). A snapshot older than that, by default 7 days, is
+reported as `PERSISTENCE_EXPIRED`, deleted and not restored: the application starts as it would with nothing saved.
+So is one saved more than a minute later than the device clock says it is now; the minute allows for a clock that
+time synchronisation stepped back. A read-only window leaves it in place. The clock is
+`Date.now` unless you pass `now`.
+
+- To keep restoring a snapshot of any age, as before, pass `maxAgeMs: Infinity`.
+- The envelope format is now 2. A snapshot saved by 0.1.0-alpha.12 or earlier is deleted on first load and not
+  restored, as every release's snapshots already were (the envelope carries the package version).
+
+### Changed: data holds the key, `NodeId` and version fields only where the document selects them
+
+The compiler adds each record's key fields, `NodeId` and `RecordVersion` to every selection, so the store can identify and order
+records. Until now they were also read into the data of every query and fragment, so a list's rows held `Id` and `RecordVersion`
+although the document selected neither. A `Changed` event advances `RecordVersion`, so the data of every query showing a
+versioned row changed on every event for it, and the component holding a list rendered again with a new `Edges` array even when
+everything it shows is behind fragments
+([#87](https://github.com/Dastari/graphql-orm-client/issues/87)).
+
+Now they're still sent and stored, and a query or fragment reads them only where its own document selects them. The operation
+text, what's stored, ordering, streams and refetches are unchanged; the generated types follow the data.
+
+To move:
+
+1. Regenerate (`graphql-orm-client generate`). Until you do, the old module keeps the old behaviour.
+2. Fix what the type checker reports. Each error is a read of `Id`, `NodeId` or the version where the document doesn't select
+   it, such as `key={Node.Id}` under `Node { ...Row }`. Select the field there (`Node { Id ...Row }`). A mutation result reads
+   only what the mutation selects, too.
+3. Code that reads data without the generated types (`any`, `JSON.stringify` of results, snapshot tests) won't be reported:
+   search it for those fields.
+
+`identityFields: "always"` in the generator config (or compile options) restores reading them everywhere, with no other change.
+`readAll` still deduplicates rows that select no key.
+
+### Changed: a version field that isn't a number fails generation
+
+The store orders records by comparing versions as numbers. A `versions` entry naming a field that isn't `Int` or `Float`, such
+as a `String` holding a 64-bit value, was never compared, so its type quietly had last-write-wins
+([#74](https://github.com/Dastari/graphql-orm-client/issues/74)). Generation now fails with `versions.<Type>: <Type>.<field> is
+<type>, not Int or Float`. It also fails when the field doesn't exist, or is a list, a Boolean or an object.
+
+To move, give the entry the comparison it needs:
+
+- `{ "field": "Revision", "compare": "decimal" }`: a decimal integer sent as a string, compared exactly as a big integer, past
+  2^53 too. A JSON number is compared too, but only up to 2^53, where a number stops being exact. A value that can't be
+  compared (not a decimal integer, or a number past 2^53) can't be ordered, and the last write to arrive wins.
+- `{ "field": "Revision", "compare": "number" }`: a custom scalar sent as a JSON number.
+- `null`: no ordering for the type, which is what it had.
+
+Nothing changes for `RecordVersion` or a configured `Int` or `Float` field. A `versions` entry for a type the schema doesn't
+have, which did nothing, now prints a generator warning; it still builds.
+
+### Fixed: a server `NodeId` is checked against the record's type
+
+The store used a response object's `NodeId` as its identity whenever it decoded, whatever type it named. It now uses it only
+when it names the object's own `__typename`; otherwise the object is identified by its key fields, as a type without `NodeId`
+is. graphql-orm always encodes the object's own type, so nothing changes for a response it serves.
+
+### Changed: a write answered without `data` is refused only for pre-execution error codes
+
+`mutateOutcome` and `commitOutcome` reported every response with no `data` key as `refused`. Hive Router, which graphql-orm-router
+is built on, answers every pipeline error that way, including `PLAN_EXECUTION_FAILED` and `GATEWAY_TIMEOUT`, which can come after a
+subgraph committed the write. Such a response is now `refused` only when every error's code is a known pre-execution failure
+(parse, validation, variables, authentication, authorization, persisted document, request limits; the list is in
+docs/design.md); otherwise it's `unconfirmed`, and `reconcile` runs
+([#62](https://github.com/Dastari/graphql-orm-client/issues/62)). `mutate` and `commit` return and throw as before.
+
+Migration: none needed for most applications. An application that treated `refused` as final now sees `unconfirmed` for a router
+execution failure, a timeout, or an error with no code, and should show it as "may have happened". To keep the earlier rule, set
+`createClient({ network, writeWithoutData: "refused" })`.
+
+### Added: `confirm`, for writes whose mutation doesn't select `Success`
+
+`mutateOutcome(CloseTicket, variables, { confirm: data => data.CloseTicket != null })`, for a hand-written command that returns the
+changed entity (no `Success` or `Error` field) and raises an error when it doesn't commit, confirms a write by a rule the caller
+names, in place of requiring `Success: true` on every root. Don't use a non-null root as the rule for a result that has its own
+`Success` or `Error` field: it is non-null when the write failed too. It's asked only about a response with data and no errors, so partial errors stay
+`unconfirmed`; `false` or a throw leaves it `unconfirmed`
+([#60](https://github.com/Dastari/graphql-orm-client/issues/60)). `MutateOptions<T>` is exported for its type. Nothing changes
+without it.
+
+### Added: `refusedCodes`, so a known refusal skips the reconciliation read
+
+`refusedCodes: ["NOT_FOUND", "CONFLICT"]` on `mutateOutcome` or `commitOutcome` reads a write as `refused`, with no `reconcile`,
+when no error has an `extensions.outcome`, every error has one of those codes at the path of a root field (exactly one path
+element), and every root field the operation selects is null with its own such error
+([#61](https://github.com/Dastari/graphql-orm-client/issues/61)). Anything else stays `unconfirmed`: an error further down can null
+a root, or all of `data`, after the root committed, and roots run in order, so an earlier root with no error may have committed
+before a later one was refused. A pathless error counts for no root. On a response with no `data` key the codes add to the
+pre-execution list. Nothing changes without it.
+
+### Fixed: `useFragmentList` redid every row on every render
+
+`useFragmentList` compared its references by the array's identity, so the documented `Edges.map(...)`, a new array each
+render, unsubscribed and resubscribed every row and read each one twice on every render of the parent, and one row changing
+read all of them again. It now compares rows by record, fragments, variables and store: a render with the same rows reads
+nothing and changes no subscription, each row keeps its subscription while it stays in the list, and a change to one row reads
+that row ([#69](https://github.com/Dastari/graphql-orm-client/issues/69)). A row from a client disposed with its identity is
+read again and never subscribed, here and in `useFragment`, so it can't show the previous identity's data. The rows it returns
+are otherwise the same. Nothing to change in applications.
+
+### Changed: a socket closed for authentication waits for new credentials
+
+When the server closed the socket with 4401 (the router's answer to a missing, invalid or expired bearer) or 4403, the live
+layer took it for an outage and reconnected with back-off, with the same credentials, for as long as records were held. Now
+every stream stops, every type holding records reports reason `unauthenticated` with `code` `"4401"` or `"4403"`, the queries
+holding them poll (`polling.liveFallbackMs`), and nothing subscribes again on a timer
+([#73](https://github.com/Dastari/graphql-orm-client/issues/73)). `graphqlWsTransport` sees a 4403 at the close event, before
+graphql-ws retries it by itself, and stops those retries. An `UNAUTHENTICATED` error on one stream is unchanged: the router
+sends it when the same connection will recover, and it stays a refusal of that stream.
+
+- Added `client.reconnectLive()`: call it once the socket's credentials are renewed (for graphql-ws, once `connectionParams`
+  returns them). The held types subscribe again and their queries read. A `connected` socket reported by `graphqlWsTransport`
+  starts them again too, once per stop: a stop within a minute of such a resume waits for `reconnectLive()`. Disposing the
+  client for a new identity clears the stop. `retryAt` is null while stopped, and a refusal window still running at resume
+  applies as before.
+- Added `LiveReason` and `LiveEndReason` `unauthenticated`, `LiveTypeStatus.unauthenticated`, and `closeCode` on a
+  `LiveConnection` change. `createMockStreams().fail(event)` closes every open stream with a given close event.
+
+Migration: an application that recovered by letting the client reconnect, with a `connectionParams` that fetches a fresh token
+on every connect, either calls `client.reconnectLive()` after renewing the token, or sets `live: { unauthenticated: "restart" }`
+for the previous behaviour. A custom `LiveConnection` can pass `closeCode` so a close is seen before its sinks fail. Code that
+switches over `LiveReason` or `LiveEndReason` has one more case.
+
 ### Fixed: the doctor failed a type that polls by design
 
 A type with no `Changed` stream whose live fragments all poll by design, because each declares `@poll(reason)` or is live

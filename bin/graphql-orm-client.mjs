@@ -44,7 +44,7 @@ try {
  *   documents    directories or files to scan for graphql(...) calls (default ["src"])
  *   out          the generated module
  *   extensions   file extensions to scan (default [".ts", ".tsx"])
- *   keys, versions, lifetimes, persistence, scalars, importFrom, functionName   see GenerateOptions
+ *   keys, versions, identityFields, lifetimes, persistence, scalars, importFrom, functionName   see GenerateOptions
  */
 async function generateCommand(args) {
   if (args.includes("--watch")) {
@@ -250,10 +250,12 @@ async function schemaPullCommand(args) {
   if (typeof config.schema !== "string") fail("The config needs `schema`", 2)
   const path = resolve(dirname(configPath), config.schema)
   const { readServedSchema } = await import("../dist/doctor/index.js")
-  const { lexicographicSortSchema, printSchema } = await import("graphql")
+  const { lexicographicSortSchema } = await import("graphql")
+  // The same text with graphql 16 and 17, so the snapshot and its hash don't depend on the installed version.
+  const { printSchemaStable } = await import("../dist/compiler/print.js")
   let snapshot
   try {
-    snapshot = printSchema(lexicographicSortSchema(await readServedSchema({ url, headers }))) + "\n"
+    snapshot = printSchemaStable(lexicographicSortSchema(await readServedSchema({ url, headers }))) + "\n"
     // A server may echo request credentials in descriptions. Never persist them.
     if (Object.values(headers).some((secret) => snapshot.includes(secret) || (secret.startsWith("Bearer ") && snapshot.includes(secret.slice(7)))))
       fail("Schema contains a credential value; snapshot not written")

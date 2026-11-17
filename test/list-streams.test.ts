@@ -1,7 +1,7 @@
 import { buildSchema } from "graphql"
 import { describe, expect, it } from "vitest"
 import { compile } from "../src/compiler/index.js"
-import { createClient, readFragment } from "../src/client.js"
+import { createClient, readFragment, refData } from "../src/client.js"
 import { encodeNodeId } from "../src/node-id.js"
 import { createMockNetwork, createMockStreams, createTestClock } from "../src/test/index.js"
 
@@ -179,7 +179,7 @@ describe("R3 list streams", () => {
     let done!: () => void; c.wait(new Promise<void>(r => { done = r }))
     const more = c.query.loadMore(); c.emit(); c.wait(undefined); done(); await more; await c.clock.tick()
     const edges = c.query.getState().data[name === "Keyset" ? "Scroll" : "Widgets"].Edges
-    expect(edges).toHaveLength(8); expect(new Set(edges.map((e: any) => JSON.stringify(e.Node))).size).toBe(8)
+    expect(edges).toHaveLength(8); expect(new Set(edges.map((e: any) => refData(e.Node)?.id)).size).toBe(8)
     c.client.dispose()
   })
   it("reports a bounded keyset refresh and preserves its loaded tail", async () => {
