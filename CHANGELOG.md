@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Fixed: a `documents` entry that doesn't exist was skipped without a word
+
+`documents` takes directories and files. An entry that didn't exist, such as a glob like `"src/**/*.ts"`, was skipped silently, so
+`generate` wrote a module with no documents and `generate --check` accepted it
+([#108](https://github.com/Dastari/graphql-orm-client/issues/108)). Now `generate`, `generate --check` and `doctor` fail with
+exit 1, naming the entry, when an entry with a glob character doesn't exist or when no entry exists at all. A missing entry
+next to others that exist prints a warning and is skipped, as before.
+
+Migration: if generation now fails naming a `documents` entry, replace a glob with the directory it was meant to cover
+(`"src/**/*.ts"` becomes `"src"`; `extensions` picks the file types), or remove an entry for a directory that's gone. The
+module generated before was missing those documents.
+
 ### Fixed: graphql 17 printed a long list value over several lines
 
 0.1.0-alpha.13 printed object values in operation text as graphql 16 does, but not list values: graphql 17 breaks a list longer
