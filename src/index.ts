@@ -31,6 +31,7 @@ export type {
   ConnectionOptions,
   ConnectionState,
   LoadedQuery,
+  MutateOptions,
   FetchPolicy,
   GraphQLErrorLike,
   GraphQLResponse,
@@ -42,12 +43,15 @@ export type {
   PollingOptions,
   QueryState,
   QueryStatus,
+  ReadOptions,
+  ReadRetryOptions,
+  RefetchQuery,
   SubscriptionObserver,
   WatchOptions,
   WatchedQuery,
 } from "./client.js"
 export type { ReadAllRow } from "./read-all.js"
-export { HttpError, createHttpNetwork, graphqlWsSubscribe, graphqlWsTransport } from "./transport.js"
+export { DEFAULT_READ_DEADLINE_MS, HttpError, createHttpNetwork, graphqlWsSubscribe, graphqlWsTransport } from "./transport.js"
 export type { ReadCause, LiveDiagnostic, LiveHealth, LiveReason, LiveSocketState, LiveState, LiveTypeHealth } from "./health.js"
 export type { GraphQLWsClientLike, HttpNetworkOptions } from "./transport.js"
 export { decodeNodeId, encodeNodeId } from "./node-id.js"

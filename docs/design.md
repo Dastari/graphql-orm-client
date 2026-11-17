@@ -21,7 +21,7 @@ Status: partly built. Implemented and tested:
 - `@refetchable` fragments: `client.refetchFragment` and `useRefetchableFragment`.
 
 Proposed, not built: per-type
-`staleMs` policy, the `scope` store option, sending operations by persisted hash,
+`staleMs` policy ([R30](requirements.md)), a store inspector ([R31](requirements.md)), Suspense ([R29](requirements.md)), the `scope` store option, sending operations by persisted hash,
 batching writes per tick, refetching a parent on a `PROPAGATED` event, and marking records stale after a failed lookup. Sections below label these. What the client still
 needs is in [requirements.md](requirements.md).
 
@@ -61,7 +61,7 @@ function WidgetRow({ widget }: { widget: FragmentRef<typeof WidgetRowFragment> }
 const CatalogPageQuery = graphql(`
   query CatalogPage($Where: WidgetWhereInput) {
     Widgets(Where: $Where, Page: { limit: 50 }) {
-      Edges { Node { ...WidgetRow } }
+      Edges { Node { Id ...WidgetRow } }
       PageInfo { HasNextPage EndCursor }
     }
   }
@@ -79,6 +79,8 @@ function CatalogPage() {
 
 `useFragment` returns only the fragment's own fields. A child's fields are hidden behind its
 fragment reference (data masking), so a parent cannot come to depend on them by accident.
+The same holds for the fields the compiler adds for identity and ordering (see [Identity](#identity)): the root above
+selects `Id` because it uses it as a React key.
 
 ### Route loading (R18)
 
@@ -109,7 +111,7 @@ Migration is opt-in per route: replace `preload` plus `useQuery` with `loadQuery
 `useLoadedQuery`, forward cancellation, and handle `idle`, `loading` and `error` states. The old
 `preload` remains an awaitable warm-up that closes on completion. A subsequent default `useQuery`
 uses `store-and-network` and may read again. Its legacy StrictMode effect replay can restart a request;
-the loader hook avoids that. Suspense is not implemented.
+the loader hook avoids that. Suspense is not implemented; R29 in [the requirements](requirements.md) records it.
 
 ### Conditional selections and fragment arguments
 
@@ -125,7 +127,8 @@ required it, and flattened live projections could select it unconditionally. Thi
 not conditional-selection support. `conditionalDirectives: "legacy"` in generator config (or compile
 options) temporarily preserves that previous behaviour for migration. Split conditional selections
 into separate route roots, remove the setting and regenerate. Proper variable-aware conditional
-readers, optional generated fields and stream projections remain proposed. The hook's `skip` option
+readers, optional generated fields and stream projections remain proposed (R27 in [the requirements](requirements.md));
+fragment arguments are R28. The hook's `skip` option
 skips a whole operation and is unaffected.
 
 ### Framework server shells
@@ -155,6 +158,13 @@ In that case the fragment belongs to the adapter that builds the view model, not
   `readFragment(Fragment, ref)`. That is a plain function, not a hook, so it works in mappers.
 - `useFragmentList(Fragment, refs)` subscribes to a list of records and returns view models that
   update when any of their fields change. Tables use it instead of one `useFragment` per row.
+  It compares the references by what they point at (record, fragments, variables and store), not by the
+  array's identity, so `Edges.map(...)` on every render is fine: a render with the same rows reads nothing
+  and changes no subscription. Each row keeps its own store subscription while it stays in the list, so a
+  change to one row reads that row, an added row is read and subscribed, and a removed one is unsubscribed.
+  A row read during render is read again at commit only if a publish came between the two. A reference into a
+  store disposed with its identity is never kept: its row is read again from the empty store and never subscribed,
+  and `useFragment` does the same.
 - Components below the adapter receive domain objects and never see GraphQL.
 
 Masking still applies at the adapter boundary: a query that spreads the fragment can't read its
@@ -170,14 +180,28 @@ render records one component at a time.
 are unknown, never a match. Credentials use `--token-env NAME` or repeated
 `--header-env name=NAME`; literal `--token`, `--header` and `--password` are refused.
 
-Exit codes: 0 success, 1 drift or stale output, 2 bad usage (as in doctor), 3 unreachable,
+Both `schema pull` and `doctor` refuse, with exit 2, to send a credential to an `http:` or `ws:` URL whose host isn't
+this machine, because anyone on the path can read it. Only exactly `localhost`, a literal 127.0.0.0/8 address and
+`[::1]` count as this machine: `localhost.` and `*.localhost` names can be sent to a DNS server.
+`--allow-insecure-credentials` sends it anyway, with a warning, for a network you trust such as a container network
+in CI. A refusal, not a warning, because a warning printed in CI goes unread and the credential has gone by then.
+
+Exit codes: 0 success, 1 drift or stale output, 2 bad usage or a refused credential (as in doctor), 3 unreachable,
 4 authentication refused (HTTP 401/403 or GraphQL 401/403/4401), 5 introspection unavailable or disabled.
-Server error text is suppressed by schema pull to avoid echoing credentials.
+Server error text is suppressed by schema pull to avoid echoing credentials. From graphql-orm-router 0.11.0 introspection is off
+unless the router's configuration sets `"introspection": true`; then it also needs a valid bearer when the router authenticates.
+`schema pull` and the doctor exit 5 against a router that leaves it off.
 
 Once the sidecar exists, generated modules include the snapshot hash. `generate --check` verifies
 both snapshot integrity and generated provenance, even for schema changes that leave artifact types
 unchanged. Fix snapshot integrity with `schema pull --url <router>`, then run `generate`.
 Projects without a sidecar retain the existing generation and check behavior.
+
+The `graphql` peer is 16 or 17 (R32). The snapshot, the persistence `schemaHash` and every operation's text and hash are
+printed the way graphql 16 prints them, whichever is installed: graphql 17 spaces object values (`{ a: 1 }`) and prints a
+schema default as written, where 16 prints `{a: 1}` and the coerced default with input fields' own defaults filled in.
+`src/compiler/print.ts` does both, and its tests run against each version in CI. graphql 17 also validates schema defaults
+that 16 accepted, so a snapshot can fail `generate` on 17 alone; that is a schema fault to fix in the service.
 
 ## Compiler
 
@@ -194,7 +218,25 @@ artifact per root:
   fragment references to hand down.
 - **Live subscription document.** For roots that contain `@live` fragments, a subscription
   with full and keys-only projections for each type; legacy generation can retain fragment spreading.
-- **Types.** TypeScript result, variable and fragment-reference types.
+- **Types.** TypeScript result, variable and fragment-reference types. A variable or input object
+  field is optional when it is nullable or has a default. A non-null one with a default is optional
+  but not nullable (`readonly Limit?: number`): leaving it out applies the server's default, and an
+  explicit `null` is invalid ([#65](https://github.com/Dastari/graphql-orm-client/issues/65)).
+
+`generate` takes every `graphql(` followed by a quote as a candidate. When the `typescript` package can be loaded
+(an optional peer dependency, found from this package or the current directory), it parses each file that has one,
+with JSX for `.tsx` and `.jsx`, and skips a candidate in a comment or inside the text of another string, template,
+regular expression or JSX text; one inside a template's `${...}` is code and counts. It never drops a candidate it
+can't place: that one is kept with a warning naming the file and line, and a file TypeScript can't parse keeps every
+candidate, with a warning. Without TypeScript every candidate is kept, comments and strings included. A dropped
+document would silently remove an operation, which is worse than compiling a commented-out one.
+
+`generate --watch` generates, then generates again after a document, the schema snapshot or the config changes
+(a directory moved into or out of `documents` counts),
+debounced by 100 ms. A failed run prints its error and the watch carries on, and a run that produces the same module
+leaves the file alone, so a dev server doesn't reload. It uses `node:fs` `watch` on directories, recursively for
+`documents`. The watched paths come from the config at the start, so a change to `schema`, `documents` or
+`extensions` needs a restart. It doesn't combine with `--check`.
 
 The compiler validates the documents against the router's schema snapshot. A fragment on a
 type without a `NodeId` or a complete key is allowed; its data is stored inside the parent
@@ -210,7 +252,18 @@ part of the identity. When a type has graphql-orm's generated `NodeId: ID!` fiel
 selects it and the store uses the server's value, which is right for any key shape. Otherwise
 the store encodes the `NodeId` from the type's key fields (`Id`, or the configured `keys`); both
 produce the same value for the same record. A record without a key (an embedded object or an
-aggregate row) is stored inside its parent.
+aggregate row) is stored inside its parent. A server `NodeId` is used only when the type name it
+decodes to is the object's `__typename`; otherwise the object is identified by its key fields, so
+one response object can never be written over a record of another type.
+
+The compiler adds `__typename`, the key fields, `NodeId` and graphql-orm's `RecordVersion` to every
+selection on a type that has them, and the request carries them. They're written to the store, but a
+query or fragment reads only the ones its document selects (R35). So a list whose rows are all
+behind fragments holds only `__typename` and fragment references per row, and a `Changed` event that
+advances a row's version changes the row's fragment data, not the list's. `__typename` is always
+read. `identityFields: "always"` (generator config or compile option) reads the added fields
+everywhere, as 0.1.0-alpha.12 and earlier did. Results of a `@sensitive` operation are the
+response as sent, so they hold the added fields at run time whatever their generated type says.
 
 ### Writes and ordering
 
@@ -220,7 +273,14 @@ aggregate row) is stored inside its parent.
   is dropped. Without a version, the last write to arrive wins. The compiler selects
   graphql-orm's `RecordVersion: Int!` wherever a type has it and uses it as the version, so
   managed versions need no configuration. `versions` names another field for a type, or
-  `null` to turn it off.
+  `null` to turn it off. A named field must be `Int` or `Float`, or generation fails with the
+  type and field (R34): a version that isn't a number would never be compared. `{ "field":
+  "Revision", "compare": "decimal" }` declares a decimal integer sent as a string, compared exactly
+  as a big integer; a JSON number under it is compared only up to 2^53, where numbers stop being
+  exact. `"compare": "number"` declares a custom scalar sent as a JSON number. A value that can't be
+  compared as declared (absent, not a decimal integer, or a number past 2^53) is written, and the
+  last write wins. The compiler selects `RecordVersion` itself; a configured field is ordered by
+  only where the documents select it.
 - A `Changed` event with action `DELETED` removes the record. A query that showed it finds the
   record missing and reads again; lists aren't edited in place. The exception is `DELETED` with change kind
   `PROPAGATED`: a child was deleted under a record that still exists (graphql-orm 0.93.0), so the record stays and
@@ -251,7 +311,7 @@ them, so going back within that period needs no request.
 
 `store.retainMs` controls retention. Lifetime and persistence are opt-in; see the R17 sections
 below. One client belongs to one identity: dispose it before exposing a new identity's client.
-Per-type `staleMs` and automatic `store.scope` switching remain proposed.
+Per-type `staleMs` (R30 in [the requirements](requirements.md)) and automatic `store.scope` switching remain proposed.
 
 ### Query states
 
@@ -259,6 +319,36 @@ A root reports `idle` (skipped), `loading`, `ready`, `refreshing` or `error`. `u
 `watchPagedQuery` keep the previous page while another page loads, and keep it across new
 variables within the same hold scope (a new search term on the same vendor), as
 `refreshing` instead of blanking. A different scope never shows another scope's records.
+
+A response reaches a watched query's state in one change: its data, `errors`, `status: "ready"` and `error: null` together. The
+store still tells every other reader of the records as it writes them, but the query that sent the read takes its own data from the
+response, after the write, so no listener sees the new data with the previous response's errors
+([#63](https://github.com/Dastari/graphql-orm-client/issues/63)). This holds under both `partialResults` modes. A later write to the
+same records by something else (another query, a mutation, a live event) updates `data` and leaves `errors` as the query's own last
+response set them.
+
+### Reads that fail before a response (#72)
+
+`createHttpNetwork` gives each query a deadline of `DEFAULT_READ_DEADLINE_MS` (30 seconds). A read with no response by then fails as
+a failed connection does: `createHttpNetwork` marks it with `markNoResponse`, `classifyError` reports `network`, and the query ends in
+`error`. `reads: { deadlineMs }` changes it and `deadlineMs: null` removes it. The deadline covers reading the body: one that
+passes while the body is still arriving is no response too, with or without `maxResponseBytes`, and the caller's abort then is
+`cancelled`. Writes keep no
+deadline unless `writes.deadlineMs` is set. A custom `Network` sets its own bounds.
+
+`createClient({ reads: { retry } })` is opt-in. With it, a watched query (`watchQuery`, `useQuery`, `loadQuery`, `usePagedQuery`)
+whose read failed before any response sends it again: `retries` more times (default 3), waiting `min(maxMs, baseMs * 2^attempt)`
+jittered to between half and all of that (`baseMs` 1000, `maxMs` 30000 by default). The query keeps its status (`loading`, or
+`refreshing` with its rows) while it waits, and the loop ends in `error` with the last failure. Only failures marked as having no
+response are retried: an HTTP error, GraphQL errors and a response with no data are answers. A write is never retried, and nor are
+`client.query`, `loadMore` or `refetchFragment`. Closing the query or disposing the client ends the wait, with nothing sent after
+it. A newer read of the query (`refetch`, the `online` event) ends the wait and is sent at once, with its own attempts. The wait uses
+`live.setTimeout`, else `store.setTimeout`, else the global timer, so `createTestClock` drives it. Retries count as `retry` in
+`liveHealth().reads`.
+
+In a browser, the client listens for the window's `online` event. When it fires, every open query in `error`, and every one waiting
+to retry, is read again (`online` in the read counters). `reads: { refetchOnOnline: false }` turns this off. Disposing the client
+removes the listener.
 
 ## Live layer
 
@@ -341,8 +431,17 @@ order can't come from there: introspection through router 0.8.1 at `graphql-orm-
 `Name, Site`, while the service's SDL and its `NodeId` use `Site, Name`. So the client finds the order by exact
 match against a held record's server `NodeId`, without decoding it, before opening a stream.
 
+A field that takes an operation variable (`Label(Locale: $loc)`) is one of the fields with arguments
+that the full projection leaves out. One stream serves every query holding a record of the type, so it
+can't carry one query's variables. The event writes the other fields at once, and each holding query
+re-reads the omitted field with its own variables, through `rereadFragments` (or `liveReread` when the
+query selects it directly) ([#64](https://github.com/Dastari/graphql-orm-client/issues/64)).
+
 `liveSelection: "as-written"` in generator config preserves previous subscription text. Generation
-warns, naming each fragment and field the new projection would exclude. Old artifacts without
+warns, naming each fragment and field the new projection would exclude. An as-written stream spreads
+the live fragments, so a live fragment there can't use an operation variable: the compiler refuses
+it, naming the fragment, the field and the variable, instead of reporting the variable as undefined
+in the generated subscription. Old artifacts without
 `thinOperation` retain their subscription and refusal behavior; no artifact version bump is needed.
 
 Automatic stale, reconnect and R4 confirming reads share one per-query scheduler. It runs a leading
@@ -388,11 +487,13 @@ type: `restarting`, `restartAttempts`, and `lastEnd` with its `reason`, `code` a
   fresh connection. `graphqlWsSubscribe` and `graphqlWsTransport` close the socket through `ws.terminate()`,
   a task after the last operation has ended after one of these codes. A custom `live.subscribe` has to get
   a fresh connection too, or its restarts go on answering `unavailable`. In a browser, graphql-ws's default
-  `lazy` socket closes by itself once nothing is open, and terminating covers `lazy: false`. On Node, where
-  `ws` delivers several frames in one tick by default, the router's `complete` after `error` makes graphql-ws
-  release the operation twice, its lock count goes negative, and a later socket failure can leave a stream
-  ending as soon as it starts. To run this on Node, pass `{ allowSynchronousEvents: false }` to `ws`, as a
-  `webSocketImpl` subclass (router 0.8.1, graphql-ws 6.4.1, ws 8).
+  `lazy` socket closes by itself once nothing is open, and terminating covers `lazy: false`. Router 0.8.1 sends
+  `complete` after the reload `error`. On Node, where `ws` delivers several frames in one tick by default, that
+  makes graphql-ws release the operation twice, its lock count goes negative, and a later socket failure can leave
+  a stream ending as soon as it starts. Against router 0.8.1 or 0.8.2 on Node, pass `{ allowSynchronousEvents: false }`
+  to `ws`, as a `webSocketImpl` subclass (graphql-ws 6.4.1, ws 8). Router 0.8.3 sends `error` alone (graphql-orm#339):
+  run on 0.11.0 and 0.15.5, recovery passes 8/8 with `ws` defaults and 8/8 without synchronous events, so newer routers
+  need no setting.
 - **`live.restart: false`** is the 0.1.0-alpha.6 behaviour, for migration: only lost events restart a
   stream, and any other end waits for the next change to the held records, with nothing read. Data can
   stay stale indefinitely with it. `lastEnd` is still reported.
@@ -422,7 +523,7 @@ with no live layer. `client.subscribeLiveHealth(listener)` and `useLiveHealth(ty
 | `idle` | Nothing is held |
 
 - Each type also has `reason` (`no-live-layer`, `no-stream`, `selection-refused`, `refused`, `identity-mismatch`, `over-cap`,
-  `socket-down`, `stream-ended`, `schema-reload`), the server's `code`, `held`, `pollMs`, `lastEventAt`,
+  `socket-down`, `stream-ended`, `schema-reload`, `unauthenticated`), the server's `code`, `held`, `pollMs`, `lastEventAt`,
   `lastReadAt`, `retryAt` and the `fragments` held. A null time means it hasn't happened, not that it was
   long ago. `pollMs` is null if any query holding the type has no poll. `worst` is the worst state of any type.
 - `live` is per type: an event on one record confirms the type until its streams next restart.
@@ -440,6 +541,42 @@ with no live layer. `client.subscribeLiveHealth(listener)` and `useLiveHealth(ty
   never appears in health.
 - Types with no stream are learned from what queries hold, so this needs no regeneration.
 
+### A socket closed for authentication
+
+The router closes a socket with 4401 when its bearer is missing, invalid or expired, and expects the client to "obtain
+a valid token and open a new connection" (graphql-orm-router `docs/operations.md`, router 0.15.5). graphql-transport-ws
+also defines 4403 (Forbidden). Reconnecting with the same credentials can't work, so by default
+(`live.unauthenticated: "wait"`):
+
+- **What it sees.** graphql-ws 6 treats 4401 as fatal and hands each operation's sink the close event. It retries 4403
+  itself (`retryAttempts`, five by default) with the operations still open, and hands them the close event only when it
+  gives up. `graphqlWsTransport` passes the code of every `closed` event to the live layer, so a 4403 stops live delivery
+  at the first close; `graphqlWsSubscribe` alone sees it only once graphql-ws gives up.
+- **What it does.** Every stream stops, which leaves graphql-ws nothing to reconnect for (a lazy client's retry ends
+  without opening a socket), and every waiting restart is cancelled. Every type holding records reports `unavailable`, or
+  `polling` when a poll covers it, with reason `unauthenticated` and `code` `"4401"` or `"4403"`. The queries holding
+  them poll (`polling.liveFallbackMs`), as for any uncovered type.
+- **Until when.** Nothing subscribes again on a timer, and a change to the held records doesn't either. Live delivery
+  starts again when the application calls `client.reconnectLive()` once its credentials are renewed (for graphql-ws,
+  when `connectionParams` returns them), or when `graphqlWsTransport` reports a `connected` socket, which means the
+  server accepted a connection. Either way the held types subscribe, then their queries read, since nothing was
+  delivered meanwhile. Credentials that still fail stop it again, with no timer. A `connected` socket ends a stop by
+  itself only once: a stop that comes within the longest restart delay (`live.restart.maxMs`, 60 s) of such a resume
+  waits for `client.reconnectLive()`, so a server that accepts a connection and then closes it can't make a loop.
+- **Refusal windows.** `retryAt` is null while stopped, since nothing is retried. A window that ends during the stop
+  starts nothing and reads nothing; the stream starts with the rest on resume. A window still running at resume
+  applies as before.
+- **Identity.** The stop belongs to the client's live layer. Disposing the client for a new identity drops it, and the
+  next client subscribes at once.
+- **`UNAUTHENTICATED` is not this.** The router ends a stream with `UNAUTHENTICATED` when it can't confirm a role-bearing
+  connection's scopes for now, and says to retry on the same connection once that recovers. It stays a refusal of that
+  stream, under `refusalBackoff`, and other types keep streaming.
+- **`live.unauthenticated: "restart"`** is the 0.1.0-alpha.12 behaviour, for migration: such a close is a transport
+  failure (`socket-down`) and restarts with back-off. Use it when `connectionParams` fetches a fresh token on every
+  connect and a restart is how the application recovers.
+- **Not covered.** A non-lazy graphql-ws client holds its own lock and keeps retrying a 4403 by itself; give it a
+  `shouldRetry` that returns false for 4401 and 4403. Plain subscriptions (`client.subscribe`) are the application's.
+
 ### The doctor
 
 `graphql-orm-client doctor --url <router>` compiles the project's documents against its schema snapshot, validates
@@ -451,6 +588,16 @@ is retried using thin: the verdict is `fallback-admitted` or `fallback-not-refus
 passes normally; `--strict` also fails `fallback-not-refused`, preserving the uncertainty rule. `SUBSCRIPTION_SCHEMA_RELOAD`,
 `SERVICE_UNAVAILABLE` and `SUBSCRIPTION_LIMIT_EXCEEDED` report `unknown`, not `refused`. One function (`assertReadOnly`)
 guards everything it sends. Credentials come only from named environment variables and aren't in its output.
+
+A type with no usable stream in the snapshot is `polling` when every live fragment on it polls by design: it
+declares `@poll(reason)`, or it is live only through the `live` setting ("implicit (live default)"). That passes, also
+under `--strict`, so turning on `live: "default"` doesn't fail a correct project's doctor. It is `missing` when an
+explicit `@live` fragment on it declares no poll (possible only with `strict.liveWithoutStream` lowered), and a stream
+the served schema no longer has is `missing` too.
+
+The report holds each error's code and a fixed description, not what the server said: an endpoint can put anything in
+an error message, and the report ends up in terminals and CI logs. A code is shown only when it is a plain name.
+`--server-messages` (`serverMessages` in `runDoctor`) puts the server's error text and socket close reasons back.
 
 ### Refused streams
 
@@ -523,6 +670,11 @@ await client.mutate(RenameWidgetMutation, { Id: id, Name: name }, {
 - **Refetching after.** `mutate(..., { refetchQueries: [TicketsPageQuery, "CatalogPage"] })` reads
   those open queries again once the mutation succeeds, and resolves after them.
   `client.refetchQueries([...])` does the same at any time, and `"active"` refetches every open query.
+  An artifact or name selects every open instance of the operation, whatever its variables. To read
+  only some, pass `{ query, variables }`: a predicate given each instance's variables
+  (`{ query: TicketDetail, variables: (v) => changed.has(v.Id) }`), or an object whose every field must
+  equal the instance's variable of that name, compared as values (`{ query: "TicketDetail", variables: { Id: "a" } }`)
+  ([#67](https://github.com/Dastari/graphql-orm-client/issues/67)).
 - **Cancelling.** `mutate(..., { signal })` cancels the request and rolls back the optimistic layer.
 - **Results without a key.** A result type without a key (a hand-written `…Result` object, a list of
   rows, a scalar) is stored inside the mutation's own root, so it never collides with another
@@ -715,7 +867,9 @@ fragment WidgetCard on Widget @refetchable {
   and `found`.
 - **Missing or denied.** A null `node` without errors means the record is missing or no longer
   readable: the store removes it, as for a `DELETED` event. A null with errors, or a failed
-  request, leaves the stored record as it was.
+  request, leaves the stored record as it was. The router answers `node` for a missing row with its own
+  `{ __typename, NodeId }` when nothing else is selected, and with null once an owner field is (graphql-orm#490;
+  run on routers 0.8.1, 0.11.0 and 0.15.5). A fragment that selects only `NodeId` would therefore always be found.
 - **Batching.** Where the schema also has the router's `nodes(NodeIds)` (graphql-orm-router
   0.8.0 and later), the compiler adds `<queryName>Nodes($NodeIds: [ID!]!) { nodes(NodeIds: $NodeIds) { ...F } }`
   as `fragment.refetchNodes`. `refetchFragment` calls for the same fragment made in one tick go out
@@ -783,8 +937,9 @@ fragments.
 - The store is disposed synchronously when the identity changes. No read runs under the
   outgoing identity.
 - Responses can be bounded by time and size: `createHttpNetwork({ url, reads, writes })` takes
-  `{ deadlineMs, maxResponseBytes }` for each kind. Both are off unless set, so by default a request that never
-  answers keeps its query loading (#72 proposes a default). The deadline covers reading the body as well as the
+  `{ deadlineMs, maxResponseBytes }` for each kind. Reads have a 30-second deadline unless `reads.deadlineMs`
+  says otherwise (`null` removes it, the earlier behaviour); the other bounds are off unless set. See
+  [reads that fail before a response](#reads-that-fail-before-a-response-72). The deadline covers reading the body as well as the
   headers. A response larger than `maxResponseBytes` is cancelled as it streams in and fails the request. A write
   that passes its deadline is `unconfirmed` and is not sent again.
 - Opt-in persistence is keyed by an explicit identity and deleted by `clear()`, which an application calls on
@@ -822,8 +977,8 @@ those runs; each timing in each run is itself the median of five samples.
 | One event, 1,000-row list (ms) | 0.151 | 1.2 |
 | One event, 10,000-row list (ms) | 1.255 | 8 |
 | 45,000-line schema + 250 documents (ms) | 694 | 5,000 |
-| Main standalone raw bundle (bytes) | 75,687 | 76,000 |
-| Main standalone gzip bundle (bytes) | 24,127 | 24,500 |
+| Main standalone raw bundle (bytes) | 84,561 | 85,500 |
+| Main standalone gzip bundle (bytes) | 27,168 | 27,500 |
 | React standalone raw bundle (bytes) | 6,969 | 10,000 |
 | React standalone gzip bundle (bytes) | 2,836 | 4,000 |
 
@@ -855,10 +1010,17 @@ and one socket per additional window**. This supports keeping the R19 decision f
 The burst, per-event and main bundle rows were measured again on 2026-11-13, on the same machine without the window run,
 after incremental reads ([#68](https://github.com/Dastari/graphql-orm-client/issues/68)). Before that change one event cost
 0.25 ms at 100 rows, 1.6 ms at 1,000 and 25 ms at 10,000, because each event read the whole list twice. The main bundle limit
-rose from 65,000 to 68,000 bytes (gzip 21,000 to 22,000) for it. On 2026-11-17 it rose to 76,000 (gzip 24,500) for several
-`@connection` lists per query, restarting a list on a refused cursor and batched `refetchFragment`
+rose from 65,000 to 68,000 bytes (gzip 21,000 to 22,000) for it. The main bundle was measured again on 2026-11-17, at
+67,573 bytes (gzip 21,668), and grew with the changes in this release: the pre-execution error codes and caller evidence for
+write outcomes ([#62](https://github.com/Dastari/graphql-orm-client/issues/62)), about 1.8 KB, most of it the validation rule
+names the router sends as codes; stopping and resuming live delivery on an authentication close
+([#73](https://github.com/Dastari/graphql-orm-client/issues/73)), about 2 KB; and the query-read changes
+([#63](https://github.com/Dastari/graphql-orm-client/issues/63), [#66](https://github.com/Dastari/graphql-orm-client/issues/66),
+[#67](https://github.com/Dastari/graphql-orm-client/issues/67), [#72](https://github.com/Dastari/graphql-orm-client/issues/72)),
+about 4.5 KB; and several `@connection` lists per query, restarting a list on a refused cursor and batched `refetchFragment`
 ([#83](https://github.com/Dastari/graphql-orm-client/issues/83), [#55](https://github.com/Dastari/graphql-orm-client/issues/55),
-[#82](https://github.com/Dastari/graphql-orm-client/issues/82)), which took the bundle from 67,573 bytes to 75,687.
+[#82](https://github.com/Dastari/graphql-orm-client/issues/82)), about 8 KB. With the rest of this release it is 84,561 bytes
+(gzip 27,168); the limits are that plus about 1,000 bytes (gzip 300): 85,500 (gzip 27,500).
 
 It includes page/runtime, query snapshots and store allocations; it excludes native renderer
 memory, browser RSS, GPU memory and server cost. It does not establish a bound on a full
@@ -958,10 +1120,55 @@ A re-read observes current state; it does not prove this write committed.
 The classifier requires evidence: all selected root results with `Success: true` and no errors
 confirm a write. Explicit server `extensions.outcome: "refused"` / `"failed"` distinguish those
 outcomes; these two signals are proposed server contract additions and tested with mocks.
-A transport can mark an error as coming before the send with `markNotSent`, as `createHttpNetwork` does for a failed `headers()`; that, or cancellation before sending, is failed. The thrown error is unchanged. A response with no `data` key is refused: per GraphQL over HTTP, execution never started.
+A transport can mark an error as coming before the send with `markNotSent`, as `createHttpNetwork` does for a failed `headers()`; that, or cancellation before sending, is failed. The thrown error is unchanged.
 Connection loss, cancellation after send, HTTP errors, partial errors and GraphQL `data: null`
 are unconfirmed. Neither HTTP status nor error message text proves a refusal. Missing Success,
 `Success: false`, and mixed multi-root outcomes are conservatively unconfirmed.
+
+A response with no `data` key is refused only when every error's `extensions.code` is a known pre-execution failure
+([#62](https://github.com/Dastari/graphql-orm-client/issues/62)). GraphQL over HTTP says such a response means execution never
+started, but Hive Router doesn't keep to that: its pipeline error handler (`pipeline/error.rs`, `handle_pipeline_error`) answers
+every pipeline error with `{ errors }` and no `data`, including `PLAN_EXECUTION_FAILED`, which can follow a subgraph's commit, and
+`GATEWAY_TIMEOUT`, whose timer covers execution. The known codes, read from Hive Router 0.2.19, which graphql-orm-router 0.8.1 and
+0.15.5 both pin, and from graphql-orm-router's own hooks at those two versions:
+
+| Group | Codes |
+| --- | --- |
+| Request body | `BAD_REQUEST` (the JSON body didn't parse), `PAYLOAD_TOO_LARGE_CONTENT_LENGTH`, `PAYLOAD_TOO_LARGE_BODY_STREAM` |
+| Parse, variables, validation | `GRAPHQL_PARSE_FAILED`, `OPERATION_RESOLUTION_FAILURE`, `BAD_USER_INPUT`, `GRAPHQL_VALIDATION_FAILED`, and the validation rule names Hive sends as the code (the 25 default rules of graphql-tools 0.5.8: `FieldsOnCorrectType`, `KnownArgumentNames`, `ValuesOfCorrectType` and the rest) |
+| Authentication, authorization | graphql-orm-router's `UNAUTHENTICATED` and `FORBIDDEN`, sent from its request, analysis and execute hooks before any subgraph is called; Hive's `UNAUTHORIZED_FIELD_OR_TYPE` (reject mode, checked before planning) |
+| Persisted documents | `PERSISTED_DOCUMENT_NOT_FOUND`, `PERSISTED_DOCUMENT_ID_REQUIRED`, `PERSISTED_DOCUMENT_EXTRACTION_FAILED` |
+| Limits | graphql-orm-router's `OPERATION_LIMIT_EXCEEDED` |
+
+Any other code, an error with no code, or a body with no `data` and no errors (`{}`) leaves it unconfirmed. Some of Hive's other pre-execution codes are left out to keep the
+main bundle small, at the cost of a needless re-read: request errors `createHttpNetwork` doesn't cause (method, content type, GET,
+CSRF), and Hive's JWT and cost checks, in whose place graphql-orm-router has its own bearer authentication and field limit. Hive's internal errors that happen before
+planning (`NO_SUPERGRAPH_AVAILABLE`, `QUERY_PLAN_BUILD_FAILED`) are left out on purpose: they're masked as "Internal server error"
+and a wrong `refused` is worse than a needless re-read. A caller who sees one can name it in `refusedCodes`. A graphql-orm service answering directly (async-graphql 7) always sends `data`,
+`null` on a validation error, so this rule only matters behind a router. `createClient({ writeWithoutData: "refused" })` restores
+the earlier rule, which refused every response without `data`.
+
+Two per-call options add the caller's own evidence; neither changes what `mutate` or `commit` return or throw:
+
+- `confirm(data)` confirms a write whose result has no `Success` field
+  ([#60](https://github.com/Dastari/graphql-orm-client/issues/60)), in place of the `Success: true` rule. It's asked only for a
+  response with data and no errors, and receives the data as the server sent it. `false`, or a throw, is unconfirmed. Use it for
+  evidence the schema gives, for example `data => data.CloseTicket != null` for a hand-written command that returns the changed
+  entity, has no `Success` or `Error` field, and raises an error when it doesn't commit. A non-null root is no evidence for a
+  result with its own `Success` or `Error` field: it is non-null when the write failed too.
+- `refusedCodes` names codes the server sends only for a write that didn't happen, such as `NOT_FOUND` or `CONFLICT` from a
+  hand-written command that sets no `extensions.outcome` ([#61](https://github.com/Dastari/graphql-orm-client/issues/61)). With
+  a `data` key (`null` included), the write is refused, and `reconcile` isn't called, only when no error has an
+  `extensions.outcome`, every error has one of the codes and a path of exactly one element (a root field), and every root field
+  the operation selects is null with its own such error at `[root]`. The root fields come from the artifact's top-level
+  selections, not from `response.data`; a root fragment spread means they can't be listed, so the write stays unconfirmed.
+  Everything else stays unconfirmed, because null propagation can erase a root's value, or all of `data`, after the root
+  committed and a nested field failed, and mutation roots run in order, so in `{ data: null, errors: [{ path: ["b"] }] }` root
+  `a` may have committed before `b` was refused. A pathless error belongs to no root. On a response without `data` the codes
+  add to the pre-execution list.
+
+There's no client-wide or generated `confirm` rule: whether a non-null root proves a commit depends on how each command reports
+failure, and a payload type with its own `ok` or `Error` field would be confirmed wrongly.
 
 Source checked: graphql-orm tag `graphql-orm-v0.90.1`, router 0.8.1:
 runtime/mutation.rs marks post-commit payload denial/failure/timeout with
@@ -969,9 +1176,9 @@ runtime/mutation.rs marks post-commit payload denial/failure/timeout with
 Generated operations.rs uses boolean Success and free-form Error; these are insufficient for
 uniform refusal classification. No client inference from error text is used.
 
-HTTP limits are opt-in to preserve existing applications: configure
+Write limits are opt-in to preserve existing applications: configure
 `createHttpNetwork({ url, writes: { deadlineMs: 15000, maxResponseBytes: 1048576 } })`.
-`reads` has independent bounds; omitted bounds retain unlimited behaviour.
+`reads` has independent bounds: a 30-second deadline by default, and no size limit unless set.
 Limits cover response streaming and are not mutation retries. Custom networks must implement
 their own bounds and must not automatically retry mutations.
 
@@ -1025,6 +1232,18 @@ also exposes an `OperationError` in `error`. No-data responses still throw. `rea
 `useFragment` return only masked data, not operation errors. The query owner must pass error
 state to fragment components; use `errorsAtPath(query.errors, ["alias", ...])` to select it.
 Pathless errors apply to every path. Do not render missing data as empty or zero.
+
+A response that leaves out a field the operation selects is not a GraphQL error, and the data reads as incomplete (the store's
+`missing`), with the typed field `undefined`. The client says so
+([#66](https://github.com/Dastari/graphql-orm-client/issues/66)): by default it warns, outside production, once per operation and
+path (list indices count as one path), naming the operation, the type, the record's NodeId and the response key.
+`createClient({ missingFields: "error" })` adds an error at that path to the result's `errors` instead, with `extensions.code`
+`RESPONSE_FIELD_MISSING` (`classifyError` kind `unknown`), so `errorsAtPath` finds it; the query is still `ready` with partial data,
+as with a GraphQL error at a path. `missingFields: "off"` says nothing. A null is a value, so a null at a nullable field is never
+reported. Nor is a field under `@skip` or `@include` compiled with `conditionalDirectives: "legacy"` (the compiler marks those
+selections `conditional`; a module generated before this skips the check for documents using them), a `@batch` relation, or a field
+at or below a path an error names. It applies to every operation's response, mutations included, but not to subscription events.
+The warning causes no read: a query showing an incomplete record reads again only when a write to that record leaves it missing, as before.
 
 Previously (and by default), error-associated nulls overwrite good cached fields. Opt into
 `createClient({ network, partialResults: "preserve-errors" })` to omit null writes at error paths
@@ -1160,6 +1379,11 @@ the package default changes. It makes object fragments live without a directive.
 source files, relative to the config directory. It matches the file a fragment is written in, not the files
 that spread it: a page whose rows come from fragments in a shared folder needs that folder in the pattern.
 A pattern that matches no file defining a fragment makes nothing live, so the generator warns and names it.
+The generator also prints one line per pattern, through `onSummary` (default `console.log`), so a trial reports what it changed without a
+diff of the generated module ([#59](https://github.com/Dastari/graphql-orm-client/issues/59)):
+`live.default "src/area/**": 3 files, 11 fragments: 4 newly live, 5 opted out, 1 keyless, 1 without a stream`. Each covered fragment is in one
+outcome: newly live (with a stream), already live (`@live`), opted out, keyless, without a stream (live, and polls), or on an interface or
+union. `compile(...).liveAreas` holds the same report with the fragment names.
 Plain-string `compile(schema, sources)` keeps its explicit behaviour; pass `documentPaths` when
 using area mode programmatically. Unknown files do not match area globs.
 
@@ -1170,6 +1394,11 @@ An implicit live fragment with no usable stream warns, appears in `liveUnavailab
 normal fallback interval (30 seconds unless changed); health reports `no-stream` and polling, or
 unavailable if fallback is disabled. Explicit `@live` on that type follows R5's error policy.
 Only fragments on object types with a key become implicitly live. A keyless value type has no identity and no stream, and its data comes with its parent, so it stays as it is. Abstract fragments need explicit intent.
+A type can have a usable `Changed` stream and still have no key, usually because the project set `keys: { Type: null }`. Its fragments
+can't be live, so under every live setting the compiler reports the type once, naming its unmarked fragments and the cause, at the
+`strict.fragmentNotLive` level; `@live(enabled: false)` on a fragment says it's meant. An explicit `@live` on such a type fails under
+`strict.liveWithoutStream` with that cause, not "no usable Changed stream"
+([#58](https://github.com/Dastari/graphql-orm-client/issues/58)).
 Lists open streams only for types with a live fragment somewhere in the project. Default mode
 widens that set; an opted-out fragment does not disable another live fragment of the same type.
 
@@ -1267,6 +1496,7 @@ const persistence = persistClient(client, {
   identityKey: signedInIdentityKey,
   schemaHash,
   serverRelease: deploymentRevision,
+  maxAgeMs: 7 * 24 * 3600_000, // the default; Infinity restores a snapshot of any age
   onDiagnostic: diagnostic => report(diagnostic),
 })
 await persistence.ready
@@ -1291,8 +1521,18 @@ Windows of one identity share a key, because each has its own store (R19). The l
 
 `clear()` tells the identity's other windows through a `BroadcastChannel`, where one exists. Each stops saving, and a window that can write deletes once more after any write it had under way. They keep their data in memory until the application disposes them. `deleteOnDispose: true` restores the earlier behaviour of deleting on disposal. Use it only with one window per identity.
 
-Envelopes contain format version, package version, schema hash, server release and identity.
-Any mismatch is diagnosed and deleted, with no migration. Generator setting `persistence: true` exports `schemaHash`, a
+Envelopes contain format version, package version, schema hash, server release, identity and `savedAt`, the time of
+the write. Any mismatch is diagnosed and deleted, with no migration. Every release changes the package version, so a
+new release discards what an earlier one saved. Format 2 added `savedAt`; a format 1 envelope, as 0.1.0-alpha.12 and
+earlier wrote, is a mismatch, and so is a format 2 envelope without a numeric `savedAt`.
+
+`maxAgeMs` (7 days by default) is the oldest snapshot restored, counted from its last write. An older one is
+reported as `PERSISTENCE_EXPIRED`, deleted and not restored, and so is one whose `savedAt` is more than a minute later
+than now, which happens only when the device clock moved back. The minute allows for a clock that time
+synchronisation stepped back slightly. A read-only window leaves it in place, as it does a mismatch.
+`maxAgeMs: Infinity` restores a snapshot of any age. Age is checked when a client attaches, not in the background,
+so a snapshot stays on the device until the identity is loaded again or `clear()` runs. A window that reads but
+writes nothing doesn't refresh `savedAt`. `now` replaces `Date.now` for tests. Generator setting `persistence: true` exports `schemaHash`, a
 SHA-256 of printed schema SDL; a consumer can also supply its tracked R23 snapshot hash consistently.
 The application must supply `serverRelease` and change it on every deployment affecting the API.
 Neither SDL nor operation hashes can detect a release with unchanged schema. The client cannot
@@ -1311,7 +1551,18 @@ Writers that put secrets directly into the shared store are responsible for thos
 
 Writes coalesce for `throttleMs` (250 ms by default). `flush()` awaits restore and a pending snapshot;
 call it before navigation when persistence matters. The default `maxBytes` is 1 MiB of UTF-8 JSON,
-applied before parse and before writes. Oversized snapshots delete the previous stored payload.
+applied before parse and before writes.
+
+A flush serialises only the records written since the last flush (the first flush serialises them all). Each record's
+JSON is measured then and kept while the snapshot fits, so a flush joins kept text instead of copying the store; the
+kept text is bounded by `maxBytes`. When a flush finds
+the snapshot over `maxBytes`, it reports `PERSISTENCE_SIZE` once, deletes the saved snapshot once, and drops the kept
+text. Until the store fits again (records are collected or deleted, or fields shrink), flushes measure what was written
+and save nothing; the next load restores nothing. The first flush that fits serialises every record and saves a
+complete snapshot. Nothing partial is saved: a subset would have to include every record that any saved record
+reaches, or a restored connection would point at rows it doesn't hold, and the store keeps no record of use to
+choose a subset by. Raise `maxBytes` for an application whose working set is larger.
+
 Malformed records, envelope mismatches, storage unavailability and quota failures report
 `PERSISTENCE_*` diagnostics and never fail a query. Diagnostic callbacks cannot break persistence.
 The budget bounds accepted payloads, not an adapter's allocation before returning a value.
@@ -1387,14 +1638,26 @@ Reading a relation can queue a request, so a read during render can too. That qu
 
 ## Burst repair reads
 
-Router 0.8.1 at graphql-orm 0.90.1 and 0.93.0 can drop frames silently (#359).
+Router 0.8.1 at graphql-orm 0.90.1 and 0.93.0 can drop frames silently (graphql-orm#359).
 `live.burstRead` is enabled by default: `{ events: 32, settleMs: 500, maxWaitMs: 10000 }`.
 The threshold matches the router's default broadcast capacity: fewer than 32 events cannot
 fill that buffer. Events count while less than 500 ms apart. One manager-wide window waits
 until every participating type is quiet, or 10000 ms passes, then reads the union of record
 and list holders once per query. Sustained streams start a fresh window after each deadline.
 This repairs dropped final frames when enough preceding frames arrive; it cannot detect an
-entirely lost or below-threshold burst. Server continuity signalling is still needed.
+entirely lost or below-threshold burst.
+
+From router 0.9.0 the router signals the loss itself: it ends every open subscription with
+`SUBSCRIPTION_CONTINUITY_LOST`, which the client already treats as `lost` (restart, then read).
+Run on 2026-11-17: a test-owned stream sending 1000 or 5000 frames as fast as it could lost about 70% of them
+silently through router 0.8.1 and ended with that code every time through routers 0.11.0 and 0.15.5. Generated
+`Changed` events from eight writers at about 80 a second, to a Node client holding the row, six runs per router: through
+0.8.1 frames were lost once with no signal and the burst read repaired it; through 0.11.0 and 0.15.5 they were lost three
+times in twelve, each time signalled, and the restart read reached the final row with no burst read. A generated frame
+carries the row as it is when the frame is sent, so any frame sent after the last write carries the final row.
+Against routers from 0.9.0 a drop is reported and recovered without the burst read, which then adds one read per
+query per burst for nothing the router hides. It is still needed for routers before 0.9.0. Whether it stays on by
+default is open; `burstRead: false` turns it off.
 
 Reads use `QueryResource.readAgain`: pending R3 or thin invalidations absorb the burst mark;
 an automatic read already sent after the last burst event absorbs the mark, including
@@ -1417,7 +1680,8 @@ counts for this client: `first` (opened query fetch), `manual` (refetch, execute
 imperative reads), `poll` (interval including fallback), `stale` (event, missing record or
 list invalidation), `confirm` (new coverage), `restart` (ended stream), `reconnect` (socket
 recovery), `burst` (burst repair), and `pagination` (load-more). Loaded keyset refresh pages
-count individually under the initiating cause. A request which fails still counts; one
+count individually under the initiating cause. `retry` counts a watched query's retry of a read that got no
+response, and `online` a read sent because the browser came back online. A request which fails still counts; one
 cancelled before sending, absorbed by an in-flight read, or coalesced in the limiter does
 not. The first pending cause owns a coalesced request; per-type `burstReads` can additionally
 identify its participation in burst repair. Counters never double-count a shared request.

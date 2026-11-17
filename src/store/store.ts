@@ -193,13 +193,14 @@ export class Store {
     this.armExpiry()
   }
 
-  private readonly observers = new Set<() => void>()
+  private readonly observers = new Set<(changed: ReadonlySet<string>) => void>()
   private readonly disposers = new Set<() => void>()
   private readonly restored = new Set<string>()
   private readonly layers = new Set<OptimisticLayer>()
 
-  /** Observe published batches and identity disposal; used by optional persistence. */
-  observeWrites(write: () => void, dispose: () => void): () => void {
+  /** Observe published batches and identity disposal; used by optional persistence. `write` gets the ids the batch
+   * wrote, in a set that is only valid during the call. */
+  observeWrites(write: (changed: ReadonlySet<string>) => void, dispose: () => void): () => void {
     this.assertLive()
     this.observers.add(write); this.disposers.add(dispose)
     return () => { this.observers.delete(write); this.disposers.delete(dispose) }
@@ -208,11 +209,16 @@ export class Store {
   /** Restored records remain stale until a network write reaches them. */
   isRestored(id: string): boolean { return this.restored.has(id) }
 
-  /** Snapshot confirmed data only. Active optimistic layers postpone persistence. */
-  persistenceSnapshot(): readonly { id: string; typename: string; fields: readonly (readonly [string, unknown])[] }[] | null {
+  /** Snapshot confirmed data only: every record, or those of `ids` that exist. Active optimistic layers postpone persistence. */
+  persistenceSnapshot(ids?: Iterable<string>): readonly { id: string; typename: string; fields: readonly (readonly [string, unknown])[] }[] | null {
     if (this.layers.size || this.journal || this.disposed) return null
-    // Relation states are derived, and an error in one isn't data to keep.
-    return [...this.records.values()].filter(r => r.__typename !== "BatchState").map(r => ({ id: r.__id, typename: r.__typename, fields: [...r.fields] }))
+    const snapshot = []
+    for (const id of ids ?? this.records.keys()) {
+      const r = this.records.get(id)
+      // Relation states are derived, and an error in one isn't data to keep.
+      if (r && r.__typename !== "BatchState") snapshot.push({ id, typename: r.__typename, fields: [...r.fields] })
+    }
+    return snapshot
   }
 
   private restoreBlocked: Set<string> | null = null
@@ -357,7 +363,8 @@ export class Store {
       if (this.nextExpiry !== before || (this.expiryTimer === null && this.nextExpiry !== Infinity)) this.armExpiry()
     }
     if (this.changed.size === 0) return
-    for (const observer of this.observers) observer()
+    this.publishCount += 1
+    for (const observer of this.observers) observer(this.changed)
     const changed = new Set(this.changed)
     this.changed.clear()
     const touched = new Set(this.touched)
@@ -373,6 +380,16 @@ export class Store {
     } finally {
       this.publishing.pop()
     }
+  }
+
+  private publishCount = 0
+
+  /**
+   * How many publishes have changed something; disposal counts as one. A snapshot read while this number stayed the same is
+   * still current, so a reader that read during render can subscribe at commit without reading again.
+   */
+  get publishes(): number {
+    return this.publishCount
   }
 
   /** The written ids of each publish under way, outermost first. */
@@ -494,6 +511,8 @@ export class Store {
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
+    // Every record goes, so a snapshot read before this is out of date.
+    this.publishCount += 1
     for (const dispose of this.disposers) dispose()
     this.disposers.clear(); this.observers.clear(); this.restored.clear(); this.layers.clear(); this.restoreBlocked = null
     if (this.expiryTimer !== null) this.clearTimer(this.expiryTimer)

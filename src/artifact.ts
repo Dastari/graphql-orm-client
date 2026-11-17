@@ -15,6 +15,8 @@ export interface ScalarSelection {
   readonly responseKey: string
   readonly fieldName: string
   readonly args: readonly ArgumentSpec[]
+  /** The selection has `@skip` or `@include`, kept under `conditionalDirectives: "legacy"`: the response can leave it out. */
+  readonly conditional?: true
 }
 
 /** A paginated list field marked `@connection`: its pages merge into one stored list. */
@@ -88,6 +90,8 @@ export interface LinkSelection {
   /** Selected node response key on schema-derived connection edges, for deleted-node omission. */
   readonly listNode?: string
   readonly connection?: ConnectionSpec
+  /** The selection has `@skip` or `@include`, kept under `conditionalDirectives: "legacy"`: the response can leave it out. */
+  readonly conditional?: true
 }
 
 export interface InlineFragmentSelection {
@@ -97,6 +101,8 @@ export interface InlineFragmentSelection {
   /** Concrete types the condition matches; null when there is no condition. */
   readonly possibleTypes: readonly string[] | null
   readonly selections: readonly Selection[]
+  /** The selection has `@skip` or `@include`, kept under `conditionalDirectives: "legacy"`: the response can leave it out. */
+  readonly conditional?: true
 }
 
 /** A spread of another fragment. Readers return a masked reference; normalisers inline it. */
@@ -105,6 +111,8 @@ export interface FragmentSpreadSelection {
   readonly name: string
   readonly typeCondition: string
   readonly possibleTypes: readonly string[]
+  /** The selection has `@skip` or `@include`, kept under `conditionalDirectives: "legacy"`: the response can leave it out. */
+  readonly conditional?: true
 }
 
 export type Selection =
@@ -172,10 +180,16 @@ export interface OperationArtifact<TData = unknown, TVariables = Record<string, 
   readonly lists?: readonly string[]
   /** Key fields per concrete type, in primary-key order. */
   readonly keys: Readonly<Record<string, readonly string[]>>
-  /** Record-version field per type, where the type has one. */
   /** Explicit lifetime policy selected by the generator. */
   readonly lifetimes?: Readonly<Record<string, import("./store/lifetime.js").LifetimePolicy>>
+  /** Record-version field per type, where the type has one. */
   readonly versions: Readonly<Record<string, string>>
+  /**
+   * Types whose version is a decimal integer, compared as a big integer: exactly when sent as a string, and up to 2^53
+   * when sent as a number. Versions of other
+   * types are compared as numbers. Absent when no type declares it.
+   */
+  readonly versionCompare?: Readonly<Record<string, "decimal">>
   /** Fragments referenced anywhere in this operation, by name. */
   readonly fragments: Readonly<Record<string, FragmentArtifact>>
   /** The operation's `@paged` list field, when it has one. */

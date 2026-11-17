@@ -13,8 +13,18 @@ export interface PersistenceOptions {
   readonly schemaHash: string
   /** Deployment revision supplied by the application; change on every server release. */
   readonly serverRelease: string
-  /** UTF-8 payload budget, default 1 MiB. */
+  /**
+   * UTF-8 payload budget, default 1 MiB. A store over it saves nothing, and its saved snapshot is deleted once; it is
+   * saved again in full once it fits. While over, a flush serialises only the records written since the last one.
+   */
   readonly maxBytes?: number
+  /**
+   * Oldest snapshot to restore, in milliseconds since it was last written. Default 7 days. An older snapshot, or one
+   * saved more than a minute later than now (the clock moved back), is deleted and not restored. `Infinity` restores a snapshot of any age.
+   */
+  readonly maxAgeMs?: number
+  /** Clock for `savedAt` and `maxAgeMs`, default `Date.now`. */
+  readonly now?: () => number
   /** Coalescing delay, default 250 ms. */
   readonly throttleMs?: number
   /** Restore but never write or delete, for a secondary window such as a pop-out. `clear()` still deletes. */
@@ -56,7 +66,10 @@ export function persistClient(client: Client, options: PersistenceOptions): Pers
   const key = `graphql-orm-client:${JSON.stringify(identityKey)}`
   const budget = options.maxBytes ?? 1048576
   const delay = options.throttleMs ?? 250
+  const maxAge = options.maxAgeMs ?? 7 * 24 * 3600_000
+  const now = options.now ?? Date.now
   if (!Number.isFinite(budget) || budget <= 0 || !Number.isFinite(delay) || delay < 0 || delay > 2147483647) throw new Error("Invalid persistence budget or delay")
+  if (!(maxAge > 0)) throw new Error("Invalid persistence maxAgeMs")
   const report = (code: string, error: unknown) => {
     try { options.onDiagnostic?.({ code, message: error instanceof Error ? error.message : String(error) }) } catch { /* diagnostics must not affect reads */ }
   }
@@ -65,10 +78,20 @@ export function persistClient(client: Client, options: PersistenceOptions): Pers
   let restoring = true
   let dirty = false
   const safeDelete = () => serial(adapter, key, () => adapter.delete(key)).catch(e => report("PERSISTENCE_DELETE", e))
+  // Each saved record's JSON is measured at the first flush after it's written, so a flush costs what changed. The text is kept
+  // only while the snapshot fits, which bounds it by the budget; over budget the sizes alone say when it fits again.
+  const sizes = new Map<string, number>()
+  const texts = new Map<string, string>()
+  const written = new Set<string>()
+  let measured = false // the first flush measures every record, including any written before persistence was attached
+  let recordBytes = 0
+  let over = false
   const stop = () => {
     stopped = true
     if (timer !== null) clearTimeout(timer)
     timer = null
+    // A stopped controller never flushes again, so nothing it holds would be released before disposal.
+    written.clear(); sizes.clear(); texts.clear(); recordBytes = 0
   }
   // Another window's sign-out has to stop this one saving, or its next write would put the data back.
   const channel = () => typeof BroadcastChannel === "function" ? new BroadcastChannel(key) : null
@@ -82,23 +105,50 @@ export function persistClient(client: Client, options: PersistenceOptions): Pers
     if (timer !== null) clearTimeout(timer)
     timer = null
     if (stopped || restoring || !dirty || readOnly) return
-    const records = client.store.persistenceSnapshot()
+    const store = client.store
+    const records = store.persistenceSnapshot(measured ? written : undefined)
     if (!records) return
     dirty = false
     try {
-      const payload = JSON.stringify({ format: 1, packageVersion: PERSISTENCE_PACKAGE_VERSION, identityKey, schemaHash, serverRelease, records })
-      if (new TextEncoder().encode(payload).length > budget) {
-        report("PERSISTENCE_SIZE", "Snapshot exceeds persistence budget")
+      for (const id of written) { recordBytes -= sizes.get(id) ?? 0; sizes.delete(id); texts.delete(id) }
+      written.clear()
+      measured = true
+      for (const record of records) {
+        const text = JSON.stringify(record), bytes = utf8Length(text)
+        sizes.set(record.id, bytes); recordBytes += bytes
+        if (!over) texts.set(record.id, text)
+      }
+      const head = JSON.stringify({ format: 2, packageVersion: PERSISTENCE_PACKAGE_VERSION, identityKey, schemaHash, serverRelease, savedAt: now() }).slice(0, -1) + ',"records":['
+      // The head, each record, a comma between records and the closing "]}".
+      if (utf8Length(head) + recordBytes + Math.max(0, sizes.size - 1) + 2 > budget) {
+        texts.clear()
+        if (over) return
+        over = true
+        report("PERSISTENCE_SIZE", "Snapshot exceeds persistence budget; nothing is saved until it fits")
         await safeDelete(); return
       }
+      if (over) {
+        over = false
+        for (const record of store.persistenceSnapshot(sizes.keys())!) texts.set(record.id, JSON.stringify(record))
+      }
+      const payload = head + [...texts.values()].join(",") + "]}"
       await serial(adapter, key, async () => { if (!stopped) await adapter.set(key, payload) })
-    } catch (error) { report("PERSISTENCE_WRITE", error) }
+    } catch (error) {
+      // What was measured may be incomplete, so the next flush measures everything again.
+      measured = false; sizes.clear(); texts.clear(); recordBytes = 0
+      report("PERSISTENCE_WRITE", error)
+    }
   }
   const schedule = () => {
     dirty = true
     if (!stopped && !restoring && !readOnly && timer === null) timer = setTimeout(() => { timer = null; void flush() }, delay)
   }
-  if (!stopped) client.store.observeWrites(schedule, () => {
+  if (!stopped) client.store.observeWrites(changed => {
+    // A read-only or stopped window never flushes, so it mustn't collect ids for a flush.
+    if (readOnly || stopped) return
+    for (const id of changed) written.add(id)
+    schedule()
+  }, () => {
     stop()
     windows?.close()
     if (deleteOnDispose && !readOnly) void safeDelete()
@@ -108,10 +158,19 @@ export function persistClient(client: Client, options: PersistenceOptions): Pers
     try {
       const payload = await adapter.get(key)
       if (stopped || payload === null) return
-      if (new TextEncoder().encode(payload).length > budget) throw new Error("Persisted payload exceeds budget")
+      if (payload.length > budget || utf8Length(payload) > budget) throw new Error("Persisted payload exceeds budget")
       const envelope = JSON.parse(payload)
-      if (envelope?.format !== 1 || envelope.packageVersion !== PERSISTENCE_PACKAGE_VERSION || envelope.identityKey !== identityKey || envelope.schemaHash !== schemaHash || envelope.serverRelease !== serverRelease) throw new Error("Persistence envelope mismatch")
+      // Format 1, written up to 0.1.0-alpha.12, has no savedAt; it also carries an earlier packageVersion.
+      if (envelope?.format !== 2 || envelope.packageVersion !== PERSISTENCE_PACKAGE_VERSION || envelope.identityKey !== identityKey || envelope.schemaHash !== schemaHash || envelope.serverRelease !== serverRelease) throw new Error("Persistence envelope mismatch")
+      if (typeof envelope.savedAt !== "number" || !Number.isFinite(envelope.savedAt)) throw new Error("Persistence envelope has no savedAt")
       if (!Array.isArray(envelope.records) || !envelope.records.every(validRecord)) throw new Error("Corrupt persisted records")
+      const age = now() - envelope.savedAt
+      // A minute's tolerance for a clock stepped back slightly, as time synchronisation does.
+      if (!(age >= -60_000 && age <= maxAge)) {
+        report("PERSISTENCE_EXPIRED", age < 0 ? "Persisted snapshot was saved more than a minute later than now" : "Persisted snapshot is older than maxAgeMs")
+        if (!readOnly) await safeDelete()
+        return
+      }
       restore(envelope.records)
     } catch (error) {
       report("PERSISTENCE_RESTORE", error)
@@ -156,6 +215,19 @@ export function indexedDBAdapter(name = "graphql-orm-client"): PersistenceAdapte
     })
   }
   return { get: key => run(key, "readonly"), set: async (key, value) => { await run(key, "readwrite", value) }, delete: async key => { await run(key, "readwrite", undefined, true) } }
+}
+
+/** UTF-8 length without encoding. A lone surrogate counts 3 bytes, as TextEncoder writes U+FFFD for it. */
+function utf8Length(text: string): number {
+  let bytes = 0
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i)
+    if (c < 0x80) bytes += 1
+    else if (c < 0x800) bytes += 2
+    else if (c >= 0xd800 && c < 0xdc00 && (text.charCodeAt(i + 1) & 0xfc00) === 0xdc00) { bytes += 4; i++ }
+    else bytes += 3
+  }
+  return bytes
 }
 
 function validValue(value: unknown): boolean {

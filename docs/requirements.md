@@ -33,6 +33,16 @@ in, and the generator warns about one that matches no fragment's file. Accepted 
 and R6 hold; `default` is opt-in, not recommended by default. The owner must decide before changing the package default.
 *Acceptance:* a new fragment with no directive updates from a stream.
 
+A trial of the setting reports itself. *Built:* the generator prints one line per area pattern: the files and fragments it covers,
+and how many are newly live, already live, opted out, keyless, without a stream, or on an interface or union
+([#59](https://github.com/Dastari/graphql-orm-client/issues/59)). *Acceptance:* a pattern over a mixed area prints its counts, and
+`compile(...).liveAreas` names the fragments in each outcome.
+
+A type with a usable stream that has no key (often `keys: { Type: null }`) is never skipped silently. *Built:* one diagnostic per type
+under every live setting, at the `strict.fragmentNotLive` level, naming its fragments and the configured identity; an explicit `@live` on it
+fails naming that cause, not a missing stream ([#58](https://github.com/Dastari/graphql-orm-client/issues/58)). *Acceptance:* the same
+message under `default`, an area pattern and `explicit`; `off`, `error` and `@live(enabled: false)` behave as for other fragments.
+
 **R2. The compiler decides what goes in a stream. Built.** Full projections carry keys,
 version and scalars without arguments; thin projections carry keys only. Relations/composites and
 `NodeId` never enter a new stream. `INVALID_INPUT` switches a type to thin for this client, with
@@ -43,6 +53,12 @@ artifacts preserve legacy selection/refusal behavior. A server marker remains pr
 *Acceptance:* the natural row fragment with a relation and computed field falls back to an accepted
 thin stream and refreshes all fields. Verified 8/8 runs per `ws` setting (16 total), against generated
 graphql-orm 0.90.1 and router 0.8.1, including actual admission refusal and a changed relation link.
+
+A live fragment may select a field that takes an operation variable. The stream, shared by every holder, leaves it out, and each
+holding query re-reads it with its own variables. Under `liveSelection: "as-written"`, which spreads the fragment into the stream, the
+compiler refuses it naming the fragment, field and variable, why, and the fixes
+([#64](https://github.com/Dastari/graphql-orm-client/issues/64)). *Acceptance:* an event updates the other fields at once and the
+variable field after one re-read of each holder with its own variables (mock network and streams).
 
 **R3. Lists stay correct.** *Built:* regenerated list metadata and un-narrowed streams, including
 empty and count-only lists; shared bounded re-reads and loaded-range pagination refresh.
@@ -103,6 +119,13 @@ never shown as healthy.
 *Acceptance:* the refused and unavailable states can be drawn with no consumer bookkeeping.
 *Built in 0.1.0-alpha.8:* `client.liveHealth()`, `subscribeLiveHealth`, `useLiveHealth`, `graphqlWsTransport` and
 `live.onDiagnostic`.
+A socket the server closed for authentication is not an outage: it has a reason of its own with the close code, and
+nothing reconnects it on a timer until the application has new credentials or the identity changes
+([#73](https://github.com/Dastari/graphql-orm-client/issues/73)).
+*Acceptance:* after a 4401 or 4403 close, `liveHealth()` reports the reason for every affected type, no connection attempt
+is made on a timer, held records poll as for any uncovered type, and live delivery comes back when the application
+reconnects. *Built:* reason `unauthenticated`, `client.reconnectLive()`, and `live.unauthenticated: "restart"` for the
+previous behaviour.
 
 **R8. A doctor command.** `graphql-orm-client doctor --url <router>`, with credentials from the
 environment, checks every document against the served schema and opens each live operation briefly.
@@ -111,11 +134,24 @@ run, never a mutation. Admission can't be known at build time, and it is the com
 silently stale data.
 *Acceptance:* it names a refused stream and a document that no longer validates, with a non-zero exit.
 *Built in 0.1.0-alpha.9.* It runs introspection and subscriptions only, with no reads of application data.
+A type whose live fragments poll by design (a declared `@poll(reason)`, or live only through the `live` setting)
+reports `polling` and passes; `missing` is for an undeclared one
+([#57](https://github.com/Dastari/graphql-orm-client/issues/57)). The report holds error codes and fixed descriptions,
+and the server's text only when asked, and a credential isn't sent in clear text to another machine without an
+explicit flag ([#76](https://github.com/Dastari/graphql-orm-client/issues/76)).
+*Acceptance:* under `live: "default"`, a project whose only streamless type is implicitly live passes; an endpoint's
+error message isn't printed by default; a token with a non-loopback `http:` URL is refused in `doctor` and `schema pull`.
 
 **R23. Schema pull with drift detection.** `graphql-orm-client schema pull` writes the snapshot and
 its hash. `generate --check` fails when generated output doesn't match. Consumers currently write
 their own.
 *Built:* sorted SDL snapshots, SHA-256 sidecars, read-only drift checks and opt-in generation integrity checks.
+`generate --watch` regenerates after a document, snapshot or config change and reports errors without exiting, and
+generation ignores a `graphql()` call inside a comment or another string when TypeScript is installed, never
+dropping a call it can't place
+([#81](https://github.com/Dastari/graphql-orm-client/issues/81)).
+*Acceptance:* a watch regenerates after each change and survives an invalid document; a commented-out call isn't
+extracted.
 
 ## 3. What real applications need beyond records
 
@@ -123,7 +159,7 @@ their own.
 
  Mutations have `policy: "no-store"` (0.1.0-alpha.6). What remains: a way to
 declare this in the document so it can't be forgotten at a call site, the same for query results, and
-keeping such values out of persistence (R17) and any inspector.
+keeping such values out of persistence (R17) and any inspector (R31).
 *Acceptance:* an operation declared sensitive leaves its values nowhere in the store, with no call-site
 option, and a test proves it.
 
@@ -135,6 +171,20 @@ after sending, or the server committed and then refused the read-back, so it may
 Writes have their own deadline and response limit, apart from reads. A hook supports an explicit
 retry after step-up authentication, with no queued replay and no credential held.
 *Acceptance:* each outcome is distinguishable in a test, and the unconfirmed path re-reads the record.
+
+Accepted additions, built:
+
+- A write whose result has no `Success` field can be confirmed by evidence the caller names, with partial errors still unconfirmed
+  and no reading of message text ([#60](https://github.com/Dastari/graphql-orm-client/issues/60)). *Acceptance:* a per-call
+  `confirm` confirms a clean response without `Success` and is never asked about one with errors.
+- A caller can name error codes that mean its write didn't happen, applied only when the server says nothing about the outcome,
+  so a refusal doesn't trigger a pointless reconciliation read ([#61](https://github.com/Dastari/graphql-orm-client/issues/61)).
+  *Acceptance:* `refusedCodes` gives `refused` with no re-read when every selected root is null with its own coded error at
+  the root's path; a nested or pathless error, a root without its own error, or an `extensions.outcome` keeps it unconfirmed.
+- A response with no `data` key is refused only when its error codes are known pre-execution failures, because a router can answer
+  an execution failure without `data` ([#62](https://github.com/Dastari/graphql-orm-client/issues/62)). *Acceptance:*
+  `PLAN_EXECUTION_FAILED` without `data` is unconfirmed and re-read, a validation code is refused, and a client setting restores
+  the earlier rule.
 
 **R11. Ephemeral streams.** A first-class stream for data that isn't an entity and doesn't belong in
 the store: progress, AI text deltas, terminal output, search results. It has a resume cursor, sequence
@@ -189,10 +239,19 @@ Persistence is built as an opt-in separate entry point with explicit identity, s
 release envelopes, stale restoration, bounded coalesced writes and diagnostic-only storage failures. Persistence is scoped to identity,
 excludes R9, and is deleted by an explicit `clear()` on sign-out, which also stops the identity's other windows saving it. Disposing a client, as a pop-out window does on close, keeps it. A cursor is never persisted across a server release:
 a stale keyset cursor can be accepted at the wrong place.
+*Built after 0.1.0-alpha.12:* a flush costs what was written since the last one, not the size of the store, and a store
+over its byte budget is measured without being serialised again, saving nothing until it fits
+([#70](https://github.com/Dastari/graphql-orm-client/issues/70)). Acceptance: a flush of an over-budget store doesn't
+serialise it again while it's still over budget, and the documented behaviour over budget matches the code, with a test.
+Saving a subset that fits is not built: it would need every reachable record and a record of use the store doesn't keep.
+A snapshot records when it was saved, and one older than `maxAgeMs` (default 7 days) is deleted and not restored
+([#75](https://github.com/Dastari/graphql-orm-client/issues/75)). Acceptance: such a snapshot isn't restored and is
+deleted from the adapter; an envelope without `savedAt`, from an earlier version, is deleted as a mismatch; tests use an
+injected clock.
 
 **R18. Route loading.** `loadQuery`, or similar, starts a route's query before mount, so a router's
-loader can avoid a waterfall. Suspense is optional. Decide on fragment arguments
-(`@argumentDefinitions`) and support for `@skip`/`@include`. Server rendering stays a non-goal, but
+loader can avoid a waterfall. Suspense is optional (R29). Fragment arguments (R28) and `@skip`/`@include` (R27)
+are recorded separately. Server rendering stays a non-goal, but
 document how the client behaves inside a framework that renders a shell on the server.
 *Built:* `client.loadQuery` and `useLoadedQuery` share a retained read across loader and mount,
 with abort, unused-load timeout and StrictMode replay cleanup. Non-Suspense. Conditional selections
@@ -211,14 +270,108 @@ and the router's codes to an `ErrorKind`, with `unknown` for anything else. Miss
 `Success: false` carries only free text (`Error: "Entity not found"`); requested as
 [graphql-orm#385](https://github.com/Dastari/graphql-orm/issues/385).
 
-**Several lists in one query** ([#83](https://github.com/Dastari/graphql-orm-client/issues/83)). A route query with two paginated
+**R27. Conditional selections. Proposed, not built** ([#100](https://github.com/Dastari/graphql-orm-client/issues/100), from
+[#84](https://github.com/Dastari/graphql-orm-client/issues/84)). `@skip` and `@include` on fields, spreads and inline fragments are evaluated with the
+operation's variables in readers and normalisation, so a skipped field is neither missing nor a cause of a re-read.
+Generated types make conditional selections optional. A live projection never selects a field unconditionally that a
+holder selects conditionally. `conditionalDirectives: "legacy"` goes away afterwards, with migration steps.
+*Acceptance:* a query with `@include(if: $detail)` on a field and `@skip` on a spread reads complete for both values,
+has optional generated types for both, and re-reads on a change of the variable without treating the record as
+missing. No stream selects a field that a holder includes only conditionally.
+
+**R28. Fragment arguments. Proposed, not built** ([#101](https://github.com/Dastari/graphql-orm-client/issues/101), from
+[#84](https://github.com/Dastari/graphql-orm-client/issues/84)). A fragment declares local arguments with types and defaults (`@argumentDefinitions`), and a
+spread passes values (`@arguments`). Each argument set has its own fragment reference identity and reader scope.
+Fields with arguments stay out of streams, as R2 already requires.
+*Acceptance:* one query spreads a fragment twice with different values under two aliases, and each reader gets its own
+values, with exact generated types. A spread missing a required argument fails `generate`, naming the fragment and the
+argument.
+
+**R29. Suspense. Proposed, not built** ([#102](https://github.com/Dastari/graphql-orm-client/issues/102), from [#84](https://github.com/Dastari/graphql-orm-client/issues/84)). A React read of a
+`loadQuery` handle that suspends until it has data and sends errors to an error boundary. The loader still starts the
+request, so suspending adds no waterfall. Disposing the client releases a suspended read and never resolves it into
+another identity's tree. Server rendering stays a non-goal.
+*Acceptance:* a route loaded in its loader and read with the suspending hook shows its fallback, then its data, with one
+request under StrictMode; an error reaches an error boundary; disposing the client while suspended leaves nothing
+retained and nothing rendered under the next identity.
+
+**R30. Per-type freshness. Proposed, not built** ([#103](https://github.com/Dastari/graphql-orm-client/issues/103), from [#85](https://github.com/Dastari/graphql-orm-client/issues/85)). A per-type
+`staleMs`: how long a record counts as fresh after a server write. A `store-or-network` read answers from the store
+only when every record it reaches is complete and fresh. A type with no setting behaves as today, and lifetime fields
+(R17) still decide expiry. Whether a stream's coverage keeps a record fresh is decided while building, since live
+delivery is never the only path to correct data.
+*Acceptance:* with one minute for a type, on the test clock, a `store-or-network` read within a minute of the last write
+sends no request and one after a minute sends one; a type with no setting is unchanged; an event's write restarts the
+age.
+
+**R31. A store inspector. Proposed, not built** ([#104](https://github.com/Dastari/graphql-orm-client/issues/104), from [#85](https://github.com/Dastari/graphql-orm-client/issues/85)). A
+development-only inspector, in its own entry point, shows the records in a client's store, the queries holding each,
+the streams covering it, and why a query re-read. It never receives an R9 (`@sensitive`) result or a `no-store`
+mutation result, from the store or the network layer, and it drops everything when its client is disposed.
+*Acceptance:* in a test it lists a record with its holders and covering stream and records a re-read's cause; nothing
+it was given contains a value from an `@sensitive` query or a `no-store` mutation; it holds nothing after dispose; the
+main bundle is unchanged.
+
+**R32. Both current graphql versions.** An application can use graphql 16 or 17 as the single copy of `graphql`, and
+the generated output, operation hashes and schema snapshot are the same text with either
+([#80](https://github.com/Dastari/graphql-orm-client/issues/80)).
+*Acceptance:* `pnpm check` and `pnpm build` pass with graphql 16 and 17 in CI, the peer range admits both, and anything the
+compiler uses that changed between them is handled.
+*Built:* peer `^16.9.0 || ^17.0.0`, a CI job on 17, and printing of object values and schema defaults that matches graphql 16.
+
+**R33. Generated input types follow input coercion. Built.** A non-null input object field with a default may be left out, so its
+generated type is optional and not nullable (`readonly Limit?: number`), as a defaulted variable already was. Callers no longer repeat
+server defaults ([#65](https://github.com/Dastari/graphql-orm-client/issues/65)). *Acceptance:* nested inputs and lists of inputs
+generate optional, non-nullable fields for `Int! = 0`, `Boolean! = false`, `[String!]! = []` and similar.
+
+**R34. Version ordering can't turn off unseen.** A configured version field the store can't compare fails generation, naming
+the type and field, unless its comparison is declared; decimal integers sent as strings can be declared and are compared exactly
+([#74](https://github.com/Dastari/graphql-orm-client/issues/74)). *Built:* `versions` entries are checked against the schema;
+`{ field, compare: "decimal" | "number" }` declares the comparison. A value that can't be compared leaves last-write-wins.
+*Acceptance:* a non-numeric version field without a declared comparison fails generation with a message naming the type and
+field, and with `compare: "decimal"` an older string-versioned write arriving after a newer one is dropped.
+
+**R35. Data holds what the document selects.** The key, `NodeId` and version fields the compiler adds for identity and ordering
+are sent and stored, but aren't part of what a query or fragment reads unless its document selects them, so a version advancing
+behind a fragment doesn't change the data of the list spreading it
+([#87](https://github.com/Dastari/graphql-orm-client/issues/87)). *Built:* the default; `identityFields: "always"` restores
+reading them everywhere. *Acceptance:* a `Changed` event for a versioned row whose fields are all behind fragments neither
+changes the list query's data nor notifies its subscribers through the store (the list's own R3 re-read, coalesced by
+`live.minRereadMs`, still runs), and a document that selects `Id` or the version reads it.
+
+**R36. A response arrives whole.** A response's data and its errors reach a query's state in one change, so no render shows a
+partial response as complete ([#63](https://github.com/Dastari/graphql-orm-client/issues/63)).
+*Acceptance:* under both `partialResults` modes, a refetch that returns a refused field produces no state with the new data and
+the previous errors. *Built.*
+
+**R37. A left-out field is reported.** A response that omits a selected field (a non-conformant server, a gateway that drops a
+field, a schema changed under the client) is reported, not silently `ready`: a development warning naming the operation, type,
+record and response key, once per operation and path, and an opt-in mode that reports it as an error at that path. No warning for
+a null at a nullable field or a legacy `@skip`/`@include` field, and no read loop
+([#66](https://github.com/Dastari/graphql-orm-client/issues/66)).
+*Acceptance:* a test shows the warning once, its absence for nulls and conditional fields, the strict error at the path, and a
+bounded number of reads. *Built:* `missingFields: "warn" | "error" | "off"`.
+
+**R38. Refetch by variables.** `refetchQueries`, on the client and on `mutate`, selects open queries by their variables as well as
+by operation, with a predicate or a partial object, so a change stream naming a few records reads only the views showing them
+([#67](https://github.com/Dastari/graphql-orm-client/issues/67)).
+*Acceptance:* with two open instances on different variables, only the matching one fetches; existing forms are unchanged. *Built.*
+
+**R39. Reads recover by themselves.** A read has a default deadline, with a setting to change or remove it. Opt-in, a read that
+failed before any response is retried a bounded number of times with back-off and jitter, never a write, and the wait ends with
+disposal or a newer read. Open queries in `error` read again when the browser comes back online
+([#72](https://github.com/Dastari/graphql-orm-client/issues/72)).
+*Acceptance:* a read that never answers ends in `error` at the deadline. With retry on, a read that fails twice and then succeeds
+ends `ready` with no call from the application, and a write is never sent twice. Tests cover disposal during a retry. *Built.*
+
+**R40. Several lists in one query** ([#83](https://github.com/Dastari/graphql-orm-client/issues/83)). A route query with two paginated
 lists loads more of either, addressed by its `@connection` key, with `hasMore` per list, and a refresh keeps every loaded range.
 The single-list API stays as it was.
 *Acceptance:* a query with two `@connection` lists loads more of either independently, and a live refresh keeps both loaded
 ranges; tests cover ordering and reconnect replay for the second list.
 *Built:* `loadMore({ connection })`, `restart({ connection })` and `QueryState.connections`; see [Pagination](design.md#pagination).
 
-**A list whose cursor is refused** ([#55](https://github.com/Dastari/graphql-orm-client/issues/55)). A keyset cursor is bound to
+**R41. A list whose cursor is refused** ([#55](https://github.com/Dastari/graphql-orm-client/issues/55)). A keyset cursor is bound to
 the entity and filter that issued it, so a list left open across a change that moves its sort keys gets its cursor refused, and
 nothing short of discarding the list recovered it. On a refused cursor with no access error, the list starts again from its first
 page under the same stored list, keeping record identities and reading the loaded rows again, once per cursor, and says so as a
@@ -229,7 +382,7 @@ moves between pages is proposed for conformance.
 *Built:* `connections.restartOn` (default `CURSOR_INVALID`), `ConnectionState.restarts`, the `cursor-restarted` diagnostic and
 `restart()`, tested against the mock network.
 
-**Refetching many records at once** ([#82](https://github.com/Dastari/graphql-orm-client/issues/82)). A view that refetches many
+**R42. Refetching many records at once** ([#82](https://github.com/Dastari/graphql-orm-client/issues/82)). A view that refetches many
 `@refetchable` records at once sent one request each. Calls for one fragment in one tick share one `nodes(NodeIds)` request,
 chunked within the router's bound, and each caller still gets its own result.
 *Acceptance:* 100 calls in one tick send one request; a missing id among them removes that record only; a failed request leaves
@@ -252,12 +405,23 @@ from `graphql-orm-v0.90.1` (router 0.8.1), with a version matrix in CI. It asser
 key modes, continuity frames, node lookup, managed version ordering and pagination, and repeats
 Node and browser recovery, on Chromium, Firefox and WebKit. See [the coverage and fixture limits](../conformance/README.md).
 A conformance failure remains a failure; this does not claim the proposed R2/R3 behaviour is built.
+The matrix keeps a current graphql-orm and router in it, and the suite follows router changes that alter what it can read, such as
+introspection turned off by default ([#56](https://github.com/Dastari/graphql-orm-client/issues/56)), and re-checks what the client
+does because of server bugs once they are fixed ([#78](https://github.com/Dastari/graphql-orm-client/issues/78)).
+*Acceptance:* CI runs the current graphql-orm release and its router; the contract's status line and rows say what was read or run
+at which version; burst loss, `complete` after `error`, and `node` for an unknown id each have a recorded result.
+*Built:* CI runs `graphql-orm-v0.90.1`, `v0.94.0`, `v0.126.0` (router 0.11.0) and `v0.170.0` (router 0.15.5); results are in
+[the contract](graphql-orm-contract.md).
 
 **R22. Budgets.** Checked in CI: 10,000 rows in the store, a burst of 100 events a second, the
 compile time of 250 documents against a 45,000-line schema, the bundle size of the main and react
 entry points, and the cost of one socket and store per window with pop-out tool windows open (R19).
 The cost of one event must follow what changed, not the length of the list showing it: the burst also runs at 1,000 and
 10,000 rows with a limit on time per event ([#68](https://github.com/Dastari/graphql-orm-client/issues/68)).
+The same holds for a list of rows a component reads whole: rendering it again with the same rows costs nothing, and a
+change to one row reads that row ([#69](https://github.com/Dastari/graphql-orm-client/issues/69)).
+*Acceptance:* rendering a parent of `useFragmentList` again with the same rows makes no store subscription changes and
+no reads, and a change to one row of N reads one row; a test counts both.
 *Built:* `pnpm budgets` and the separate budgets CI workflow. Thresholds, baselines and margins
 are in `budgets/limits.json`; the method and one-machine window measurement are in
 [the design](design.md#several-windows-r19-and-budgets-r22). A skipped browser measurement is incomplete,

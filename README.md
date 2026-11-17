@@ -12,7 +12,7 @@ keep the data current while it's on screen. If that can't happen, the build fail
 [docs/example.md](docs/example.md) has the whole path in one place: two related graphql-orm entities, their service, and a page
 that lists, adds and closes rows and stays current.
 
-Install a [release archive](https://github.com/Dastari/graphql-orm-client/releases), pinned to one version, with `graphql` and, for live updates, `graphql-ws`.
+Install a [release archive](https://github.com/Dastari/graphql-orm-client/releases), pinned to one version, with `graphql` (16 or 17) and, for live updates, `graphql-ws`.
 
 **1. Point it at your router.** `graphql-orm-client.config.json`:
 
@@ -28,6 +28,7 @@ Install a [release archive](https://github.com/Dastari/graphql-orm-client/releas
 ```sh
 pnpm exec graphql-orm-client schema pull --url https://router.example/graphql --token-env TOKEN
 pnpm exec graphql-orm-client generate          # after any document or schema change
+pnpm exec graphql-orm-client generate --watch  # or keep it running while you work
 pnpm exec graphql-orm-client generate --check  # in CI: fail when it's out of date
 ```
 
@@ -142,6 +143,8 @@ catalogue. This client is built on those guarantees.
 | Progress, AI text deltas, terminal output, search results | `createStream`, `useEphemeralStream` | `/streams`, `/react` |
 | Offline start, and lifetime fields | `persistClient`, generator `lifetimes` | `/persistence` |
 | One record's refresh | `@refetchable`, `useRefetchableFragment` | `/react` |
+| Reading again only the views showing some records | `refetchQueries([{ query, variables }])` | main |
+| Reads that survive a dropped connection | `reads: { retry }` on `createClient`; a default read deadline | main |
 | Testing freshness with no server | `createMockNetwork`, `createMockStreams`, `createTestClock` | `/test` |
 | Coming from Apollo | [the option map](docs/design.md#coming-from-apollo) | |
 

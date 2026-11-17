@@ -1,6 +1,6 @@
-import { buildSchema } from "graphql"
+import { buildSchema, extendSchema, parse } from "graphql"
 import { describe, expect, it, vi } from "vitest"
-import { compile } from "../src/compiler/index.js"
+import { compile, generate } from "../src/compiler/index.js"
 import { createClient, readFragment } from "../src/client.js"
 import { encodeNodeId } from "../src/node-id.js"
 import { createMockNetwork, createMockStreams, createTestClock } from "../src/test/index.js"
@@ -125,4 +125,81 @@ it('keeps 40 default-live types visible at the 32-operation capacity boundary', 
   for (const name of names.slice(32)) expect(client.liveTypeHealth(name)).toMatchObject({ state: 'connecting', reason: 'over-cap', pollMs: 30000 })
   expect(client.liveTypeHealth(names[0]!)).toMatchObject({ state: 'unconfirmed' })
   watch.close(); client.dispose()
+})
+
+describe('keyless types with a stream, and what each area pattern covered', () => {
+  const streamed = buildSchema(`type Query { Foos: [Foo!]! Bars: [Bar!]! }
+    type Subscription { FooChanged(Keys: [String!]): FooChangedEvent! BarChanged(Keys: [String!]): BarChangedEvent! }
+    type FooChangedEvent { Id: String! Action: String! Foo: Foo } type BarChangedEvent { Id: String! Action: String! Bar: Bar }
+    type Foo { Id: String! Name: String! } type Bar { Id: String! Name: String! }
+    input FooKeyInput { Id: String! } input BarKeyInput { Id: String! }`)
+  const plain = 'fragment FooFields on Foo { Id Name }'
+  const other = 'fragment FooName on Foo { Name }'
+  const foos = 'query Foos { Foos { ...FooFields ...FooName } }'
+  const keyless = { keys: { Foo: null } } as const
+  const cause = 'Foo has a Changed stream, but its identity is configured off (keys: { Foo: null }), so it can\'t be live'
+
+  it('reports one diagnostic per type under default, an area pattern and explicit', () => {
+    for (const live of ['default', 'explicit', { default: ['src/**'] }] as const) {
+      const warnings: string[] = []
+      const result = compile(streamed, [plain, other, foos], { ...keyless, live, documentPaths: { [plain]: ['src/foo.ts'], [other]: ['src/foo.ts'], [foos]: ['src/page.ts'] }, onWarning: (w) => warnings.push(w) })
+      expect(result.live).toEqual({})
+      const named = warnings.filter((w) => w.includes('configured off'))
+      expect(named).toEqual([`${cause} and fragments FooFields, FooName won't update on screen. Remove that keys entry or name its key fields, or mark them @live(enabled: false) if that's meant. [strict.fragmentNotLive]`])
+    }
+  })
+
+  it('follows strict.fragmentNotLive, and @live(enabled: false) silences it', () => {
+    const off: string[] = []
+    compile(streamed, [plain], { ...keyless, live: 'default', strict: { fragmentNotLive: 'off' }, onWarning: (w) => off.push(w) })
+    expect(off).toEqual([])
+    expect(() => compile(streamed, [plain], { ...keyless, live: 'default', strict: { fragmentNotLive: 'error' }, onWarning: () => {} })).toThrow(cause)
+    const meant: string[] = []
+    compile(streamed, [plain.replace('Foo {', 'Foo @live(enabled: false) {')], { ...keyless, live: 'default', onWarning: (w) => meant.push(w) })
+    expect(meant).toEqual([])
+    // A keyless type with no stream is a value type: still nothing to say.
+    const value: string[] = []
+    compile(buildSchema('type Query { Spec: Spec } type Spec { Model: String }'), ['fragment SpecRow on Spec { Model }'], { live: 'default', onWarning: (w) => value.push(w) })
+    expect(value).toEqual([])
+  })
+
+  it('names the configured identity, not a missing stream, when the fragment is explicitly @live', () => {
+    const marked = 'fragment FooFields on Foo @live { Id Name }'
+    expect(() => compile(streamed, [marked, 'query Foos { Foos { ...FooFields } }'], { ...keyless, live: 'explicit' }))
+      .toThrow(`Fragment FooFields (<document 1>): ${cause}. Remove that keys entry or name its key fields, use @live(enabled: false), or add @poll(reason: "why polling is needed") [strict.liveWithoutStream]`)
+    expect(() => compile(streamed, [marked], keyless)).not.toThrow(/no usable Changed stream/)
+    // A stream type whose key can't be found says that instead.
+    const noKey = buildSchema('type Query { Foo: Foo } type Subscription { FooChanged: FooEvent! } type FooEvent { Action: String! Foo: Foo } type Foo { Code: String! }')
+    expect(() => compile(noKey, ['fragment F on Foo @live { Code }'])).toThrow('the compiler finds no key fields for it (no Id field and no FooKeyInput), so it can\'t be live. Name them in keys: { Foo: [...] }')
+    // With a declared polling reason it compiles and polls, as any streamless live type does.
+    expect(compile(streamed, [marked.replace('@live', '@live @poll(reason: "keyless")')], keyless).liveUnavailable).toEqual(['Foo'])
+  })
+
+  it('reports what each live.default pattern covered', () => {
+    const sources = {
+      'fragment BarRow on Bar { Name }': 'src/area/bar.ts',
+      'fragment BarMarked on Bar @live { Id }': 'src/area/bar.ts',
+      'fragment BarOff on Bar @live(enabled: false) { Name }': 'src/area/off.ts',
+      'fragment FooRow on Foo { Name }': 'src/area/foo.ts',
+      'fragment NoteRow on Note { Body }': 'src/area/note.ts',
+      'fragment Elsewhere on Bar { Name }': 'src/other/bar.ts',
+    }
+    const withNote = extendSchema(streamed, parse('type Note { Id: ID! Body: String } extend type Query { Note: Note }'))
+    const documentPaths = Object.fromEntries(Object.entries(sources).map(([text, file]) => [text, [file]]))
+    const options = { ...keyless, live: { default: ['src/area/**', 'src/none/**'] }, documentPaths, onWarning: () => {} }
+    expect(compile(withNote, Object.keys(sources), options).liveAreas).toEqual([
+      { pattern: 'src/area/**', files: ['src/area/bar.ts', 'src/area/foo.ts', 'src/area/note.ts', 'src/area/off.ts'], fragments: ['BarMarked', 'BarOff', 'BarRow', 'FooRow', 'NoteRow'], newlyLive: ['BarRow'], alreadyLive: ['BarMarked'], optedOut: ['BarOff'], keyless: ['FooRow'], withoutStream: ['NoteRow'], abstract: [] },
+      { pattern: 'src/none/**', files: [], fragments: [], newlyLive: [], alreadyLive: [], optedOut: [], keyless: [], withoutStream: [], abstract: [] },
+    ])
+    expect(compile(withNote, Object.keys(sources), { ...options, live: 'default' }).liveAreas).toBeUndefined()
+    const lines: string[] = []
+    generate(withNote, Object.keys(sources), { ...options, onSummary: (line) => lines.push(line) })
+    expect(lines).toEqual([
+      'live.default "src/area/**": 4 files, 5 fragments: 1 newly live, 1 already live, 1 opted out, 1 keyless, 1 without a stream',
+      'live.default "src/none/**": 0 files, 0 fragments: 0 newly live',
+    ])
+    const none: string[] = []
+    generate(withNote, Object.keys(sources), { ...options, live: 'default', onSummary: (line) => none.push(line) })
+    expect(none).toEqual([])
+  })
 })

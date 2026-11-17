@@ -1,6 +1,7 @@
 import type { ReadCause } from "./health.js"
+import { RESPONSE_FIELD_MISSING, missingFieldMessage, missingFields } from "./missing.js"
 import { withoutErrorNulls } from "./partial.js"
-import { wasNotSent, writeStatus, type WriteOutcome } from "./outcome.js"
+import { hadNoResponse, markNoResponse, rootKeys, wasNotSent, writeStatus, type WriteOutcome } from "./outcome.js"
 import type { ConnectionSpec, FragmentArtifact, FragmentRefFor, LinkSelection, OperationArtifact, PagedSpec, Selection } from "./artifact.js"
 import { fieldStorageKey, stableStringify, type Variables } from "./store/arguments.js"
 import { contextOf, identify, normalize } from "./store/normalize.js"
@@ -154,12 +155,74 @@ export interface ExecuteOptions {
   isolated?: boolean
   observeResponse?: (response: GraphQLResponse) => void
   beforeSend?: () => void
+  /**
+   * Internal: called as soon as the response is in the store, before `execute` resolves, with the errors it will resolve with. A
+   * watched query sets its data and errors here in one state change.
+   */
+  afterPublish?: (snapshot: Snapshot<any>, errors: readonly GraphQLErrorLike[]) => void
+  /**
+   * @internal Also read these selections from the operation's root, at the same moment as the snapshot, so nothing written
+   * after the response (another read of the same query, a live event) comes between the two. Returned as `alsoRead`.
+   */
+  alsoRead?: readonly Selection[]
+}
+
+/** Options for `Client.mutate` and `Client.mutateOutcome`, and React `useMutation`'s `commit` and `commitOutcome`. */
+export interface MutateOptions<T = unknown> {
+  /**
+   * The response you expect, shaped like the mutation's result (with __typename and keys).
+   * It shows at once and is rolled back when the real response or an error arrives. Fields
+   * changed since (by a live event, say) are not rolled back.
+   */
+  optimisticResponse?: Record<string, unknown>
+  /** Cancels the request; the optimistic layer is rolled back. */
+  signal?: AbortSignal
+  /**
+   * Open queries to read again once the mutation succeeds: artifacts, operation names or
+   * `{ query, variables }` entries, as for `client.refetchQueries`. The mutation resolves after
+   * they have been read.
+   */
+  refetchQueries?: readonly RefetchQuery[]
+  /** `store` (default) or `no-store`: return the response without writing any of it into the store. */
+  policy?: MutationPolicy
+  /** Observe certainty without changing this method's returned/thrown behaviour. */
+  onOutcome?: (outcome: WriteOutcome) => void
+  /** Explicit read for known affected records after an unconfirmed write; never a write replay. */
+  reconcile?: () => Promise<unknown>
+  /**
+   * What confirms this write when its result has no `Success` field, in place of the rule that every selected root has
+   * `Success: true`. Called only for a response with data and no errors; a response with any error stays unconfirmed.
+   * It receives the response's data as the server sent it, before the store reads it, so fields of spread fragments are
+   * there although `T` doesn't name them. Return `true` only for evidence your schema gives, such as a non-null root of a
+   * result with no `Success` or `Error` field (one with them is non-null when the write failed too); `false` or a throw
+   * leaves the write `unconfirmed`. Affects only the outcome, never what `mutate` returns or throws.
+   */
+  confirm?: (data: T) => boolean
+  /**
+   * Error codes this server sends only for a write that didn't happen, such as `NOT_FOUND` or `CONFLICT` from a command
+   * that sets no `extensions.outcome`. With data (or `data: null`), the write is `refused`, and `reconcile` isn't called,
+   * only when no error has an `extensions.outcome`, every error has one of these codes and a path of exactly one root
+   * field, and every root field the operation selects is null with its own such error. Anything else stays `unconfirmed`:
+   * null propagation can erase a root that committed before a nested field failed, and roots run in order, so an earlier
+   * root may have committed before a later one was refused. On a response with no `data` key the codes add to the known
+   * pre-execution codes.
+   */
+  refusedCodes?: readonly string[]
 }
 
 export interface ClientOptions {
   readonly network: Network
   /** Opt-in: error-associated nulls do not erase previous good fields. Default is legacy overwrite. */
   readonly partialResults?: "legacy" | "preserve-errors"
+  /**
+   * How `mutateOutcome` and `commitOutcome` classify a write response with no `data` key. `by-code` (default): `refused`
+   * only when every error's `extensions.code` is a known pre-execution failure (parse, validation, variables, authentication,
+   * authorization, persisted document, request limits) or one of the call's `refusedCodes`; otherwise `unconfirmed`, because a
+   * router can answer an execution failure that followed a commit without `data`. A body with no `data` and no errors (`{}`)
+   * is `unconfirmed` too. `refused`: every such response, `{}` included, is
+   * `refused`, as 0.1.0-alpha.12 and earlier did. Neither changes what `mutate` or `commit` return or throw.
+   */
+  readonly writeWithoutData?: "by-code" | "refused"
   readonly store?: StoreOptions
   /** Keep records read through `@live` fragments current with generated Changed subscriptions. */
   readonly live?: LiveOptions
@@ -172,6 +235,17 @@ export interface ClientOptions {
    * `false` sends one `node(NodeId)` request per call, as earlier versions did.
    */
   readonly refetchBatch?: false | { readonly maxNodes?: number }
+  /**
+   * What to do when a response leaves out a field the operation selects (a non-conformant server, a gateway that drops a field, a
+   * schema that changed under the client). The data is incomplete either way. `warn` logs once per operation and path, naming the
+   * operation, type, record and response key. `error` adds an error at that path to the result's `errors`, with
+   * `extensions.code` `RESPONSE_FIELD_MISSING`, as a GraphQL error there would be. `off` says nothing. Left unset, it warns unless
+   * `process.env.NODE_ENV` is `production`. A null is a value, so a null at a nullable field is never reported, nor is a field under
+   * a legacy `@skip` or `@include`, or one at or below a path an error names.
+   */
+  readonly missingFields?: "warn" | "error" | "off"
+  /** How watched queries read. */
+  readonly reads?: ReadOptions
 }
 
 /** How `@connection` lists recover. */
@@ -188,6 +262,38 @@ export interface ConnectionClientOptions {
    * instead. `[]` turns it off: the refusal is the query's `error`, as before.
    */
   readonly restartOn?: readonly ("CURSOR_INVALID" | "INVALID_INPUT")[]
+}
+
+/** How watched queries (`watchQuery`, `useQuery`, `loadQuery`, `usePagedQuery`) read. */
+export interface ReadOptions {
+  /**
+   * Opt-in: send a watched query's read again when it failed before any response arrived (a failed connection or a passed deadline,
+   * as `createHttpNetwork` marks them, or `markNoResponse` in a custom network). `true` uses the defaults. A read that got a response,
+   * GraphQL errors or an HTTP error included, isn't retried, and a write never is. Closing the query, disposing the client or a newer
+   * read of the query (a `refetch`, say) ends the wait. The query keeps its status (`loading` or `refreshing`) while it waits.
+   * Waits use `live.setTimeout`, else `store.setTimeout`, else the global timer.
+   */
+  readonly retry?: boolean | ReadRetryOptions
+  /**
+   * Read open queries in `error` again when the browser says it's back online (the window's `online` event), and send a waiting
+   * retry at once. Default true; `false` restores the earlier behaviour of waiting for a refetch.
+   */
+  readonly refetchOnOnline?: boolean
+}
+
+/** Bounded back-off for `reads.retry`. */
+export interface ReadRetryOptions {
+  /** Attempts after the first. Default 3. */
+  readonly retries?: number
+  /**
+   * The wait before the first retry. Each later wait doubles, up to `maxMs`, and each is jittered to between half and all of
+   * that. Default 1000.
+   */
+  readonly baseMs?: number
+  /** Default 30000. */
+  readonly maxMs?: number
+  /** A number from 0 to 1 for the jitter. Default `Math.random`; pass one for repeatable tests. */
+  readonly random?: () => number
 }
 
 export interface PollingOptions {
@@ -216,6 +322,21 @@ export interface WatchOptions {
   /** Refetch on this interval while the query is open. */
   readonly pollMs?: number
 }
+
+/**
+ * Which open queries `refetchQueries` reads again: every open instance of an operation (its artifact
+ * or name), or `{ query, variables }` for the instances whose variables match. `variables` is a
+ * predicate given each instance's variables, or an object whose every field must equal the
+ * instance's variable of that name (compared as values, so `{ Id: "a" }` matches
+ * `{ Id: "a", Page: { limit: 20 } }`). Without `variables` it selects every instance.
+ */
+export type RefetchQuery<V extends Variables = any> =
+  | OperationArtifact<any, any>
+  | string
+  | {
+      readonly query: OperationArtifact<any, V> | string
+      readonly variables?: ((variables: V) => boolean) | Partial<V>
+    }
 
 /** A shared, retained view of one query and its variables. */
 export interface WatchedQuery<T> {
@@ -598,7 +719,7 @@ class QueryResource<T> implements WatchedQuery<T> {
         },
         (error: unknown) => {
           this.loadingKey = null
-          this.set({ ...this.state, loadingMore: false, error: error instanceof Error ? error : new Error(String(error)) })
+          this.set({ ...this.state, loadingMore: false, error: asError(error) })
         }
       )
       .finally(() => {
@@ -734,15 +855,42 @@ class QueryResource<T> implements WatchedQuery<T> {
 
   /** Read the query again; `restart` also starts that `@connection` again from its first page. */
   fetch(cause: ReadCause = "manual", beforeSend?: () => void, restart?: string): Promise<void> {
+    // A newer read replaces a retry that is waiting: it is sent now, with its own attempts.
+    if (this.retryWait) {
+      this.retryWait(cause)
+      return this.inflight!
+    }
     if (this.inflight) return this.inflight
     if (this.loadingMore) return this.loadingMore.then(() => (this.users > 0 ? this.fetch(cause, beforeSend, restart) : undefined))
     if (this.state.data !== undefined) this.set({ ...this.state, status: "refreshing" })
     const controller = new AbortController()
     this.controller = controller
-    this.inflight = this.client
-      .execute<T>(this.artifact, this.variables, { readCause: cause, beforeSend, signal: controller.signal, ...this.refreshOptions(restart) })
-      .then(({ snapshot, errors }) => {
-        if (controller.signal.aborted) return
+    this.inflight = this.read(controller, cause, beforeSend, restart).finally(() => {
+      if (this.controller !== controller) return
+      this.controller = null
+      this.inflight = null
+    })
+    return this.inflight
+  }
+
+  /** Our own response is being written: the store watch leaves the state to `afterPublish`, which sets data and errors together. */
+  private writing = false
+  private retryWait: ((cause: ReadCause) => void) | null = null
+
+  private async read(controller: AbortController, cause: ReadCause, beforeSend?: () => void, restart?: string): Promise<void> {
+    // Once per read, however many attempts it takes: burst repair counts reads, not requests.
+    let sent = false
+    const once = beforeSend && (() => {
+      if (sent) return
+      sent = true
+      beforeSend()
+    })
+    for (let attempt = 0; ; attempt++) {
+      let applied = false
+      const apply = (snapshot: Snapshot<T>, errors: readonly GraphQLErrorLike[]) => {
+        this.writing = false
+        if (controller.signal.aborted || this.client.store.isDisposed) return
+        applied = true
         this.lastReadAt = this.client.now()
         this.watch(snapshot)
         this.set({
@@ -755,17 +903,63 @@ class QueryResource<T> implements WatchedQuery<T> {
           errors,
           hasMore: this.connection()?.hasMore ?? false,
         })
-      })
-      .catch((error: unknown) => {
+      }
+      try {
+        const { snapshot, errors } = await this.client.execute<T>(this.artifact, this.variables, {
+          readCause: attempt > 0 ? "retry" : cause,
+          beforeSend: once,
+          signal: controller.signal,
+          beforeWrite: () => { this.writing = true },
+          afterPublish: apply,
+          ...this.refreshOptions(restart),
+        })
+        if (!applied) apply(snapshot, errors)
+        return
+      } catch (error) {
+        this.writing = false
         if (controller.signal.aborted) return
-        this.set({ ...this.state, status: "error", error: error instanceof Error ? error : new Error(String(error)) })
-      })
-      .finally(() => {
-        if (this.controller !== controller) return
-        this.controller = null
-        this.inflight = null
-      })
-    return this.inflight
+        // Only a query is read again: `watchQuery` also takes a mutation's artifact, and a write is never sent twice.
+        const delay = this.artifact.kind === "query" && this.users > 0 && !this.client.store.isDisposed && hadNoResponse(error) ? this.client.retryDelay(attempt) : null
+        if (delay === null) {
+          this.set({ ...this.state, status: "error", error: asError(error) })
+          return
+        }
+        const woken = await this.waitRetry(delay, controller.signal)
+        if (controller.signal.aborted || this.client.store.isDisposed) return
+        if (woken) {
+          // The newer read starts its own count, under its own cause.
+          attempt = -1
+          cause = woken
+        }
+      }
+    }
+  }
+
+  /** Wait `ms` before a retry. Resolves early with a newer read's cause, or with null when the time is up or the read is cancelled. */
+  private waitRetry(ms: number, signal: AbortSignal): Promise<ReadCause | null> {
+    return new Promise((resolve) => {
+      const wake = (cause: ReadCause | null) => {
+        if (this.retryWait !== wake) return
+        this.retryWait = null
+        cancel()
+        signal.removeEventListener("abort", aborted)
+        resolve(cause)
+      }
+      const aborted = () => wake(null)
+      this.retryWait = wake
+      const cancel = this.client.afterRetry(aborted, ms)
+      signal.addEventListener("abort", aborted, { once: true })
+    })
+  }
+
+  /** Whether a read failed and nothing is retrying it, or a retry is waiting: what the browser's `online` event reads again. */
+  get awaitingNetwork(): boolean {
+    return this.artifact.kind === "query" && this.users > 0 && (this.retryWait !== null || (this.state.status === "error" && !this.inflight))
+  }
+
+  /** End a waiting retry, with no state change; the client is being disposed. A request in flight is cancelled by the client. */
+  stop(): void {
+    if (this.retryWait) this.controller?.abort()
   }
 
   private rereadCause: ReadCause = "stale"
@@ -831,6 +1025,8 @@ class QueryResource<T> implements WatchedQuery<T> {
     this.unsubscribeStore?.()
     this.holdLive()
     this.unsubscribeStore = this.client.store.subscribe(snapshot, (next, { structural }) => {
+      // This query's own response: `afterPublish` sets its data with its errors, in one change, once the write is done.
+      if (this.writing) return
       this.set({ ...this.state, data: next.data as T, stale: next.stale, lifetime: next.lifetime, hasMore: this.connection()?.hasMore ?? false })
       // Which records the query reaches through `@live` fragments changes only with a link, a new record or a removed one among the
       // records it reaches. A changed scalar leaves what it holds as it was, and reading the whole query again for each one costs as
@@ -1051,7 +1247,7 @@ export class Client {
   private readonly subscriptions = new Set<() => void>()
   private readonly subscribeTransport: LiveOptions["subscribe"] | null
   private mutationCount = 0
-  private readCounts: Readonly<Record<ReadCause, number>> = { first: 0, manual: 0, poll: 0, stale: 0, confirm: 0, restart: 0, reconnect: 0, burst: 0, pagination: 0, relation: 0 }
+  private readCounts: Readonly<Record<ReadCause, number>> = { first: 0, manual: 0, poll: 0, stale: 0, confirm: 0, restart: 0, reconnect: 0, burst: 0, pagination: 0, relation: 0, retry: 0, online: 0 }
 
   private countRead(cause: ReadCause): void {
     if (this.live) this.readCounts = { ...this.readCounts, [cause]: this.readCounts[cause] + 1 }
@@ -1063,8 +1259,11 @@ export class Client {
   /** How error-associated null writes affect previously cached values. */
   readonly partialResults: "legacy" | "preserve-errors"
 
+  private readonly writeWithoutData: "by-code" | "refused"
+
   constructor(options: ClientOptions) {
     this.partialResults = options.partialResults ?? "legacy"
+    this.writeWithoutData = options.writeWithoutData === "refused" ? "refused" : "by-code"
     this.network = options.network
     this.polling = options.polling ?? {}
     this.subscribeTransport = options.live?.subscribe ?? null
@@ -1099,6 +1298,22 @@ export class Client {
     this.onDiagnostic = fallback
     this.restartOn = new Set(options.connections?.restartOn ?? ["CURSOR_INVALID"])
     this.maxNodes = options.refetchBatch === false ? 1 : Math.max(1, Math.floor(options.refetchBatch?.maxNodes ?? 100))
+    this.missingFields = options.missingFields ?? (isProduction() ? "off" : "warn")
+    const retry = options.reads?.retry
+    this.retry = retry ? { retries: 3, baseMs: 1000, maxMs: 30_000, random: Math.random, ...(retry === true ? {} : retry) } : null
+    this.retryTimers = options.live?.setTimeout ? options.live : options.store?.setTimeout ? options.store : null
+    if (options.reads?.refetchOnOnline !== false && typeof window !== "undefined" && typeof window.addEventListener === "function") {
+      const online = () => {
+        if (this.store.isDisposed) return
+        for (const resource of [...this.resources.values()]) {
+          if (!resource.awaitingNetwork) continue
+          this.store.refreshRelations?.(selectorOf(resource.artifact, resource.variables))
+          void resource.fetch("online")
+        }
+      }
+      window.addEventListener("online", online)
+      this.subscriptions.add(() => window.removeEventListener("online", online))
+    }
   }
 
   private readonly restartOn: ReadonlySet<string>
@@ -1130,6 +1345,32 @@ export class Client {
       code,
       message: `graphql-orm-client: ${artifact.name}'s @connection "${key}" started again from its first page: the server refused its cursor (${code}). Its loaded rows were read again.`,
     })
+  }
+
+  /** What a response that leaves out a selected field does. */
+  private readonly missingFields: "warn" | "error" | "off"
+  /** Operation and path of each left-out field already warned about. */
+  private readonly warnedMissing = new Set<string>()
+  private readonly retry: Required<ReadRetryOptions> | null
+  private readonly retryTimers: { setTimeout?: (callback: () => void, ms: number) => unknown; clearTimeout?: (handle: unknown) => void } | null
+
+  /** How long a watched query waits before retry `attempt` (from 0) of a read that got no response, or null for no retry. */
+  retryDelay(attempt: number): number | null {
+    const retry = this.retry
+    if (!retry || attempt >= retry.retries) return null
+    const cap = Math.min(retry.maxMs, retry.baseMs * 2 ** attempt)
+    return cap / 2 + (cap / 2) * Math.min(1, Math.max(0, retry.random()))
+  }
+  /** Schedule a retry on the live or store timer seam, else the global timer; returns its cancel. */
+  afterRetry(callback: () => void, ms: number): () => void {
+    const timers = this.retryTimers
+    if (timers?.setTimeout) {
+      const handle = timers.setTimeout(callback, ms)
+      return () => (timers.clearTimeout ?? clearTimeout)(handle as ReturnType<typeof setTimeout>)
+    }
+    const timer = setTimeout(callback, ms)
+    timer.unref?.()
+    return () => clearTimeout(timer)
   }
 
   /** Interval for automatic stale and confirming reads. */
@@ -1239,22 +1480,45 @@ export class Client {
     }
   }
 
+  /**
+   * Start live delivery again after the server closed the socket for authentication (`liveHealth()` reason
+   * `unauthenticated`). Call it once the transport has new credentials in place, for graphql-ws once `connectionParams`
+   * returns them: the held types subscribe again, and the queries holding them read, since nothing was delivered
+   * meanwhile. If the credentials still aren't accepted, it stops again with no retry on a timer. Does nothing when live
+   * delivery hasn't stopped for authentication, or without a live layer.
+   */
+  reconnectLive(): void {
+    this.live?.reconnect()
+  }
+
   /** Refetch every open query; call after a subscription reconnect may have missed events. */
   async refetchActive(): Promise<void> {
     await this.refetchQueries("active")
   }
 
   /**
-   * Refetch the open queries of these operations (by artifact or operation name), or every open
-   * query for `"active"`. Resolves when they have been read again; failures go to each query's
-   * state, not here. Queries nobody has open are not fetched.
+   * Refetch the open queries of these operations, or every open query for `"active"`. An entry is an
+   * artifact or an operation name, which selects every open instance of it, or
+   * `{ query, variables }`, which selects only the instances whose variables match: a predicate, or
+   * an object whose every field equals the instance's variable of that name. Resolves when they
+   * have been read again; failures go to each query's state, not here. Queries nobody has open are
+   * not fetched.
    */
-  async refetchQueries(include: "active" | readonly (OperationArtifact<any, any> | string)[]): Promise<void> {
-    const matches = (artifact: OperationArtifact<any, any>) =>
+  async refetchQueries(include: "active" | readonly RefetchQuery[]): Promise<void> {
+    const same = (artifact: OperationArtifact<any, any>, query: OperationArtifact<any, any> | string) =>
+      typeof query === "string" ? artifact.name === query : artifact === query || artifact.hash === query.hash
+    const matches = (resource: QueryResource<unknown>) =>
       include === "active" ||
-      include.some((entry) => (typeof entry === "string" ? artifact.name === entry : artifact === entry || artifact.hash === entry.hash))
+      include.some((entry) => {
+        if (typeof entry === "string" || !("query" in entry)) return same(resource.artifact, entry)
+        if (!same(resource.artifact, entry.query)) return false
+        const { variables } = entry
+        if (variables === undefined) return true
+        if (typeof variables === "function") return variables(resource.variables) === true
+        return Object.entries(variables).every(([name, value]) => stableStringify(resource.variables[name]) === stableStringify(value))
+      })
     await Promise.all(
-      [...this.resources.values()].filter((resource) => resource.users > 0 && matches(resource.artifact)).map((resource) => resource.refetch())
+      [...this.resources.values()].filter((resource) => resource.users > 0 && matches(resource)).map((resource) => resource.refetch())
     )
   }
 
@@ -1419,6 +1683,21 @@ export class Client {
     return truncated ? length : Infinity
   }
 
+  /** Report fields the response leaves out, per `missingFields`; returns the errors to resolve with. */
+  private checkFields(artifact: OperationArtifact<any, any>, data: Record<string, unknown>, errors: readonly GraphQLErrorLike[]): readonly GraphQLErrorLike[] {
+    const missing = missingFields(artifact, data, errors)
+    if (!missing.length) return errors
+    if (this.missingFields === "error")
+      return [...errors, ...missing.map((field) => ({ message: missingFieldMessage(artifact.name, field), path: field.path, extensions: { code: RESPONSE_FIELD_MISSING } }))]
+    for (const field of missing) {
+      const key = `${artifact.name}\u0000${field.path.map((part) => (typeof part === "number" ? "[]" : part)).join(".")}`
+      if (this.warnedMissing.has(key)) continue
+      this.warnedMissing.add(key)
+      console.warn(missingFieldMessage(artifact.name, field))
+    }
+    return errors
+  }
+
   /** Send an operation and write its response into the store. */
   async execute<T = unknown, V extends Variables = Variables>(
     artifact: OperationArtifact<T, V>,
@@ -1434,7 +1713,7 @@ export class Client {
     artifact: OperationArtifact<T, V>,
     variables: V,
     options: ExecuteOptions = {}
-  ): Promise<{ snapshot: Snapshot<T>; errors: readonly GraphQLErrorLike[]; response: Record<string, unknown> }> {
+  ): Promise<{ snapshot: Snapshot<T>; errors: readonly GraphQLErrorLike[]; response: Record<string, unknown>; alsoRead?: unknown }> {
     if (this.store.isDisposed) throw new Error("This client was disposed with its identity")
     if (options.isolated && artifact.kind !== "mutation")
       throw new Error(`${artifact.name} is not a mutation; only mutations can skip the store`)
@@ -1483,9 +1762,10 @@ export class Client {
       }
       const { response, tails } = sent
       const connectionTails = Object.keys(tails).length ? tails : undefined
-      const errors = response.errors ?? []
+      let errors = response.errors ?? []
       options.beforeWrite?.()
       if (!response.data) throw new OperationError(artifact.name, errors)
+      if (this.missingFields !== "off") errors = this.checkFields(artifact, response.data, errors)
       if (artifact.sensitive) return {
         snapshot: { data: response.data as T, missing: false, seen: new Set(), selector: selectorOf(artifact, variables) },
         errors,
@@ -1496,8 +1776,10 @@ export class Client {
       normalize(target, artifact.normalization, this.partialResults === "preserve-errors" ? withoutErrorNulls(response.data, errors) : response.data, { ...contextOf(artifact, variables), ...(connectionTails ? { connectionTails } : {}) }, rootId, artifact.rootType)
       target.publish()
       const snapshot = target.lookup<T>(selectorOf(artifact, variables, rootId))
+      const alsoRead = options.alsoRead ? target.lookup({ ...snapshot.selector, selections: options.alsoRead }).data : undefined
       if (rootId !== ROOT_ID) target.delete(rootId)
-      return { snapshot, errors, response: response.data }
+      options.afterPublish?.(snapshot, errors)
+      return { snapshot, errors, response: response.data, ...(options.alsoRead ? { alsoRead } : {}) }
     } finally {
       options.signal?.removeEventListener("abort", abort)
       this.controllers.delete(controller)
@@ -1681,27 +1963,7 @@ export class Client {
   async mutate<T = unknown, V extends Variables = Variables>(
     artifact: OperationArtifact<T, V>,
     variables: V,
-    options: {
-      /**
-       * The response you expect, shaped like the mutation's result (with __typename and keys).
-       * It shows at once and is rolled back when the real response or an error arrives. Fields
-       * changed since (by a live event, say) are not rolled back.
-       */
-      optimisticResponse?: Record<string, unknown>
-      /** Cancels the request; the optimistic layer is rolled back. */
-      signal?: AbortSignal
-      /**
-       * Open queries to read again once the mutation succeeds (by artifact or operation name), as
-       * for `client.refetchQueries`. The mutation resolves after they have been read.
-       */
-      refetchQueries?: readonly (OperationArtifact<any, any> | string)[]
-      /** `store` (default) or `no-store`: return the response without writing any of it into the store. */
-      policy?: MutationPolicy
-      /** Observe certainty without changing this method's returned/thrown behaviour. */
-      onOutcome?: (outcome: WriteOutcome) => void
-      /** Explicit read for known affected records after an unconfirmed write; never a write replay. */
-      reconcile?: () => Promise<unknown>
-    } = {}
+    options: MutateOptions<T> = {}
   ): Promise<{ data: T; errors: readonly GraphQLErrorLike[] }> {
     if (artifact.kind !== "mutation") throw new Error(`${artifact.name} is not a mutation`)
     // A misspelt policy must not quietly store a secret.
@@ -1740,8 +2002,12 @@ export class Client {
       throw error
     } finally {
       rollback()
-      const status = response ? writeStatus(response)
-        : wasNotSent(failure) || !sent ? "failed" : "unconfirmed"
+      const status = response ? writeStatus(response, {
+        withoutData: this.writeWithoutData,
+        refusedCodes: options.refusedCodes,
+        roots: options.refusedCodes && rootKeys(artifact.normalization),
+        confirm: options.confirm as ((data: Record<string, unknown>) => boolean) | undefined,
+      }) : wasNotSent(failure) || !sent ? "failed" : "unconfirmed"
       let reconciliation: WriteOutcome["reconciliation"] = status === "unconfirmed" ? "unavailable" : "not-needed"
       if (status === "unconfirmed" && options.reconcile && !this.store.isDisposed) {
         try { await options.reconcile(); reconciliation = "reread" }
@@ -1759,7 +2025,7 @@ export class Client {
    */
   async mutateOutcome<T, V extends Variables>(
     artifact: OperationArtifact<T, V>, variables: V,
-    options: NonNullable<Parameters<Client["mutate"]>[2]> = {}
+    options: MutateOptions<T> = {}
   ): Promise<{ data?: T; errors: readonly GraphQLErrorLike[]; error?: unknown; outcome: WriteOutcome }> {
     let outcome: WriteOutcome = { status: "failed", reconciliation: "not-needed" }
     try {
@@ -1895,7 +2161,10 @@ export class Client {
     for (const queue of this.refetchQueues.values()) for (const call of queue.calls) settle(call, { error: cancelled() })
     this.refetchQueues.clear()
     for (const stop of [...this.subscriptions]) stop()
-    for (const resource of this.resources.values()) resource.cancelRereads()
+    for (const resource of this.resources.values()) {
+      resource.cancelRereads()
+      resource.stop()
+    }
     this.live?.dispose()
     for (const controller of this.controllers) controller.abort()
     this.controllers.clear()
@@ -1981,6 +2250,16 @@ export function readFragment(fragment: FragmentArtifact<any, any>, ref: unknown,
 }
 
 const defaultActive = () => typeof document === "undefined" || document.visibilityState !== "hidden"
+
+/** A failure as an `Error`. One that isn't (a `DOMException` from another realm, say) is wrapped, keeping its name and whether a response arrived. */
+function asError(error: unknown): Error {
+  if (error instanceof Error) return error
+  const message = (error as { message?: unknown } | null)?.message
+  const wrapped = new Error(typeof message === "string" ? message : String(error))
+  const name = (error as { name?: unknown } | null)?.name
+  if (typeof name === "string") wrapped.name = name
+  return hadNoResponse(error) ? markNoResponse(wrapped) : wrapped
+}
 
 /** Follow stored links from a record to each `@connection` field the selections read, in order. */
 function findConnections(
