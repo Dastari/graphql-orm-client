@@ -768,8 +768,8 @@ those runs; each timing in each run is itself the median of five samples.
 | One event, 1,000-row list (ms) | 0.151 | 1.2 |
 | One event, 10,000-row list (ms) | 1.255 | 8 |
 | 45,000-line schema + 250 documents (ms) | 694 | 5,000 |
-| Main standalone raw bundle (bytes) | 67,147 | 68,000 |
-| Main standalone gzip bundle (bytes) | 21,521 | 22,000 |
+| Main standalone raw bundle (bytes) | 69,017 | 69,500 |
+| Main standalone gzip bundle (bytes) | 22,289 | 22,500 |
 | React standalone raw bundle (bytes) | 6,969 | 10,000 |
 | React standalone gzip bundle (bytes) | 2,836 | 4,000 |
 
@@ -801,7 +801,9 @@ and one socket per additional window**. This supports keeping the R19 decision f
 The burst, per-event and main bundle rows were measured again on 2026-11-13, on the same machine without the window run,
 after incremental reads ([#68](https://github.com/Dastari/graphql-orm-client/issues/68)). Before that change one event cost
 0.25 ms at 100 rows, 1.6 ms at 1,000 and 25 ms at 10,000, because each event read the whole list twice. The main bundle limit
-rose from 65,000 to 68,000 bytes (gzip 21,000 to 22,000) for it.
+rose from 65,000 to 68,000 bytes (gzip 21,000 to 22,000) for it. The main bundle was measured again on 2026-11-17 after the
+pre-execution error codes for write outcomes ([#62](https://github.com/Dastari/graphql-orm-client/issues/62)): about 1.4 KB,
+most of it the validation rule names the router sends as codes. The limit rose to 69,500 bytes (gzip 22,500).
 
 It includes page/runtime, query snapshots and store allocations; it excludes native renderer
 memory, browser RSS, GPU memory and server cost. It does not establish a bound on a full
@@ -899,10 +901,49 @@ A re-read observes current state; it does not prove this write committed.
 The classifier requires evidence: all selected root results with `Success: true` and no errors
 confirm a write. Explicit server `extensions.outcome: "refused"` / `"failed"` distinguish those
 outcomes; these two signals are proposed server contract additions and tested with mocks.
-A transport can mark an error as coming before the send with `markNotSent`, as `createHttpNetwork` does for a failed `headers()`; that, or cancellation before sending, is failed. The thrown error is unchanged. A response with no `data` key is refused: per GraphQL over HTTP, execution never started.
+A transport can mark an error as coming before the send with `markNotSent`, as `createHttpNetwork` does for a failed `headers()`; that, or cancellation before sending, is failed. The thrown error is unchanged.
 Connection loss, cancellation after send, HTTP errors, partial errors and GraphQL `data: null`
 are unconfirmed. Neither HTTP status nor error message text proves a refusal. Missing Success,
 `Success: false`, and mixed multi-root outcomes are conservatively unconfirmed.
+
+A response with no `data` key is refused only when every error's `extensions.code` is a known pre-execution failure
+([#62](https://github.com/Dastari/graphql-orm-client/issues/62)). GraphQL over HTTP says such a response means execution never
+started, but Hive Router doesn't keep to that: its pipeline error handler (`pipeline/error.rs`, `handle_pipeline_error`) answers
+every pipeline error with `{ errors }` and no `data`, including `PLAN_EXECUTION_FAILED`, which can follow a subgraph's commit, and
+`GATEWAY_TIMEOUT`, whose timer covers execution. The known codes, read from Hive Router 0.2.19, which graphql-orm-router 0.8.1 and
+0.15.5 both pin, and from graphql-orm-router's own hooks at those two versions:
+
+| Group | Codes |
+| --- | --- |
+| Request body | `BAD_REQUEST` (the JSON body didn't parse), `PAYLOAD_TOO_LARGE_CONTENT_LENGTH`, `PAYLOAD_TOO_LARGE_BODY_STREAM` |
+| Parse, variables, validation | `GRAPHQL_PARSE_FAILED`, `OPERATION_RESOLUTION_FAILURE`, `BAD_USER_INPUT`, `GRAPHQL_VALIDATION_FAILED`, and the validation rule names Hive sends as the code (the 25 default rules of graphql-tools 0.5.8: `FieldsOnCorrectType`, `KnownArgumentNames`, `ValuesOfCorrectType` and the rest) |
+| Authentication, authorization | graphql-orm-router's `UNAUTHENTICATED` and `FORBIDDEN`, sent from its request, analysis and execute hooks before any subgraph is called; Hive's `UNAUTHORIZED_FIELD_OR_TYPE` (reject mode, checked before planning) |
+| Persisted documents | `PERSISTED_DOCUMENT_NOT_FOUND`, `PERSISTED_DOCUMENT_ID_REQUIRED`, `PERSISTED_DOCUMENT_EXTRACTION_FAILED` |
+| Limits | graphql-orm-router's `OPERATION_LIMIT_EXCEEDED` |
+
+Any other code, or an error with no code, leaves it unconfirmed. Some of Hive's other pre-execution codes are left out to keep the
+main bundle small, at the cost of a needless re-read: request errors `createHttpNetwork` doesn't cause (method, content type, GET,
+CSRF), and Hive's JWT and cost checks, in whose place graphql-orm-router has its own bearer authentication and field limit. Hive's internal errors that happen before
+planning (`NO_SUPERGRAPH_AVAILABLE`, `QUERY_PLAN_BUILD_FAILED`) are left out on purpose: they're masked as "Internal server error"
+and a wrong `refused` is worse than a needless re-read. A caller who sees one can name it in `refusedCodes`. A graphql-orm service answering directly (async-graphql 7) always sends `data`,
+`null` on a validation error, so this rule only matters behind a router. `createClient({ writeWithoutData: "refused" })` restores
+the earlier rule, which refused every response without `data`.
+
+Two per-call options add the caller's own evidence; neither changes what `mutate` or `commit` return or throw:
+
+- `confirm(data)` confirms a write whose result has no `Success` field
+  ([#60](https://github.com/Dastari/graphql-orm-client/issues/60)), in place of the `Success: true` rule. It's asked only for a
+  response with data and no errors, and receives the data as the server sent it. `false`, or a throw, is unconfirmed. Use it for
+  evidence the schema gives, for example `data => data.UpdateWidget != null` for a command that returns the changed entity and
+  raises an error when it doesn't commit.
+- `refusedCodes` names codes the server sends only for a write that didn't happen, such as `NOT_FOUND` or `CONFLICT` from a
+  hand-written command that sets no `extensions.outcome` ([#61](https://github.com/Dastari/graphql-orm-client/issues/61)). The
+  write is refused, and `reconcile` isn't called, when every error has one of them, no error has an `extensions.outcome`, and no
+  selected root returned a value. A non-null root with an error further down may have committed before a nested read failed, so
+  it stays unconfirmed. On a response without `data` the codes add to the pre-execution list.
+
+There's no client-wide or generated `confirm` rule: whether a non-null root proves a commit depends on how each command reports
+failure, and a payload type with its own `ok` or `Error` field would be confirmed wrongly.
 
 Source checked: graphql-orm tag `graphql-orm-v0.90.1`, router 0.8.1:
 runtime/mutation.rs marks post-commit payload denial/failure/timeout with

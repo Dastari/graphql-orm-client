@@ -27,3 +27,22 @@ it("step-up retry is explicit and uses fresh variables, with no replay", async (
   unmount()
   client.dispose()
 })
+
+it("commitOutcome passes confirm and refusedCodes through, and commit is unchanged", async () => {
+  let reply: object = { data: { UpdateWidget: { __typename: "WidgetResult", Entity: { __typename: "Widget", Id: "w1" } } } }
+  const client = createClient({ network: mockNetwork(() => reply as never).network })
+  const { result, unmount } = renderHook(() => useMutation(ops.RenameWidget!), {
+    wrapper: ({ children }) => <ClientProvider client={client}>{children}</ClientProvider>,
+  })
+  await act(async () => {
+    const confirmed = await result.current.commitOutcome({ Id: "w1", Name: "n" }, { confirm: data => (data as any).UpdateWidget != null })
+    expect(confirmed.outcome.status).toBe("confirmed")
+  })
+  reply = { data: null, errors: [{ message: "gone", extensions: { code: "NOT_FOUND" } }] }
+  await act(async () => {
+    expect((await result.current.commitOutcome({ Id: "w1", Name: "n" }, { refusedCodes: ["NOT_FOUND"] })).outcome.status).toBe("refused")
+    await expect(result.current.commit({ Id: "w1", Name: "n" }, { refusedCodes: ["NOT_FOUND"] })).rejects.toThrow()
+  })
+  unmount()
+  client.dispose()
+})

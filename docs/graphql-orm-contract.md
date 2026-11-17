@@ -95,10 +95,21 @@ reads. Subscribe acknowledgement and key-only delete notification remain server 
 
 The client can only prove a write's outcome from what the server says. Today that means:
 
-- `Success: true` on every selected root, with no errors, is `confirmed`.
-- A response with no `data` key is `refused`: per GraphQL over HTTP, execution never started.
+- `Success: true` on every selected root, with no errors, is `confirmed`. A caller's `confirm(data)` can take its place for a
+  result with no `Success` field; it's never asked about a response with errors.
+- A response with no `data` key is `refused` only when every error's code is a pre-execution failure the router is known to send:
+  parse, validation, variables, authentication, authorization, persisted document or request limits (the list and its sources are
+  in docs/design.md). Hive Router 0.2.19, pinned by graphql-orm-router 0.8.1 and 0.15.5, answers every pipeline error without
+  `data`, including `PLAN_EXECUTION_FAILED` and `GATEWAY_TIMEOUT`, which can follow a commit
+  ([#62](https://github.com/Dastari/graphql-orm-client/issues/62)). `writeWithoutData: "refused"` restores the earlier rule.
+- A caller's `refusedCodes` refuse a write when every error has one, no error has an `extensions.outcome`, and no root returned a
+  value.
 - Anything else stays `unconfirmed`, including `Success: false`, because a generated result can report an error from after a
   commit.
+
+The pre-execution list follows the router's codes, so a router release that adds or renames one needs the list checked. Proposed:
+the router marks errors raised before execution with `extensions.outcome: "refused"`, which the client already reads, so the list
+is no longer needed. Requested: [#764](https://github.com/Dastari/graphql-orm/issues/764).
 
 A dedicated `extensions.outcome: "refused" | "failed"` is a proposed addition, requested in [#371](https://github.com/Dastari/graphql-orm/issues/371). The client already reads it, but no graphql-orm
 version sends it (read from `graphql-orm-v0.94.0`). Until one does, a refused write that executed shows as `unconfirmed`.

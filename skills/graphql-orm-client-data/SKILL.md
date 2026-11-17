@@ -172,7 +172,12 @@ expect(client.live.status().Ticket.subscriptions).toBe(1)
   because a watch retains results. A sensitive document spreading a `@live` fragment fails the build.
 - Use `client.mutateOutcome`, or `commitOutcome` from `useMutation`, when the UI must tell the user whether a write happened. Status is
   `confirmed`, `refused`, `failed` or `unconfirmed`. `mutate` and `commit` are unchanged. A write is never retried: pass `reconcile` to
-  read the record again after an `unconfirmed` one, and call again yourself after step-up authentication.
+  read the record again after an `unconfirmed` one, and call again yourself after step-up authentication. A write confirms when
+  every root has `Success: true` and there are no errors; for a mutation with no `Success` field, pass `confirm: data => ...` naming
+  what your schema guarantees (say, a non-null root). It's never asked about a response with errors. Pass `refusedCodes` (for
+  example `["NOT_FOUND", "CONFLICT"]`) for codes your server sends only when nothing was written, so they read as `refused` without
+  a re-read. A response with no `data` is `refused` only for parse, validation, auth, persisted-document and limit codes: a router
+  can answer a failure after a commit without `data`.
 - To decide what to do about a failure, use `classifyError(error)`, never the message text. Pass it `query.error`, what `commit`
   rejected with, or `query.errors`. Switch on `kind`: `conflict` (a stale `ExpectedVersion`: reload the record), `cursor-invalid`
   (start the list again), `not-found`, `unauthenticated`, `forbidden`, `unavailable` (try later), `network` (no response: for a
