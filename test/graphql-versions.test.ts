@@ -41,6 +41,19 @@ describe("output that doesn't depend on the graphql version", () => {
     expect(printStable(parse("{ a(empty: {}, list: [{k: [{}]}]) }"))).toBe("{\n  a(empty: {}, list: [{k: [{}]}])\n}")
   })
 
+  it("prints a long list value on one line, as graphql 16 does", () => {
+    // graphql 17 breaks a list printed past 80 characters onto several lines, without commas.
+    const document = `query Q($o: Int!) { items(Page: { Limit: 100, Offset: $o }, Where: { And: [{ Kind: { Eq: "WidgetStateChange" } }, { Note: { IsNull: false } }, { Note: { Ne: "" } }, { Note: { Ne: "None" } }] }) { Id } }`
+    expect(printStable(parse(document))).toBe(
+      "query Q($o: Int!) {\n  items(\n    Page: {Limit: 100, Offset: $o}\n" +
+      '    Where: {And: [{Kind: {Eq: "WidgetStateChange"}}, {Note: {IsNull: false}}, {Note: {Ne: ""}}, {Note: {Ne: "None"}}]}\n' +
+      "  ) {\n    Id\n  }\n}",
+    )
+    const list = `[${Array.from({ length: 12 }, (_, i) => `"value-${i}"`).join(", ")}]`
+    // The arguments wrap, as graphql 16 wraps them; the list inside them doesn't.
+    expect(printStable(parse(`{ a(in: ${list}) }`))).toBe(`{\n  a(\n    in: ${list}\n  )\n}`)
+  })
+
   it("prints schema defaults coerced, as graphql 16 does, before and after introspection", () => {
     expect(printSchemaStable(schema)).toContain(
       'Items(Where: ItemWhereInput = {Name: {Eq: "a"}, Limit: 5}, Page: PageInput = {Limit: 50, Offset: 0}, Order: [ItemOrder!] = [{Field: NAME, Direction: ASC}]): ItemConnection!',

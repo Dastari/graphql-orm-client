@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Fixed: graphql 17 printed a long list value over several lines
+
+0.1.0-alpha.13 printed object values in operation text as graphql 16 does, but not list values: graphql 17 breaks a list longer
+than 80 characters over several lines, without commas, where 16 keeps it on one line. An operation with a long list argument,
+such as `Where: {And: [...]}`, got different text and a different hash on 17, so `generate --check` failed after moving to it
+and a team on mixed versions disagreed ([#110](https://github.com/Dastari/graphql-orm-client/issues/110)). The compiler now
+prints list values as graphql 16 does too, in operation text and in schema snapshot defaults.
+
+Nothing changes on graphql 16. On graphql 17, run `graphql-orm-client generate` once; the output then matches what graphql 16
+generates.
+
 ## 0.1.0-alpha.13 (2026-11-17)
 
 Install from the GitHub release archive:
