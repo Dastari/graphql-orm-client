@@ -106,6 +106,27 @@ export async function usage() {
   }, 60_000)
 })
 
+it("makes a non-null input field with a default optional but not nullable, in nested inputs and lists of inputs", () => {
+  const s = buildSchema(`
+    type Query { Foos(Page: PageIn): [Foo!]! }
+    type Mutation { SaveFoo(Input: SaveFooInput!): Foo SaveFoos(Inputs: [SaveFooInput!]!): [Foo!]! }
+    type Foo { Id: String! }
+    input PageIn { Limit: Int! = 50, Offset: Int }
+    input SaveFooInput { Id: String!, Mode: String! = "Normal", Tags: [String!]! = [], Options: OptionsIn }
+    input OptionsIn { Strict: Boolean! = false, Steps: [StepIn!] }
+    input StepIn { Order: Int! = 0, Note: String }`)
+  const output = generate(s, [
+    "mutation M($i: SaveFooInput!) { SaveFoo(Input: $i) { Id } }",
+    "mutation Many($is: [SaveFooInput!]!) { SaveFoos(Inputs: $is) { Id } }",
+    "query P($p: PageIn) { Foos(Page: $p) { Id } }",
+  ], { importFrom: "x" })
+  expect(output).toContain("export type PageIn = { readonly Limit?: number; readonly Offset?: number | null }")
+  expect(output).toContain("export type SaveFooInput = { readonly Id: string; readonly Mode?: string; readonly Tags?: ReadonlyArray<string>; readonly Options?: OptionsIn | null }")
+  expect(output).toContain("export type OptionsIn = { readonly Strict?: boolean; readonly Steps?: ReadonlyArray<StepIn> | null }")
+  expect(output).toContain("export type StepIn = { readonly Order?: number; readonly Note?: string | null }")
+  expect(output).toContain("export type ManyVariables = { readonly is: ReadonlyArray<SaveFooInput> }")
+})
+
 it("emits a schema fingerprint only when persistence is enabled", () => {
   const s = buildSchema(`type Query { value: String }`)
   expect(generate(s, [`query One { value }`])).not.toContain('export const schemaHash')

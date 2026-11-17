@@ -19,7 +19,7 @@ import {
   type OperationDefinitionNode,
 } from "graphql"
 import type { Selection } from "../artifact.js"
-import { CompileError, compile, type CompileOptions } from "./compile.js"
+import { CompileError, compile, type CompileOptions, type LiveAreaReport } from "./compile.js"
 
 export interface GenerateOptions extends CompileOptions {
   /** Emit a schema fingerprint for opt-in persistence; schema changes then affect --check. */
@@ -28,6 +28,23 @@ export interface GenerateOptions extends CompileOptions {
   readonly scalars?: Readonly<Record<string, string>>
   /** Module the generated file imports runtime types from. Default `graphql-orm-client`. */
   readonly importFrom?: string
+  /**
+   * Receives one line per `live: { default: [...] }` pattern saying what it covered, for example
+   * `live.default "src/area/**": 3 files, 11 fragments: 4 newly live, 5 opted out, 1 keyless, 1 without a stream`.
+   * Default `console.log`. Not called under any other live setting.
+   */
+  readonly onSummary?: (line: string) => void
+}
+
+/** One line for a `live.default` pattern's report. */
+function formatLiveArea(report: LiveAreaReport): string {
+  const count = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`
+  const outcomes = [
+    `${report.newlyLive.length} newly live`,
+    ...([["alreadyLive", "already live"], ["optedOut", "opted out"], ["keyless", "keyless"], ["withoutStream", "without a stream"], ["abstract", "on an interface or union"]] as const)
+      .filter(([key]) => report[key].length).map(([key, label]) => `${report[key].length} ${label}`),
+  ]
+  return `live.default "${report.pattern}": ${count(report.files.length, "file", "files")}, ${count(report.fragments.length, "fragment", "fragments")}: ${outcomes.join(", ")}`
 }
 
 const BUILT_IN_SCALARS: Record<string, string> = {
@@ -74,6 +91,7 @@ export function generate(schema: GraphQLSchema, sources: readonly string[], opti
   if (problems.length) throw new CompileError(problems)
 
   const compiled = compile(schema, unique, { ...options, onWarning: options.onWarning ?? console.warn })
+  for (const area of compiled.liveAreas ?? []) (options.onSummary ?? console.log)(formatLiveArea(area))
   const scalars = { ...BUILT_IN_SCALARS, ...options.scalars }
   const named = new Map<string, string>()
 
@@ -147,7 +165,8 @@ export function generate(schema: GraphQLSchema, sources: readonly string[], opti
       if (!named.has(namedType.name)) {
         named.set(namedType.name, "")
         const fields = Object.values(namedType.getFields()).map((field) => {
-          const optional = !isNonNullType(field.type)
+          // A non-null field with a default may be left out (the default applies), but an explicit null is invalid.
+          const optional = !isNonNullType(field.type) || field.defaultValue !== undefined
           return `readonly ${field.name}${optional ? "?" : ""}: ${inputType(field.type)}`
         })
         named.set(namedType.name, `export type ${namedType.name} = { ${fields.join("; ")}${fields.length ? " " : ""}}`)

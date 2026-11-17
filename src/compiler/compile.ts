@@ -96,6 +96,31 @@ export interface CompileResult {
   readonly live: Readonly<Record<string, LiveArtifact>>
   /** Types with live fragments but no usable `Changed` subscription; they need polling. */
   readonly liveUnavailable: readonly string[]
+  /** What each `live: { default: [...] }` pattern covered, in pattern order. Absent under any other live setting. */
+  readonly liveAreas?: readonly LiveAreaReport[]
+}
+
+/**
+ * The fragments one `live.default` pattern covers: those written in a file the pattern matches.
+ * Every fragment it covers is in exactly one of the outcome lists. Names are sorted.
+ */
+export interface LiveAreaReport {
+  readonly pattern: string
+  /** Matched files that define at least one fragment, relative to the config directory. */
+  readonly files: readonly string[]
+  readonly fragments: readonly string[]
+  /** Made live by the pattern, with a usable `Changed` stream. */
+  readonly newlyLive: readonly string[]
+  /** Marked `@live` already, so the pattern changed nothing. */
+  readonly alreadyLive: readonly string[]
+  /** Marked `@live(enabled: false)`. */
+  readonly optedOut: readonly string[]
+  /** On an object type without a key (configured `null`, or none found), so not live. */
+  readonly keyless: readonly string[]
+  /** Made live by the pattern, but the type has no usable `Changed` stream: its holders poll. */
+  readonly withoutStream: readonly string[]
+  /** On an interface or union, which needs an explicit `@live`. */
+  readonly abstract: readonly string[]
 }
 
 export class CompileError extends Error {
@@ -399,9 +424,35 @@ function compileDocuments(
     operations[name] = { ...operation, lists: (operation.lists ?? []).filter((typename) => liveTypes.has(typename)) }
   }
   const { live, liveUnavailable } = compileLive(schema, fragments, fragmentNodes, options)
+  // A type with a usable stream and no key can't be live. Its fragments are named for that cause, not for a missing stream.
+  const keyless = (typename: string): boolean => {
+    const type = schema.getType(typename)
+    return !!type && isObjectType(type) && !keyFieldsOf(schema, typename, options) && !!changedStreamOf(schema, typename, options)
+  }
   for (const [name, node] of fragmentNodes) {
-    if (fragments[name]?.live && node.directives?.some((d) => d.name.value === "live") && liveUnavailable.includes(fragments[name]!.typeCondition) && !pollReason(node)) {
-      report("liveWithoutStream", node, `${fragments[name]!.typeCondition} has no usable Changed stream; use @live(enabled: false) or add @poll(reason: "why polling is needed")`)
+    const typename = fragments[name]!.typeCondition
+    if (fragments[name]?.live && node.directives?.some((d) => d.name.value === "live") && liveUnavailable.includes(typename) && !pollReason(node)) {
+      const { cause, fix } = keylessCause(typename, options)
+      report("liveWithoutStream", node, keyless(typename)
+        ? `${typename} has a Changed stream, but ${cause}, so it can't be live. ${fix}, use @live(enabled: false), or add @poll(reason: "why polling is needed")`
+        : `${typename} has no usable Changed stream; use @live(enabled: false) or add @poll(reason: "why polling is needed")`)
+    }
+  }
+  if (!nested) {
+    // Under any live setting, an unmarked fragment on a keyless type with a stream stays as it is and won't update on screen.
+    const byType = new Map<string, string[]>()
+    for (const [name, node] of fragmentNodes) {
+      const typename = fragments[name]!.typeCondition
+      if (!fragments[name]!.live && !node.directives?.some((directive) => directive.name.value === "live") && keyless(typename))
+        byType.set(typename, [...(byType.get(typename) ?? []), name])
+    }
+    const level = options.strict?.fragmentNotLive ?? "warn"
+    if (level !== "off") for (const [typename, names] of [...byType].sort(([a], [b]) => (a < b ? -1 : 1))) {
+      const { cause, fix } = keylessCause(typename, options)
+      const one = names.length === 1
+      const message = `${typename} has a Changed stream, but ${cause}, so it can't be live and ${one ? "fragment" : "fragments"} ${names.sort().join(", ")} won't update on screen. ${fix}, or mark ${one ? "it" : "them"} @live(enabled: false) if that's meant. [strict.fragmentNotLive]`
+      if (level === "error") policyProblems.push(message)
+      else (options.onWarning ?? console.warn)(message)
     }
   }
   if (!nested) {
@@ -420,10 +471,35 @@ function compileDocuments(
     }
   }
   // An area that matches nothing makes nothing live and says nothing, which is easy to take for a trial that's running.
+  let liveAreas: LiveAreaReport[] | undefined
   if (!nested && typeof options.live === "object") {
     const fragmentFiles = [...fragmentNodes.values()].flatMap((node) => paths.get(node) ?? []).filter((file) => !file.startsWith("<document "))
     for (const glob of options.live.default) if (!fragmentFiles.some((file) => matchesPath(file, glob)))
       (options.onWarning ?? console.warn)(`live.default pattern "${glob}" matches no file that defines a fragment, so it makes nothing live. A pattern matches the file a fragment is written in, not the files that spread it.${fragmentFiles.length ? "" : " No fragment here has a source path to match."}`)
+    // What each pattern did, so a trial reports itself instead of needing a diff of the generated module.
+    const outcome = (name: string, node: FragmentDefinitionNode): Exclude<keyof LiveAreaReport, "pattern" | "files" | "fragments"> => {
+      const directive = node.directives?.find((d) => d.name.value === "live")
+      const enabled = directive?.arguments?.find((a) => a.name.value === "enabled")?.value
+      if (enabled?.kind === Kind.BOOLEAN && !enabled.value) return "optedOut"
+      if (directive) return "alreadyLive"
+      const typename = fragments[name]!.typeCondition
+      const type = schema.getType(typename)
+      if (!type || !isObjectType(type)) return "abstract"
+      if (!keyFieldsOf(schema, typename, options)) return "keyless"
+      return liveUnavailable.includes(typename) ? "withoutStream" : "newlyLive"
+    }
+    liveAreas = options.live.default.map((pattern) => {
+      const report = { pattern, files: [] as string[], fragments: [] as string[], newlyLive: [] as string[], alreadyLive: [] as string[], optedOut: [] as string[], keyless: [] as string[], withoutStream: [] as string[], abstract: [] as string[] }
+      for (const [name, node] of fragmentNodes) {
+        const files = (paths.get(node) ?? []).filter((file) => !file.startsWith("<document ") && matchesPath(file, pattern))
+        if (!files.length) continue
+        report.files.push(...files)
+        report.fragments.push(name)
+        report[outcome(name, node)].push(name)
+      }
+      for (const list of Object.values(report)) if (Array.isArray(list)) list.sort()
+      return { ...report, files: [...new Set(report.files)] }
+    })
   }
   if (!nested) for (const typename of liveUnavailable) {
     const implicit = [...fragmentNodes].filter(([name, node]) => fragments[name]?.live && fragments[name]?.typeCondition === typename && !node.directives?.some((d) => d.name.value === "live"))
@@ -464,7 +540,7 @@ function compileDocuments(
   }
   shareBatches(schema, operations, fragments, options)
   const refetchable = compileRefetch(schema, fragments, fragmentNodes, operationNames, options)
-  return { operations, fragments: { ...fragments, ...refetchable }, live, liveUnavailable }
+  return { operations, fragments: { ...fragments, ...refetchable }, live, liveUnavailable, ...(liveAreas ? { liveAreas } : {}) }
 }
 
 /**
@@ -547,32 +623,21 @@ function compileLive(
     byType.set(type.name, [...(byType.get(type.name) ?? []), fragment.name])
   }
   const live: Record<string, LiveArtifact> = {}
-  const subscriptionRoot = schema.getSubscriptionType()
   for (const [typename, names] of [...byType].sort(([a], [b]) => (a < b ? -1 : 1))) {
-    const fieldName = options.liveField?.(typename) ?? `${typename}Changed`
-    const field = subscriptionRoot?.getFields()[fieldName]
-    const payload = field ? getNamedType(field.type) : undefined
-    if (!field || !payload || !isObjectType(payload)) {
-      liveUnavailable.push(typename)
-      continue
-    }
-    const payloadFields = Object.values(payload.getFields())
-    const entity = payloadFields.find((candidate) => getNamedType(candidate.type).name === typename)
-    const action = payloadFields.find((candidate) => candidate.name.toLowerCase() === "action")
-    const changeKind = payloadFields.find((candidate) => candidate.name.toLowerCase() === "changekind")
+    const stream = changedStreamOf(schema, typename, options)
     const keyFields = keyFieldsOf(schema, typename, options)
-    if (!entity || !action || !keyFields) {
+    if (!stream || !keyFields) {
       liveUnavailable.push(typename)
       continue
     }
-    const keysArg = field.args.find((arg) => arg.name.toLowerCase() === "keys")
-    const keyArg = field.args.find((arg) => arg.name.toLowerCase() === "key")
-    const mode: LiveMode = keysArg ? "keys" : keyArg ? "key" : "unkeyed"
-    const arg = keysArg ?? keyArg
-    // A stream needing another required argument cannot be generated from the ORM key contract.
-    if (field.args.some((candidate) => candidate !== arg && isNonNullType(candidate.type) && candidate.defaultValue === undefined)) {
-      liveUnavailable.push(typename)
-      continue
+    const { fieldName, entity, action, changeKind, arg, mode } = stream
+    if (options.liveSelection === "as-written") {
+      const problems = names.flatMap((name) => variableUses(schema, fragmentNodes, name).map(({ field, fragment, variable }) =>
+        `Fragment ${name} is live, but ${field}${fragment === name ? "" : ` (in fragment ${fragment})`} takes the operation variable $${variable}. ` +
+        `With liveSelection: "as-written" the ${typename} stream spreads ${name}, and one stream is shared by every query that holds a ${typename}, so it can't carry one query's variables. ` +
+        `Pass a literal argument, move the field to a fragment that isn't live, mark ${name} @live(enabled: false), or remove liveSelection: "as-written": ` +
+        `the default stream projection leaves the field out and the queries holding the record read it again with their own variables.`))
+      if (problems.length) throw new CompileError(problems)
     }
     const operationName = `Live${typename}`
     const variables = arg ? `($${arg.name}: ${String(arg.type)})` : ""
@@ -655,6 +720,69 @@ function compileLive(
     }
   }
   return { live, liveUnavailable: liveUnavailable.sort() }
+}
+
+/**
+ * A type's usable `Changed` subscription: an object payload with the entity and an action, and no
+ * required argument besides the key. It says nothing about whether the type has a key.
+ */
+function changedStreamOf(schema: GraphQLSchema, typename: string, options: CompileOptions) {
+  const fieldName = options.liveField?.(typename) ?? `${typename}Changed`
+  const field = schema.getSubscriptionType()?.getFields()[fieldName]
+  const payload = field ? getNamedType(field.type) : undefined
+  if (!field || !payload || !isObjectType(payload)) return undefined
+  const payloadFields = Object.values(payload.getFields())
+  const entity = payloadFields.find((candidate) => getNamedType(candidate.type).name === typename)
+  const action = payloadFields.find((candidate) => candidate.name.toLowerCase() === "action")
+  const changeKind = payloadFields.find((candidate) => candidate.name.toLowerCase() === "changekind")
+  if (!entity || !action) return undefined
+  const keysArg = field.args.find((arg) => arg.name.toLowerCase() === "keys")
+  const keyArg = field.args.find((arg) => arg.name.toLowerCase() === "key")
+  const mode: LiveMode = keysArg ? "keys" : keyArg ? "key" : "unkeyed"
+  const arg = keysArg ?? keyArg
+  // A stream needing another required argument cannot be generated from the ORM key contract.
+  if (field.args.some((candidate) => candidate !== arg && isNonNullType(candidate.type) && candidate.defaultValue === undefined)) return undefined
+  return { fieldName, entity, action, changeKind, arg, mode }
+}
+
+/** Why a type with a usable `Changed` stream still can't be live (it has no key), and how to give it one. */
+function keylessCause(typename: string, options: CompileOptions): { cause: string; fix: string } {
+  return options.keys && typename in options.keys
+    ? { cause: `its identity is configured off (keys: { ${typename}: null })`, fix: "Remove that keys entry or name its key fields" }
+    : { cause: `the compiler finds no key fields for it (no Id field and no ${typename}KeyInput)`, fix: `Name them in keys: { ${typename}: [...] }` }
+}
+
+/** Fields in a fragment, and the fragments it spreads, whose arguments or directives use an operation variable. */
+function variableUses(
+  schema: GraphQLSchema,
+  fragmentNodes: ReadonlyMap<string, FragmentDefinitionNode>,
+  name: string
+): { field: string; fragment: string; variable: string }[] {
+  const uses: { field: string; fragment: string; variable: string }[] = []
+  const seen = new Set<string>()
+  const walk = (set: SelectionSetNode, parent: GraphQLCompositeType | undefined, fragment: string) => {
+    for (const selection of set.selections) {
+      if (selection.kind === Kind.FRAGMENT_SPREAD) {
+        const spread = fragmentNodes.get(selection.name.value)
+        if (spread && !seen.has(spread.name.value)) {
+          seen.add(spread.name.value)
+          walk(spread.selectionSet, schema.getType(spread.typeCondition.name.value) as GraphQLCompositeType, spread.name.value)
+        }
+      } else if (selection.kind === Kind.INLINE_FRAGMENT) {
+        walk(selection.selectionSet, selection.typeCondition ? schema.getType(selection.typeCondition.name.value) as GraphQLCompositeType : parent, fragment)
+      } else {
+        const def = parent && "getFields" in parent ? parent.getFields()[selection.name.value] : undefined
+        const variables = new Set<string>()
+        visit({ ...selection, selectionSet: undefined }, { Variable(node) { variables.add(node.name.value) } })
+        for (const variable of variables) uses.push({ field: `${parent?.name ?? "?"}.${selection.name.value}`, fragment, variable })
+        if (selection.selectionSet) walk(selection.selectionSet, def ? getNamedType(def.type) as GraphQLCompositeType : undefined, fragment)
+      }
+    }
+  }
+  const node = fragmentNodes.get(name)!
+  seen.add(name)
+  walk(node.selectionSet, schema.getType(node.typeCondition.name.value) as GraphQLCompositeType, name)
+  return uses
 }
 
 function pick<T>(source: Record<string, T>, names: ReadonlySet<string>): Record<string, T> {
