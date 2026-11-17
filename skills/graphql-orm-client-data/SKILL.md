@@ -54,6 +54,10 @@ function Page({ loaded }: { loaded: LoadedQuery<TicketsPageQuery> }) {
   row's version, which every `Changed` event advances, out of the list's data. `identityFields:
   "always"` in the generator config reads them everywhere, as 0.1.0-alpha.12 and earlier did. A type
   without a `NodeId` or a complete key is stored inside its parent, not as its own record.
+- A table or adapter that needs whole rows uses `useFragmentList(Fragment, refs)` instead of one
+  `useFragment` per row. Passing `data?.Things.Edges.map((edge) => edge.Node)` on every render is fine:
+  it compares rows by record, so a render with the same rows does no work, and a change to one row reads
+  only that row.
 
 ## Roots own the request
 
@@ -164,7 +168,8 @@ expect(client.live.status().Ticket.subscriptions).toBe(1)
 - An operation with no answer fails, and so does a request that doesn't fit `schema`. A query keeps a
   rejection in its state, so check `network.failures` where a test could miss it.
 - On one stream: `emit`, `next`, `refuse(code, { frame })`, `loseContinuity`, `reload`, `unavailable`,
-  `fail`, `end`. `streams.reload()` and `streams.fail()` act on all of them. `streams.reconnect()` is a
+  `fail`, `end`. `streams.reload()` and `streams.fail()` act on all of them; `streams.fail({ code: 4401, reason: "Unauthorized", wasClean: true })`
+  closes them for authentication. `streams.reconnect()` is a
   socket drop the transport recovers from by itself, where nothing ends: use it with `onReconnect`.
 - `clock.advance(ms)` fires timers without letting promises settle; use `clock.tick(ms)` when a request is
   involved.

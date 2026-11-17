@@ -363,6 +363,7 @@ export class Store {
       if (this.nextExpiry !== before || (this.expiryTimer === null && this.nextExpiry !== Infinity)) this.armExpiry()
     }
     if (this.changed.size === 0) return
+    this.publishCount += 1
     for (const observer of this.observers) observer(this.changed)
     const changed = new Set(this.changed)
     this.changed.clear()
@@ -379,6 +380,16 @@ export class Store {
     } finally {
       this.publishing.pop()
     }
+  }
+
+  private publishCount = 0
+
+  /**
+   * How many publishes have changed something; disposal counts as one. A snapshot read while this number stayed the same is
+   * still current, so a reader that read during render can subscribe at commit without reading again.
+   */
+  get publishes(): number {
+    return this.publishCount
   }
 
   /** The written ids of each publish under way, outermost first. */
@@ -500,6 +511,8 @@ export class Store {
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
+    // Every record goes, so a snapshot read before this is out of date.
+    this.publishCount += 1
     for (const dispose of this.disposers) dispose()
     this.disposers.clear(); this.observers.clear(); this.restored.clear(); this.layers.clear(); this.restoreBlocked = null
     if (this.expiryTimer !== null) this.clearTimer(this.expiryTimer)

@@ -1,6 +1,6 @@
 ---
 name: graphql-orm-client-live
-description: Keep data current on screen with graphql-orm-client, using @live fragments and generated Changed streams; draw live status (useLiveHealth); and diagnose stale data, refused streams and polling with the doctor. Use when data must update by itself or looks stale.
+description: Keep data current on screen with graphql-orm-client, using @live fragments and generated Changed streams; draw live status (useLiveHealth); recover live updates after the socket's sign-in expires (reconnectLive); and diagnose stale data, refused streams and polling with the doctor. Use when data must update by itself or looks stale.
 ---
 
 # Live data
@@ -48,6 +48,12 @@ same order and with loaded pages kept. A count or generated aggregate of a live 
   re-reads as well.
 - **Refused streams** wait about five minutes and poll meanwhile (`polling.liveFallbackMs`, 30 s), then work with no reload once the server
   accepts them. `live.refusalBackoff` changes this.
+- **A socket closed for authentication** (close code 4401, the router's answer to an expired or invalid bearer, or 4403) stops every
+  stream: nothing reconnects with credentials that can't work. Every type holding records reports reason `unauthenticated` with `code`
+  `"4401"` or `"4403"`, and polls meanwhile. Send the user to sign in or renew the token, make graphql-ws's `connectionParams` return the
+  new one, then call `client.reconnectLive()`: the streams start again and their queries read. A `connected` socket reported by
+  `graphqlWsTransport` starts them again too, once: if that connection is closed again within a minute, only `reconnectLive()` resumes. Disposing the client for a new identity clears it. An `UNAUTHENTICATED` error on one stream
+  isn't this: the router recovers it on the same connection, so it's a refusal like any other.
 
 ## Limits to design around
 
@@ -112,6 +118,7 @@ Then, in the running application:
    - `over-cap`: too many streams. The router allows 32 operations per connection by default, and open streams stay while the rest poll.
    - `identity-mismatch`: a server `NodeId` doesn't match the key fields in any order, so no stream opens and the query polls.
    - `list-key-required`, `list-streams-disabled`: this list polls. `list-refresh-truncated`: its loaded tail may be stale.
+   - `unauthenticated`: the server closed the socket for authentication. Renew the credentials and call `client.reconnectLive()`.
 5. `client.live.status()` has more per type: `held`, `subscriptions`, `restartAttempts`, and `lastEnd` for why a stream ended. A climbing
    `restartAttempts` usually means a custom `live.subscribe` isn't getting a fresh connection after a schema reload: use `graphqlWsTransport`.
 6. Frequent `SUBSCRIPTION_CONTINUITY_LOST` means a bulk writer is outrunning the server's `event_channel_capacity`.
@@ -131,6 +138,7 @@ Each of these changes a default on purpose. Reach for them when you have a reaso
 | `live.maxKeyedSubscriptions` | Per-record streams in `key` mode (50). `0` means one stream per type in `key` and `keys` mode when the argument is optional, at a row-policy check per event per subscriber |
 | `versions: { Type: null }` (generator) | Stops selecting a version field some users can't read |
 | `live.restart: false`, `live.refusalBackoff: false` | Older behaviour, for migration. `restart: false` can leave data stale |
+| `live.unauthenticated: "restart"` | Older behaviour, for migration: a 4401 or 4403 close restarts with back-off, as `socket-down`. Only for a `connectionParams` that fetches a fresh token on every connect |
 
 `pollMs` needs `query Name @poll(reason: "...") { ... }`. On a regenerated module an undeclared one throws where `process.env.NODE_ENV`
 is set and isn't `production`, as in development and tests. Elsewhere, including a bundle that doesn't define it, it warns and still

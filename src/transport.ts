@@ -166,21 +166,28 @@ export function graphqlWsSubscribe(
  * `live.subscribe` and `live.connection` for a graphql-ws client: spread it into `live`. As well as
  * `graphqlWsSubscribe`, `client.liveHealth()` reports the socket, and a socket that recovers by itself reads
  * the queries holding live records again, so there's no need to call `refetchActive` for those.
+ *
+ * It also passes on the close event's code, so a socket closed for authentication (4401, 4403) stops live delivery at
+ * once, before graphql-ws retries a 4403 by itself (see `LiveOptions.unauthenticated`). A later `connected` event, from a
+ * connection the server accepted, starts it again.
  */
 export function graphqlWsTransport(ws: GraphQLWsClientLike): {
   readonly subscribe: (request: OperationRequest, sink: SubscriptionSink) => () => void
   readonly connection: LiveConnection
 } {
   let state: LiveSocketState = "closed"
-  const listeners = new Set<(change: { readonly reconnected: boolean }) => void>()
-  const set = (next: LiveSocketState, reconnected = false) => {
+  const listeners = new Set<(change: { readonly reconnected: boolean; readonly closeCode?: number }) => void>()
+  const set = (next: LiveSocketState, reconnected = false, closeCode?: number) => {
     state = next
-    for (const listener of [...listeners]) listener({ reconnected })
+    for (const listener of [...listeners]) listener(closeCode === undefined ? { reconnected } : { reconnected, closeCode })
   }
   if (ws.on) {
     ws.on("connecting", () => set("connecting"))
     ws.on("connected", (_socket: unknown, _payload: unknown, wasRetry: boolean) => set("connected", wasRetry === true))
-    ws.on("closed", () => set("closed"))
+    ws.on("closed", (event: unknown) => {
+      const code = (event as { code?: unknown } | null)?.code
+      set("closed", false, typeof code === "number" ? code : undefined)
+    })
   } else {
     state = "unknown"
   }

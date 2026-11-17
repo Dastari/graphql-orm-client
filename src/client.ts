@@ -1019,6 +1019,17 @@ export class Client {
     }
   }
 
+  /**
+   * Start live delivery again after the server closed the socket for authentication (`liveHealth()` reason
+   * `unauthenticated`). Call it once the transport has new credentials in place, for graphql-ws once `connectionParams`
+   * returns them: the held types subscribe again, and the queries holding them read, since nothing was delivered
+   * meanwhile. If the credentials still aren't accepted, it stops again with no retry on a timer. Does nothing when live
+   * delivery hasn't stopped for authentication, or without a live layer.
+   */
+  reconnectLive(): void {
+    this.live?.reconnect()
+  }
+
   /** Refetch every open query; call after a subscription reconnect may have missed events. */
   async refetchActive(): Promise<void> {
     await this.refetchQueries("active")

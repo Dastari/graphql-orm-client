@@ -119,6 +119,13 @@ never shown as healthy.
 *Acceptance:* the refused and unavailable states can be drawn with no consumer bookkeeping.
 *Built in 0.1.0-alpha.8:* `client.liveHealth()`, `subscribeLiveHealth`, `useLiveHealth`, `graphqlWsTransport` and
 `live.onDiagnostic`.
+A socket the server closed for authentication is not an outage: it has a reason of its own with the close code, and
+nothing reconnects it on a timer until the application has new credentials or the identity changes
+([#73](https://github.com/Dastari/graphql-orm-client/issues/73)).
+*Acceptance:* after a 4401 or 4403 close, `liveHealth()` reports the reason for every affected type, no connection attempt
+is made on a timer, held records poll as for any uncovered type, and live delivery comes back when the application
+reconnects. *Built:* reason `unauthenticated`, `client.reconnectLive()`, and `live.unauthenticated: "restart"` for the
+previous behaviour.
 
 **R8. A doctor command.** `graphql-orm-client doctor --url <router>`, with credentials from the
 environment, checks every document against the served schema and opens each live operation briefly.
@@ -348,6 +355,10 @@ compile time of 250 documents against a 45,000-line schema, the bundle size of t
 entry points, and the cost of one socket and store per window with pop-out tool windows open (R19).
 The cost of one event must follow what changed, not the length of the list showing it: the burst also runs at 1,000 and
 10,000 rows with a limit on time per event ([#68](https://github.com/Dastari/graphql-orm-client/issues/68)).
+The same holds for a list of rows a component reads whole: rendering it again with the same rows costs nothing, and a
+change to one row reads that row ([#69](https://github.com/Dastari/graphql-orm-client/issues/69)).
+*Acceptance:* rendering a parent of `useFragmentList` again with the same rows makes no store subscription changes and
+no reads, and a change to one row of N reads one row; a test counts both.
 *Built:* `pnpm budgets` and the separate budgets CI workflow. Thresholds, baselines and margins
 are in `budgets/limits.json`; the method and one-machine window measurement are in
 [the design](design.md#several-windows-r19-and-budgets-r22). A skipped browser measurement is incomplete,

@@ -29,8 +29,11 @@ export type LiveState = "live" | "unconfirmed" | "connecting" | "polling" | "ref
  * - `socket-down`: the socket failed, or the router answered `SERVICE_UNAVAILABLE`.
  * - `stream-ended`: the stream ended for another reason.
  * - `schema-reload`: the router retired its graph.
+ * - `unauthenticated`: the server closed the socket for authentication (graphql-transport-ws close code 4401 or 4403).
+ *   `code` is `"4401"` or `"4403"`. Every type holding records reports it, nothing subscribes again until
+ *   `client.reconnectLive()`, and the records poll meanwhile, as for any uncovered type.
  */
-export type LiveReason = "list-refresh-truncated" | "list-streams-disabled" | "list-key-required" | "no-live-layer" | "no-stream" | "selection-refused" | "refused" | "identity-mismatch" | "over-cap" | "socket-down" | "stream-ended" | "schema-reload"
+export type LiveReason = "list-refresh-truncated" | "list-streams-disabled" | "list-key-required" | "no-live-layer" | "no-stream" | "selection-refused" | "refused" | "identity-mismatch" | "over-cap" | "socket-down" | "stream-ended" | "schema-reload" | "unauthenticated"
 
 export type LiveSocketState = "connected" | "connecting" | "closed" | "unknown"
 
@@ -125,6 +128,8 @@ function reasonOfEnd(end: LiveEnd | null): LiveReason | null {
     case "transport":
     case "unavailable":
       return "socket-down"
+    case "unauthenticated":
+      return "unauthenticated"
     default:
       return "stream-ended"
   }
@@ -154,6 +159,7 @@ export function typeHealth(status: LiveTypeStatus | undefined, holdings: readonl
     reason,
     code: reasonCode,
   })
+  if (status?.unauthenticated && (held > 0 || holdings.some(h => h.list))) return withPoll("unavailable", "unauthenticated", status.unauthenticated.code)
   const listReason = holdings.find(h => h.listReason)?.listReason
   if (listReason) return withPoll("unavailable", listReason, null)
   if (held === 0 && !holdings.some(h => h.list)) return { ...base, state: "idle", reason: null }
