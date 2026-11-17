@@ -29,8 +29,10 @@ export type LiveState = "live" | "unconfirmed" | "connecting" | "polling" | "ref
  * - `socket-down`: the socket failed, or the router answered `SERVICE_UNAVAILABLE`.
  * - `stream-ended`: the stream ended for another reason.
  * - `schema-reload`: the router retired its graph.
+ * - `cursor-restarted`: only in a `LiveDiagnostic`, never in health. The server refused a `@connection` list's cursor, and the
+ *   list started again from its first page. `fragment` names the operation. The list is current; this is not an error.
  */
-export type LiveReason = "list-refresh-truncated" | "list-streams-disabled" | "list-key-required" | "no-live-layer" | "no-stream" | "selection-refused" | "refused" | "identity-mismatch" | "over-cap" | "socket-down" | "stream-ended" | "schema-reload"
+export type LiveReason = "cursor-restarted" | "list-refresh-truncated" | "list-streams-disabled" | "list-key-required" | "no-live-layer" | "no-stream" | "selection-refused" | "refused" | "identity-mismatch" | "over-cap" | "socket-down" | "stream-ended" | "schema-reload"
 
 export type LiveSocketState = "connected" | "connecting" | "closed" | "unknown"
 
@@ -82,7 +84,10 @@ export interface LiveHealth {
   readonly types: Readonly<Record<string, LiveTypeHealth>>
 }
 
-/** A `@live` fragment an application shows that can't stay live, reported once per fragment and reason. */
+/**
+ * A `@live` fragment an application shows that can't stay live, reported once per fragment and reason. Also, once per list, a
+ * `@connection` list that started again from its first page after a refused cursor (`reason: "cursor-restarted"`).
+ */
 export interface LiveDiagnostic {
   readonly fragment: string
   readonly typename: string

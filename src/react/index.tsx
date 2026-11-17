@@ -17,6 +17,7 @@ import {
   pageVariables,
   pagedState,
   type Client,
+  type ConnectionOptions,
   type LoadedQuery,
   type FetchPolicy,
   type GraphQLErrorLike,
@@ -82,12 +83,20 @@ export interface QueryOptions {
  *
  * `refetch(variables)` merges `variables` into the current ones, switches the query to them and
  * fetches; a later change to the `variables` argument replaces them again.
+ *
+ * `loadMore()` appends the next page of the query's first `@connection` list, `loadMore({ connection: key })` of the one with
+ * that key; `connections` in the state has each list's `hasMore` and `loadingMore`. `restart()` reads a list again from its
+ * first page.
  */
 export function useQuery<T = unknown, V extends Variables = Variables>(
   artifact: OperationArtifact<T, V>,
   variables: V | null,
   options: QueryOptions = {}
-): QueryState<T> & { refetch: (variables?: Partial<V>) => Promise<void>; loadMore: () => Promise<void> } {
+): QueryState<T> & {
+  refetch: (variables?: Partial<V>) => Promise<void>
+  loadMore: (options?: ConnectionOptions) => Promise<void>
+  restart: (options?: ConnectionOptions) => Promise<void>
+} {
   const client = useClient()
   const baseKey = variables === null || options.skip ? null : stableStringify(variables)
   const [override, setOverride] = useState<{ base: string; variables: V } | null>(null)
@@ -134,7 +143,7 @@ export function useQuery<T = unknown, V extends Variables = Variables>(
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [client, artifact, watched, variablesKey, baseKey, watchOptions]
   )
-  return { ...state, refetch, loadMore: watched?.loadMore ?? resolved }
+  return { ...state, refetch, loadMore: watched?.loadMore ?? resolved, restart: watched?.restart ?? resolved }
 }
 
 /** Read a loader handle without another request. Non-Suspense; server shells render idle. */

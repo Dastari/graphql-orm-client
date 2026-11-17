@@ -29,10 +29,10 @@ const page = (ids: string[], more: boolean) => ({ data: { Scroll: connection(ids
 const held = (ids: string[], more: boolean) => ({ data: { Holder: { __typename: "Holder", Id: "h", Scroll: connection(ids, more) } } })
 const cursor = [{ message: "invalid cursor", path: ["Scroll"], extensions: { code: "CURSOR_INVALID" } }]
 
-function setup(answers: unknown[], options: { name?: string; partialResults?: "preserve-errors" } = {}) {
+function setup(answers: unknown[], options: { name?: string; partialResults?: "preserve-errors"; restartOn?: readonly [] } = {}) {
   const clock = createTestClock(), streams = createMockStreams()
   const network = createMockNetwork({ respond: () => answers.shift() as never })
-  const client = createClient({ network, store: { ...clock.store, retainMs: 10 }, polling: clock.polling, ...(options.partialResults ? { partialResults: options.partialResults } : {}), live: { ...clock.live, artifacts: compiled.live, subscribe: streams.subscribe, debounceMs: 0, settleMs: false, onDiagnostic: null } })
+  const client = createClient({ network, store: { ...clock.store, retainMs: 10 }, polling: clock.polling, ...(options.partialResults ? { partialResults: options.partialResults } : {}), ...(options.restartOn ? { connections: { restartOn: options.restartOn } } : {}), live: { ...clock.live, artifacts: compiled.live, subscribe: streams.subscribe, debounceMs: 0, settleMs: false, onDiagnostic: null } })
   const query = client.watchQuery<any>(compiled.operations[options.name ?? "Keyset"]!, { Page: { limit: 2 } })
   const names = () => {
     const data = query.getState().data
@@ -57,7 +57,8 @@ it.each([
 })
 
 it("a failure on a later page of the re-read keeps the loaded rows and writes nothing", async () => {
-  const c = setup([page(["a", "b"], true), page(["c", "d"], false), page(["a2", "b2"], true), { errors: cursor }])
+  // A refused cursor starts the read again by default; with that off, the refusal is the refresh's error.
+  const c = setup([page(["a", "b"], true), page(["c", "d"], false), page(["a2", "b2"], true), { errors: cursor }], { restartOn: [] })
   c.query.open(); await c.clock.tick(); await c.query.loadMore()
   await c.query.refetch()
   expect(c.query.getState().status).toBe("error")

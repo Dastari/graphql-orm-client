@@ -1,6 +1,6 @@
 ---
 name: graphql-orm-client-data
-description: Write components and data flows with graphql-orm-client. Use whenever a component shows or changes server data: fragments and route roots (loadQuery), pagination (@paged, @connection), mutations and write outcomes, secrets (@sensitive), batched relations (@batch), readAll, deleted rows, persistence, porting from Apollo, and testing with graphql-orm-client/test.
+description: Write components and data flows with graphql-orm-client. Use whenever a component shows or changes server data: fragments and route roots (loadQuery), pagination (@paged, @connection), refetching records (@refetchable), mutations and write outcomes, secrets (@sensitive), batched relations (@batch), readAll, deleted rows, persistence, porting from Apollo, and testing with graphql-orm-client/test.
 ---
 
 # Fragments, roots, pagination and mutations
@@ -82,6 +82,14 @@ function Page({ loaded }: { loaded: LoadedQuery<TicketsPageQuery> }) {
   `loadingMore`/`hasMore`. Pages merge into one list per filter; a refresh keeps the scrolled
   pages. It works on keyset inputs (continues after `EndCursor`) and offset `PageInput`
   (continues at the rows loaded).
+- A query can hold several `@connection` lists. Give each its own `key` and its own paging
+  variable (`$OpenPage`, `$ClosedPage`); call `loadMore({ connection: "closed" })` and read
+  `connections.closed.hasMore`/`loadingMore`. Plain `loadMore()` and `hasMore` are the first list's.
+  Lists sharing one paging variable can't load more: `loadMore` rejects and says so.
+- When the server refuses a keyset cursor (`CURSOR_INVALID`, after a deploy moves the sort keys),
+  the list starts again from its first page by itself and reads the loaded rows again; don't add
+  your own recovery or change variables to get a fresh list. `connections[key].restarts` counts it.
+  Call `restart({ connection })` when your app knows the cursors no longer hold for another reason.
 
 ## Refetching one record
 
@@ -92,6 +100,9 @@ function Page({ loaded }: { loaded: LoadedQuery<TicketsPageQuery> }) {
   fragment can't use operation variables. The compiler says which is missing.
 - `found: false` means the record is gone or no longer readable; it has been removed from the
   store. Show that, rather than the stale record.
+- Calls for one fragment made in the same tick (a list of refetchable rows) go out as one
+  `nodes(NodeIds)` request, in chunks of `refetchBatch.maxNodes` (default 100, the router's bound),
+  when the schema has `nodes`. Each call still gets its own `found` and errors; don't batch by hand.
 
 ## Porting from Apollo
 

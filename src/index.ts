@@ -27,6 +27,9 @@ export {
 } from "./client.js"
 export type {
   ClientOptions,
+  ConnectionClientOptions,
+  ConnectionOptions,
+  ConnectionState,
   LoadedQuery,
   FetchPolicy,
   GraphQLErrorLike,

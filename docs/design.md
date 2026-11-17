@@ -435,6 +435,9 @@ with no live layer. `client.subscribeLiveHealth(listener)` and `useLiveHealth(ty
 - `live.onDiagnostic` is called once per fragment and reason when a `@live` fragment settles into `refused`,
   `unavailable` or `polling`, naming the fragment. It defaults to `console.warn`, except where
   `process.env.NODE_ENV` is `production`; `null` turns it off. Without `live`, it's the default.
+  It also hears, once per list, of a `@connection` list that started again from its first page after
+  a refused cursor: reason `cursor-restarted`, with the operation's name as `fragment`. That reason
+  never appears in health.
 - Types with no stream are learned from what queries hold, so this needs no regeneration.
 
 ### The doctor
@@ -582,6 +585,39 @@ query CatalogScroll($Where: WidgetWhereInput, $Page: KeysetPageInput) {
 - **Loading more.** `loadMore()` (on `watchQuery` and `useQuery`) fetches the next page, with
   the paging variable's `after` set to the stored end cursor, and appends it.
 - **State.** `hasMore` and `loadingMore` are in the query state.
+- **Several lists in one query.** Each `@connection` is addressed by its `key`:
+  `loadMore({ connection: "closed" })` loads more of that list, and `QueryState.connections`
+  has each list's `hasMore`, `loadingMore`, `listRefreshTruncated` and `restarts`. `loadMore()`
+  and the top-level `hasMore` stay the first list's; the top-level `loadingMore` is true while
+  any list loads, and `listRefreshTruncated` while any list's refresh stopped at its bound.
+  Loads run one at a time, since each sends the whole query: loading one list reads the
+  others' first pages again, which replace their heads and keep their loaded tails. Give each
+  list its own paging variable. With one variable shared, a cursor or offset for one list
+  would reach the other, so `loadMore` rejects for either, and a refresh reads them in one
+  request (the larger loaded count) without following cursors. A key the query doesn't have,
+  or one used by two lists, rejects. A list is found through single links from the root, as
+  before: not inside a list or a fragment spread.
+- **A refused cursor.** A keyset cursor is bound to the entity and filter that issued it, and
+  graphql-orm (0.93.0 and later) refuses one it won't continue from, with `CURSOR_INVALID` from
+  0.94.0. That happens when a list stays open across a change that moves its sort keys, such as
+  a deploy. When `loadMore`'s request, or a refresh's request after its first, is refused with a
+  code in `connections.restartOn` (default `["CURSOR_INVALID"]`; add `"INVALID_INPUT"` for roots
+  that send that) and no error in the response is about access (`UNAUTHENTICATED`, `FORBIDDEN`,
+  `ACCESS_DENIED`, `STEP_UP_REQUIRED`), the list starts again from its first page under the same
+  stored list. For `loadMore`, that is a read of the query with the list's loaded range, the
+  asked-for page included, as a refresh reads it; rows past what's read, and the stored end
+  cursor, are dropped. For a refresh, the refresh is sent again once. Records keep their
+  identities, so selection and scroll state stay attached. It isn't an error: `error` stays
+  null, `connections[key].restarts` counts it, and `live.onDiagnostic` hears of it once per list
+  with reason `cursor-restarted`. It happens once per stored cursor: a cursor refused again, or
+  a restart that is itself refused, fails with the original error, so a server that refuses
+  every cursor can't make it loop. `restartOn: []` keeps the earlier behaviour, where the
+  refusal is the query's `error`. A refusal with no code (graphql-orm before 0.94.0) is not detected: the client never
+  reads message text.
+- **Starting again.** `restart({ connection })` (on `watchQuery` and `useQuery`) does the same
+  for an application that knows a list's cursors no longer hold for its own reasons: it reads
+  the list's loaded range from its first page, drops what it couldn't read and the stored end
+  cursor, and refreshes the query's other lists as a refetch does.
 - **Refreshing.** Regenerated queries refresh the loaded range as described under R3 below.
   Legacy artifacts replace the head and keep later pages and their end cursor.
 - **Offset input.** When the paging argument is graphql-orm's offset `PageInput` (`Limit`,
@@ -675,7 +711,20 @@ fragment WidgetCard on Widget @refetchable {
 - **Missing or denied.** A null `node` without errors means the record is missing or no longer
   readable: the store removes it, as for a `DELETED` event. A null with errors, or a failed
   request, leaves the stored record as it was.
-- **Not yet.** Batching several refetches into one `nodes(NodeIds)` request.
+- **Batching.** Where the schema also has the router's `nodes(NodeIds)` (graphql-orm-router
+  0.8.0 and later), the compiler adds `<queryName>Nodes($NodeIds: [ID!]!) { nodes(NodeIds: $NodeIds) { ...F } }`
+  as `fragment.refetchNodes`. `refetchFragment` calls for the same fragment made in one tick go out
+  as one `nodes` request, in chunks of `refetchBatch.maxNodes` ids (default 100, the router's
+  default bound; set it to `NodeLookupConfig::with_max_nodes`). A record asked for twice is sent
+  once. A tick with one record sends the `node` query, as before. Each caller gets its own result:
+  `found`, and the errors at its entry (`path: ["nodes", i, ...]`) plus any with no entry. A null
+  entry with no errors removes only that record. A request that fails rejects every caller in it
+  and changes no record. Versions order the writes as for any response. A call whose signal aborts
+  rejects at once; the request is cancelled when every call in it has. Disposing the client
+  rejects queued and in-flight calls and writes nothing. `refetchBatch: false` sends one `node`
+  request per call. A module generated before this, or against a schema without `nodes`, keeps one
+  `node` request per call. Behind a persisted-operation allow-list, add the `...Nodes` operations
+  or turn batching off.
 
 ## Imperative reads
 
@@ -768,8 +817,8 @@ those runs; each timing in each run is itself the median of five samples.
 | One event, 1,000-row list (ms) | 0.151 | 1.2 |
 | One event, 10,000-row list (ms) | 1.255 | 8 |
 | 45,000-line schema + 250 documents (ms) | 694 | 5,000 |
-| Main standalone raw bundle (bytes) | 67,147 | 68,000 |
-| Main standalone gzip bundle (bytes) | 21,521 | 22,000 |
+| Main standalone raw bundle (bytes) | 75,185 | 76,000 |
+| Main standalone gzip bundle (bytes) | 23,978 | 24,500 |
 | React standalone raw bundle (bytes) | 6,969 | 10,000 |
 | React standalone gzip bundle (bytes) | 2,836 | 4,000 |
 
@@ -801,7 +850,10 @@ and one socket per additional window**. This supports keeping the R19 decision f
 The burst, per-event and main bundle rows were measured again on 2026-11-13, on the same machine without the window run,
 after incremental reads ([#68](https://github.com/Dastari/graphql-orm-client/issues/68)). Before that change one event cost
 0.25 ms at 100 rows, 1.6 ms at 1,000 and 25 ms at 10,000, because each event read the whole list twice. The main bundle limit
-rose from 65,000 to 68,000 bytes (gzip 21,000 to 22,000) for it.
+rose from 65,000 to 68,000 bytes (gzip 21,000 to 22,000) for it. On 2026-11-17 it rose to 76,000 (gzip 24,500) for several
+`@connection` lists per query, restarting a list on a refused cursor and batched `refetchFragment`
+([#83](https://github.com/Dastari/graphql-orm-client/issues/83), [#55](https://github.com/Dastari/graphql-orm-client/issues/55),
+[#82](https://github.com/Dastari/graphql-orm-client/issues/82)), which took the bundle from 67,573 bytes to 75,185.
 
 It includes page/runtime, query snapshots and store allocations; it excludes native renderer
 memory, browser RSS, GPU memory and server cost. It does not establish a bound on a full
@@ -856,8 +908,10 @@ If the bound prevents a complete refresh, the loaded tail stays and
 `QueryState.listRefreshTruncated` is true; health reports `list-refresh-truncated`, never healthy.
 That tail may be stale and its order is not guaranteed, so the page should show it. Increase the bound or reopen a smaller
 range. This is not a snapshot across requests: concurrent server writes between keyset pages
-remain a server consistency limit. The existing pagination API manages the first `@connection`
-in a query; put independently managed connections in separate query owners.
+remain a server consistency limit. A query with several `@connection` lists refreshes each one's loaded range: the first
+request asks for each list's loaded rows through its own paging variable, and each keyset list's continuation requests set only
+its own cursor, leaving the others at their first page, whose rows are ignored. `listRefreshTruncated` is per list in
+`QueryState.connections`. A refused cursor in a continuation reads the range again once; see [Pagination](#pagination).
 
 With a preimage grant, `DELETED` removes the held record and re-reads lists. Without
 `can_read_deleted_preimage`, graphql-orm sends no delete event; the next event or poll corrects

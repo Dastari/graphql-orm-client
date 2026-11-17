@@ -4,8 +4,11 @@ import { argumentValue, fieldStorageKey, storageKey, type Variables } from "./ar
 import { ROOT_ID, type Store, type StoredRecord } from "./store.js"
 
 export interface NormalizeContext {
-  /** Loaded-range refresh boundary; Infinity replaces the complete range. */
-  readonly connectionTailFrom?: number
+  /**
+   * Loaded-range refresh boundaries, by `@connection` key: where the stored list's kept tail starts. Infinity replaces the
+   * complete range. A connection not named here merges as a first page or a next page.
+   */
+  readonly connectionTails?: Readonly<Record<string, number>>
   readonly keys: Readonly<Record<string, readonly string[]>>
   readonly lifetimes?: OperationArtifact["lifetimes"]
   readonly versions: Readonly<Record<string, string>>
@@ -171,7 +174,8 @@ function writeConnection(
   const record = store.getOrCreate(id, typename)
   const page = argumentValue(selection.args, spec.paging[0] ?? "", context.variables) as Record<string, unknown> | null | undefined
   const offset = spec.offset ? page?.[spec.offset] : undefined
-  const appending = context.connectionTailFrom === undefined && (spec.offset
+  const tailFrom = context.connectionTails?.[spec.key]
+  const appending = tailFrom === undefined && (spec.offset
     ? typeof offset === "number" && offset > 0
     : page?.[spec.after] !== undefined && page?.[spec.after] !== null)
 
@@ -201,7 +205,7 @@ function writeConnection(
   } else {
     const previousHead = typeof record.fields.get(HEAD_LENGTH) === "number" ? (record.fields.get(HEAD_LENGTH) as number) : existing.length
     const fresh = new Set(incoming)
-    const tail = existing.slice(context.connectionTailFrom ?? previousHead).filter((edge) => edge !== null && !fresh.has(edge))
+    const tail = existing.slice(tailFrom ?? previousHead).filter((edge) => edge !== null && !fresh.has(edge))
     // Pages read one at a time can show a row twice when it moves between reads.
     merged = [...fresh, ...tail]
     keepPageInfo = tail.length > 0

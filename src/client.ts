@@ -8,6 +8,7 @@ import { IDLE_TYPE_HEALTH, diagnosticMessage, typeHealth, worstOf, type LiveDiag
 import { LiveManager, type LiveOptions, type SubscriptionSink } from "./live.js"
 import { FRAGMENT_REF, readSelections, type FragmentRefData } from "./store/read.js"
 import { ROOT_ID, Store, type OptimisticLayer, type Selector, type Snapshot, type StoreOptions, intersects, recycle } from "./store/store.js"
+import { classifyErrors } from "./errors.js"
 
 export interface GraphQLErrorLike {
   readonly message: string
@@ -82,10 +83,15 @@ export interface QueryState<T> {
   readonly error: Error | null
   /** Errors returned alongside data (a denied field, for example). */
   readonly errors: readonly GraphQLErrorLike[]
-  /** The query's `@connection` list has another page. */
+  /** The query's first `@connection` list has another page. `connections` has each one. */
   readonly hasMore: boolean
-  /** A next page is being fetched; the loaded rows stay in `data`. */
+  /** A next page of one of the query's `@connection` lists is being fetched; the loaded rows stay in `data`. */
   readonly loadingMore: boolean
+  /**
+   * Each `@connection` list the query reads, by its `key`. Absent when the query has none. Load more of one with
+   * `loadMore({ connection: key })`.
+   */
+  readonly connections?: Readonly<Record<string, ConnectionState>>
   /**
    * The last refresh stopped at its bound (`live.maxRereadRows`, and `live.maxRereadPages` for keyset), so the rows past it are kept
    * as they were and may be stale or out of order. Show it, for example as a notice at the end of the list, and offer a way back to
@@ -94,14 +100,51 @@ export interface QueryState<T> {
   readonly listRefreshTruncated?: boolean
 }
 
+/** One `@connection` list of a query, in `QueryState.connections`. */
+export interface ConnectionState {
+  /** The list has another page. */
+  readonly hasMore: boolean
+  /** Its next page is being fetched. */
+  readonly loadingMore: boolean
+  /** Its last refresh stopped at the bound: see `QueryState.listRefreshTruncated`. */
+  readonly listRefreshTruncated: boolean
+  /**
+   * How often the server refused one of its cursors (`CURSOR_INVALID`) and the list started again from its first page, keeping
+   * its records and reading the loaded rows again. See `ClientOptions.connections`.
+   */
+  readonly restarts: number
+}
+
+/** Selects one `@connection` list of a query by its `key`; left out, the query's first. */
+export interface ConnectionOptions {
+  readonly connection?: string
+}
+
+/** Internal: one connection's part in a loaded-range refresh. */
+interface ConnectionRefresh {
+  /** Rows to read again from its first page. */
+  readonly loaded: number
+  readonly pages: number
+  readonly rows: number
+  /** Another connection in the query shares its paging variable, so the refresh can't follow its cursor by itself. */
+  readonly shared?: boolean
+  /** Replace the whole stored list with what is read: rows past it, and the stored end cursor, are dropped. */
+  readonly restart?: boolean
+  onTruncated(value: boolean): void
+  /** The server refused a cursor the refresh followed, and the refresh started again from the first page and succeeded. */
+  onRestart?(code: string): void
+}
+
 /** Options for `Client.execute`. */
 export interface ExecuteOptions {
   /** Cause counted when a query request is sent. Defaults to manual. */
   readCause?: ReadCause
   signal?: AbortSignal
   beforeWrite?: () => void
-  /** Internal loaded-range refresh; driven by the compiled connection and returned PageInfo. */
-  refreshConnection?: { loaded: number; pages: number; rows: number; onTruncated(value: boolean): void }
+  /** Internal loaded-range refresh, by `@connection` key; driven by the compiled connection and returned PageInfo. */
+  refreshConnections?: Readonly<Record<string, ConnectionRefresh>>
+  /** Internal: false keeps a refused cursor in a refresh from starting it again. */
+  cursorRestart?: boolean
   /**
    * Read the response into a store of its own instead of the client's. Nothing reaches the
    * client's store, its subscribers or its retention. The returned snapshot, and the fragment
@@ -121,6 +164,30 @@ export interface ClientOptions {
   /** Keep records read through `@live` fragments current with generated Changed subscriptions. */
   readonly live?: LiveOptions
   readonly polling?: PollingOptions
+  readonly connections?: ConnectionClientOptions
+  /**
+   * `refetchFragment` calls for one fragment made in the same tick go out as one `nodes(NodeIds)` request, in chunks of
+   * `maxNodes` ids. The default, 100, is graphql-orm-router's bound; set it to the router's `NodeLookupConfig::with_max_nodes`.
+   * It needs a module generated against a schema with `nodes`; otherwise each call reads its record through `node(NodeId)`.
+   * `false` sends one `node(NodeId)` request per call, as earlier versions did.
+   */
+  readonly refetchBatch?: false | { readonly maxNodes?: number }
+}
+
+/** How `@connection` lists recover. */
+export interface ConnectionClientOptions {
+  /**
+   * Codes on which a refused cursor starts a keyset list again from its first page, under the same stored list: when
+   * `loadMore` sends the stored end cursor, or a refresh follows a cursor past its first request. The records keep their
+   * identities and the rows loaded so far are read again, as a refresh does; `loadMore`'s rows come with them. It happens at
+   * most once per cursor, so a server that refuses every cursor fails with its error instead of looping, and never when an
+   * error in the response is about access (`UNAUTHENTICATED`, `FORBIDDEN`, `ACCESS_DENIED`, `STEP_UP_REQUIRED`). It is
+   * counted in `ConnectionState.restarts` and reported once per list through `live.onDiagnostic` as `cursor-restarted`.
+   *
+   * Default `["CURSOR_INVALID"]`, the code graphql-orm sends from 0.94.0. Add `"INVALID_INPUT"` for roots that send that
+   * instead. `[]` turns it off: the refusal is the query's `error`, as before.
+   */
+  readonly restartOn?: readonly ("CURSOR_INVALID" | "INVALID_INPUT")[]
 }
 
 export interface PollingOptions {
@@ -155,8 +222,18 @@ export interface WatchedQuery<T> {
   getState(): QueryState<T>
   subscribe(listener: () => void): () => void
   refetch(): Promise<void>
-  /** Fetch the next page of the query's `@connection` list and append it. */
-  loadMore(): Promise<void>
+  /**
+   * Fetch the next page of the query's first `@connection` list, or of the one whose `key` is `connection`, and append it.
+   * Rejects for a key the query doesn't have.
+   */
+  loadMore(options?: ConnectionOptions): Promise<void>
+  /**
+   * Read a `@connection` list again from its first page (the first list, or the one whose `key` is `connection`), under the
+   * same stored list: the records keep their identities, the rows loaded so far are read again, and rows past what's read and
+   * the stored end cursor are dropped. For an application that knows the list's cursors no longer hold. A refused cursor
+   * starts again by itself: see `ClientOptions.connections`. Resolves at once for a query with no `@connection`.
+   */
+  restart(options?: ConnectionOptions): Promise<void>
 }
 
 /** A route read started before mount. Dispose on abandoned navigation; mount with useLoadedQuery. */
@@ -292,6 +369,42 @@ function queryKey(artifact: OperationArtifact<any, any>, variables: Variables): 
   return `${artifact.hash}:${stableStringify(variables)}`
 }
 
+/** A `@connection` list of a query, with its stored page info. */
+interface ConnectionInfo {
+  spec: ConnectionSpec
+  /** The operation variable holding its paging argument; null when the argument is written inline. */
+  variable: string | null
+  endCursor: string | null
+  hasMore: boolean
+  /** Rows in the stored list. */
+  loaded: number
+}
+
+const declaredConnections = new WeakMap<OperationArtifact<any, any>, readonly { key: string; variable: string | null }[]>()
+
+/** The `@connection` fields a query's own selections reach through single links, in order, with their paging variables. */
+function connectionsOf(artifact: OperationArtifact<any, any>): readonly { key: string; variable: string | null }[] {
+  let found = declaredConnections.get(artifact)
+  if (found) return found
+  const list: { key: string; variable: string | null }[] = []
+  const walk = (selections: readonly Selection[]): void => {
+    for (const selection of selections) {
+      if (selection.kind === "inline") walk(selection.selections)
+      if (selection.kind !== "link" || selection.plural) continue
+      if (!selection.connection) {
+        walk(selection.selections)
+        continue
+      }
+      const arg = selection.args.find((entry) => entry.name === selection.connection!.paging[0])
+      list.push({ key: selection.connection.key, variable: arg?.kind === "variable" ? arg.variable : null })
+    }
+  }
+  walk(artifact.selections)
+  found = list
+  declaredConnections.set(artifact, found)
+  return found
+}
+
 /** How often a query with a re-read waiting checks whether polling has become active again. */
 const INACTIVE_REREAD_CHECK_MS = 1000
 
@@ -314,7 +427,7 @@ class QueryResource<T> implements WatchedQuery<T> {
     client.store.configureLifetimes(artifact.lifetimes)
     const snapshot = client.store.lookup<T>(selectorOf(artifact, variables))
     const complete = !snapshot.missing && policy !== "network-only"
-    this.state = {
+    this.state = this.withConnections({
       stale: snapshot.stale,
       lifetime: snapshot.lifetime,
       status: complete ? "ready" : "loading",
@@ -323,7 +436,7 @@ class QueryResource<T> implements WatchedQuery<T> {
       errors: [],
       hasMore: complete ? this.connection()?.hasMore ?? false : false,
       loadingMore: false,
-    }
+    })
   }
 
   getState = (): QueryState<T> => this.state
@@ -423,16 +536,40 @@ class QueryResource<T> implements WatchedQuery<T> {
   }
 
   private loadingMore: Promise<void> | null = null
-  private loadedRange = 0
+  /** The connection `loadingMore` is reading, by key. */
+  private loadingKey: string | null = null
+  /** Rows each connection has asked for, by key, so a refresh also reads a page that is still arriving. */
+  private readonly loadedRanges = new Map<string, number>()
+  private readonly truncated = new Map<string, boolean>()
+  private readonly restarts = new Map<string, number>()
+  /** The cursor each connection last started again from: a second refusal of it fails instead. */
+  private readonly restartedFrom = new Map<string, string>()
 
-  loadMore = (): Promise<void> => {
-    if (this.inflight) return this.inflight.then(() => (this.users > 0 ? this.loadMore() : undefined))
-    if (this.loadingMore) return this.loadingMore
-    const connection = this.connection()
+  /** The key `options` selects, or an error for one the query doesn't have; undefined when it has no `@connection`. */
+  private connectionKey(options: ConnectionOptions): string | Error | undefined {
+    const declared = connectionsOf(this.artifact)
+    if (options.connection === undefined) return declared[0]?.key
+    const matching = declared.filter((entry) => entry.key === options.connection)
+    if (matching.length === 0) return new Error(`${this.artifact.name} has no @connection with key "${options.connection}"`)
+    if (matching.length > 1) return new Error(`${this.artifact.name} has ${matching.length} @connection fields with key "${options.connection}"; give each its own key`)
+    return options.connection
+  }
+
+  loadMore = (options: ConnectionOptions = {}): Promise<void> => {
+    if (this.inflight) return this.inflight.then(() => (this.users > 0 ? this.loadMore(options) : undefined))
+    const key = this.connectionKey(options)
+    if (key instanceof Error) return Promise.reject(key)
+    if (key === undefined) return Promise.resolve()
+    if (this.loadingMore) return this.loadingKey === key ? this.loadingMore : this.loadingMore.then(() => (this.users > 0 ? this.loadMore(options) : undefined))
+    const connection = this.connection(key)
     if (!connection?.hasMore || (connection.endCursor === null && !connection.spec.offset)) return Promise.resolve()
     const { spec, variable } = connection
     if (variable === null)
       return Promise.reject(new Error(`Pass ${this.artifact.name}'s ${spec.paging[0]} argument as a variable to load more`))
+    // A cursor or offset in a shared variable would reach the other list too, which would append the wrong rows or refuse it.
+    const sharing = connectionsOf(this.artifact).filter((entry) => entry.variable === variable && entry.key !== key)
+    if (sharing.length)
+      return Promise.reject(new Error(`${this.artifact.name}: @connection "${key}" shares its paging variable $${variable} with ${sharing.map((entry) => `"${entry.key}"`).join(", ")}; give each list its own paging variable to load more of it`))
     const pageValue = (this.variables[variable] as Record<string, unknown> | null | undefined) ?? {}
     const next = {
       ...this.variables,
@@ -441,32 +578,105 @@ class QueryResource<T> implements WatchedQuery<T> {
         : { ...pageValue, [spec.after]: connection.endCursor },
     }
     const size = spec.limit ? pageValue[spec.limit] : undefined
-    if (typeof size === "number") this.loadedRange = Math.max(this.loadedRange, connection.loaded + size)
+    if (typeof size === "number") this.loadedRanges.set(key, Math.max(this.loadedRanges.get(key) ?? 0, connection.loaded + size))
+    this.loadingKey = key
     this.set({ ...this.state, loadingMore: true })
+    const cursor = spec.offset ? null : connection.endCursor
     this.loadingMore = this.client
       .execute<T>(this.artifact, next, { readCause: "pagination" })
-      .then(() => this.set({ ...this.state, loadingMore: false, hasMore: this.connection()?.hasMore ?? false }))
-      .catch((error: unknown) => {
-        this.set({ ...this.state, loadingMore: false, error: error instanceof Error ? error : new Error(String(error)) })
-      })
+      .then(() => undefined, (error: unknown) => this.restartAfterRefusal(key, cursor, error))
+      .then(
+        () => {
+          this.loadingKey = null
+          this.set({ ...this.state, loadingMore: false, hasMore: this.connection()?.hasMore ?? false })
+        },
+        (error: unknown) => {
+          this.loadingKey = null
+          this.set({ ...this.state, loadingMore: false, error: error instanceof Error ? error : new Error(String(error)) })
+        }
+      )
       .finally(() => {
         this.loadingMore = null
       })
     return this.loadingMore
   }
 
-  /** The first `@connection` list this query reads, with its stored page info. */
-  private connection(): {
-    spec: ConnectionSpec
-    variable: string | null
-    endCursor: string | null
-    hasMore: boolean
-    /** Rows in the stored list. */
-    loaded: number
-  } | null {
-    const found = findConnection(this.client.store, this.artifact.selections, this.variables, ROOT_ID)
-    if (!found) return null
-    const { spec, selection, id } = found
+  restart = (options: ConnectionOptions = {}): Promise<void> => {
+    const key = this.connectionKey(options)
+    if (key instanceof Error) return Promise.reject(key)
+    if (key === undefined) return Promise.resolve()
+    if (this.inflight) return this.inflight.then(() => (this.users > 0 ? this.restart(options) : undefined))
+    this.restartedFrom.delete(key)
+    this.client.store.refreshRelations?.(selectorOf(this.artifact, this.variables))
+    return this.fetch("manual", undefined, key)
+  }
+
+  /**
+   * `loadMore` failed. When the server refused the cursor it sent, and hasn't refused this cursor before, read the list again
+   * from its first page; otherwise, or when that read is refused too, fail with `error`.
+   */
+  private async restartAfterRefusal(key: string, cursor: string | null, error: unknown): Promise<void> {
+    const code = cursor === null ? null : this.client.cursorRefused(error)
+    if (code === null || cursor === null || this.users === 0 || this.client.store.isDisposed || this.restartedFrom.get(key) === cursor) throw error
+    this.restartedFrom.set(key, cursor)
+    try {
+      await this.client.execute<T>(this.artifact, this.variables, { readCause: "pagination", cursorRestart: false, ...this.refreshOptions(key) })
+    } catch (again) {
+      throw this.client.cursorRefused(again) === null ? again : error
+    }
+    this.restarted(key, code)
+  }
+
+  private restarted(key: string, code: string): void {
+    this.restarts.set(key, (this.restarts.get(key) ?? 0) + 1)
+    this.client.cursorRestarted(this.artifact, key, code)
+  }
+
+  /**
+   * What a refresh reads again of each connection: its loaded range, for regenerated artifacts. `restart` also starts that
+   * connection again from its first page, dropping what isn't read.
+   */
+  private refreshOptions(restart?: string): Pick<ExecuteOptions, "refreshConnections"> {
+    if (!this.artifact.lists && restart === undefined) return {}
+    const declared = connectionsOf(this.artifact)
+    const refreshes: Record<string, ConnectionRefresh> = {}
+    const entry = (key: string, loaded: number, shared: boolean): ConnectionRefresh => ({
+      loaded,
+      ...this.client.connectionRereadLimits,
+      ...(shared ? { shared } : {}),
+      ...(key === restart ? { restart: true } : {}),
+      onTruncated: (value: boolean) => {
+        // A restart's list is what it read: a later refresh asks for that, not the range before it.
+        if (key === restart) this.loadedRanges.delete(key)
+        this.truncated.set(key, value)
+        this.set({ ...this.state, listRefreshTruncated: [...this.truncated.values()].some(Boolean) })
+      },
+      onRestart: (code: string) => this.restarted(key, code),
+    })
+    for (const connection of this.connections()) {
+      const { spec, variable } = connection
+      if (spec.key in refreshes || variable === null || (spec.key !== restart && (!this.artifact.lists || !spec.limit))) continue
+      const shared = declared.some((other) => other.variable === variable && other.key !== spec.key)
+      refreshes[spec.key] = entry(spec.key, Math.max(connection.loaded, this.loadedRanges.get(spec.key) ?? 0), shared)
+    }
+    if (restart !== undefined && !(restart in refreshes)) refreshes[restart] = entry(restart, 0, false)
+    return Object.keys(refreshes).length ? { refreshConnections: refreshes } : {}
+  }
+
+  /** The query's first `@connection` list, or the first with `key`, with its stored page info. */
+  private connection(key?: string): ConnectionInfo | null {
+    for (const found of findConnections(this.client.store, this.artifact.selections, this.variables, ROOT_ID)) {
+      if (key === undefined || found.spec.key === key) return this.describe(found)
+    }
+    return null
+  }
+
+  /** Every `@connection` list the query reads that is stored, in order. */
+  private connections(): ConnectionInfo[] {
+    return findConnections(this.client.store, this.artifact.selections, this.variables, ROOT_ID).map((found) => this.describe(found))
+  }
+
+  private describe({ spec, selection, id }: { spec: ConnectionSpec; selection: LinkSelection; id: string }): ConnectionInfo {
     const record = this.client.store.get(id)
     const pageInfoRef = record
       ? ([...record.fields].find(([key]) => key === spec.pageInfo || key.startsWith(`${spec.pageInfo}(`))?.[1] as { __ref?: string } | undefined)?.__ref
@@ -486,15 +696,33 @@ class QueryResource<T> implements WatchedQuery<T> {
     }
   }
 
-  fetch(cause: ReadCause = "manual", beforeSend?: () => void): Promise<void> {
+  /** `state` with each connection's state, when the query has any. */
+  private withConnections(state: QueryState<T>): QueryState<T> {
+    const declared = connectionsOf(this.artifact)
+    if (declared.length === 0) return state
+    const stored = new Map<string, ConnectionInfo>()
+    if (state.data !== undefined) for (const connection of this.connections()) if (!stored.has(connection.spec.key)) stored.set(connection.spec.key, connection)
+    const connections: Record<string, ConnectionState> = {}
+    for (const { key } of declared) {
+      connections[key] ??= {
+        hasMore: stored.get(key)?.hasMore ?? false,
+        loadingMore: this.loadingKey === key,
+        listRefreshTruncated: this.truncated.get(key) ?? false,
+        restarts: this.restarts.get(key) ?? 0,
+      }
+    }
+    return { ...state, connections }
+  }
+
+  /** Read the query again; `restart` also starts that `@connection` again from its first page. */
+  fetch(cause: ReadCause = "manual", beforeSend?: () => void, restart?: string): Promise<void> {
     if (this.inflight) return this.inflight
-    if (this.loadingMore) return this.loadingMore.then(() => (this.users > 0 ? this.fetch(cause, beforeSend) : undefined))
+    if (this.loadingMore) return this.loadingMore.then(() => (this.users > 0 ? this.fetch(cause, beforeSend, restart) : undefined))
     if (this.state.data !== undefined) this.set({ ...this.state, status: "refreshing" })
     const controller = new AbortController()
     this.controller = controller
-    const connection = this.artifact.lists ? this.connection() : null
     this.inflight = this.client
-      .execute<T>(this.artifact, this.variables, { readCause: cause, beforeSend, signal: controller.signal, ...(connection && connection.variable && connection.spec.limit ? { refreshConnection: { loaded: Math.max(connection.loaded, this.loadedRange), ...this.client.connectionRereadLimits, onTruncated: (value: boolean) => this.set({ ...this.state, listRefreshTruncated: value }) } } : {}) })
+      .execute<T>(this.artifact, this.variables, { readCause: cause, beforeSend, signal: controller.signal, ...this.refreshOptions(restart) })
       .then(({ snapshot, errors }) => {
         if (controller.signal.aborted) return
         this.lastReadAt = this.client.now()
@@ -660,7 +888,7 @@ class QueryResource<T> implements WatchedQuery<T> {
   }
 
   private set(state: QueryState<T>): void {
-    this.state = state
+    this.state = this.withConnections(state)
     for (const listener of [...this.listeners]) listener()
   }
 }
@@ -851,6 +1079,39 @@ export class Client {
     this.clock = options.live?.now ?? Date.now
     const fallback = options.live?.onDiagnostic === undefined ? defaultDiagnostic : options.live.onDiagnostic
     this.onDiagnostic = fallback
+    this.restartOn = new Set(options.connections?.restartOn ?? ["CURSOR_INVALID"])
+    this.maxNodes = options.refetchBatch === false ? 1 : Math.max(1, Math.floor(options.refetchBatch?.maxNodes ?? 100))
+  }
+
+  private readonly restartOn: ReadonlySet<string>
+  /** Most `NodeIds` in one `nodes` request; 1 turns batching off. */
+  private readonly maxNodes: number
+
+  /**
+   * The code a restart from the first page answers, when `error` is a refused cursor (`connections.restartOn`) with no error
+   * about access; otherwise null.
+   */
+  cursorRefused(error: unknown): string | null {
+    if (this.restartOn.size === 0 || !(error instanceof OperationError)) return null
+    const classified = classifyErrors(error)
+    if (classified.some((entry) => entry.kind === "unauthenticated" || entry.kind === "forbidden" || ACCESS_CODES.has(entry.code ?? ""))) return null
+    return classified.find((entry) => entry.code !== null && this.restartOn.has(entry.code))?.code ?? null
+  }
+
+  /** Report, once per list, that `artifact`'s connection `key` started again from its first page. */
+  cursorRestarted(artifact: OperationArtifact<any, any>, key: string, code: string): void {
+    const diagnosed = `${artifact.name}\u0000${key}\u0000cursor-restarted`
+    if (!this.onDiagnostic || this.diagnosed.has(diagnosed)) return
+    this.diagnosed.add(diagnosed)
+    const typename = connectionNodeType(artifact.normalization, key)
+    this.onDiagnostic({
+      fragment: artifact.name,
+      typename,
+      state: this.liveTypeHealth(typename).state,
+      reason: "cursor-restarted",
+      code,
+      message: `graphql-orm-client: ${artifact.name}'s @connection "${key}" started again from its first page: the server refused its cursor (${code}). Its loaded rows were read again.`,
+    })
   }
 
   /** Interval for automatic stale and confirming reads. */
@@ -1085,73 +1346,59 @@ export class Client {
   }
 
   /**
-   * Read the rest of a loaded keyset range after its first page, up to the limits, and merge it into `data`.
-   * Returns where the store's kept tail starts: `Infinity` when the whole range was read again.
+   * Read the rest of connection `key`'s loaded keyset range after its first page, up to the limits, and merge it into `data`.
+   * Returns where the store's kept tail starts: `Infinity` when the whole range was read again, or for a restart.
    */
   private async readLoadedRange(
     artifact: OperationArtifact<any, any>,
     variables: Variables,
     data: Record<string, unknown>,
-    refresh: { loaded: number; pages: number; rows: number; onTruncated(value: boolean): void },
+    key: string,
+    refresh: ConnectionRefresh,
     signal: AbortSignal,
     cause: ReadCause
   ): Promise<number | undefined> {
-    let connectionTailFrom: number | undefined
-    const locate = (selections: readonly Selection[], data: Record<string, unknown>): { selection: LinkSelection; data: Record<string, unknown> } | null => {
-      for (const selection of selections) {
-        if (selection.kind === "inline") { const found = locate(selection.selections, data); if (found) return found }
-        if (selection.kind !== "link") continue
-        const child = data[selection.responseKey]
-        if (!child || typeof child !== "object" || Array.isArray(child)) continue
-        if (selection.connection) return { selection, data: child as Record<string, unknown> }
-        const found = locate(selection.selections, child as Record<string, unknown>); if (found) return found
-      }
-      return null
-    }
-    let found = locate(artifact.normalization, data)
-    if (found) {
-      const spec = found.selection.connection!
-      const arg = found.selection.args.find(arg => arg.name === spec.paging[0])
-      if (arg?.kind === "variable" && spec.limit) {
-        const page = (variables[arg.variable] ?? {}) as Record<string, unknown>
-        const target = refresh.loaded
-        const edgesKey = found.selection.selections.find((s): s is LinkSelection => s.kind === "link" && s.fieldName === spec.edges)?.responseKey ?? spec.edges
-        const infoKey = found.selection.selections.find((s): s is LinkSelection => s.kind === "link" && s.fieldName === spec.pageInfo)?.responseKey ?? spec.pageInfo
-        if (!spec.offset) {
-          let count = 1
-          while (found && (found.data[edgesKey] as unknown[]).length < target && count < refresh.pages) {
-            const info = found.data[infoKey] as Record<string, unknown>
-            if (info[spec.hasNextPage] !== true || typeof info[spec.endCursor] !== "string") break
-            // Only the rows still missing, so the last request doesn't read a whole page past what's loaded.
-            const size = Math.min(target - (found.data[edgesKey] as unknown[]).length, Math.max(refresh.rows, Number(page[spec.limit]) || 0))
-            const next = { ...variables, [arg.variable]: { ...page, [spec.after]: info[spec.endCursor], [spec.limit]: size } }
-            this.countRead(cause)
-            const extra = await this.network.execute({ kind: artifact.kind, name: artifact.name, text: artifact.text, hash: artifact.hash, variables: next }, { signal })
-            if (extra.errors?.length || !extra.data) throw new OperationError(artifact.name, extra.errors ?? [])
-            const part = locate(artifact.normalization, extra.data)
-            if (!part || !(part.data[edgesKey] as unknown[]).length) break
-            // A row that moved between reads comes back on the next page too. Count it once, so the range still fills.
-            const nodeId = (edge: unknown) => {
-              const node = (edge as Record<string, unknown> | null)?.[spec.node] as Record<string, unknown> | null | undefined
-              return node ? identify(node, artifact.keys) : null
-            }
-            const seen = new Set((found.data[edgesKey] as unknown[]).map(nodeId))
-            const fresh = (part.data[edgesKey] as unknown[]).filter((edge) => !seen.has(nodeId(edge)))
-            found.data[edgesKey] = [...(found.data[edgesKey] as unknown[]), ...fresh]
-            found.data[infoKey] = part.data[infoKey]
-            count++
-          }
+    let found = locateConnection(artifact.normalization, data, key)
+    if (!found) return undefined
+    const spec = found.selection.connection!
+    const arg = found.selection.args.find(arg => arg.name === spec.paging[0])
+    if (arg?.kind !== "variable" || !spec.limit) return refresh.restart ? Infinity : undefined
+    const page = (variables[arg.variable] ?? {}) as Record<string, unknown>
+    const target = refresh.loaded
+    const edgesKey = found.selection.selections.find((s): s is LinkSelection => s.kind === "link" && s.fieldName === spec.edges)?.responseKey ?? spec.edges
+    const infoKey = found.selection.selections.find((s): s is LinkSelection => s.kind === "link" && s.fieldName === spec.pageInfo)?.responseKey ?? spec.pageInfo
+    // A cursor in a shared paging variable would reach the other list too, so a shared list is read in its one request.
+    if (!spec.offset && !refresh.shared) {
+      let count = 1
+      while (found && (found.data[edgesKey] as unknown[]).length < target && count < refresh.pages) {
+        const info = found.data[infoKey] as Record<string, unknown>
+        if (info[spec.hasNextPage] !== true || typeof info[spec.endCursor] !== "string") break
+        // Only the rows still missing, so the last request doesn't read a whole page past what's loaded.
+        const size = Math.min(target - (found.data[edgesKey] as unknown[]).length, Math.max(refresh.rows, Number(page[spec.limit]) || 0))
+        const next = { ...variables, [arg.variable]: { ...page, [spec.after]: info[spec.endCursor], [spec.limit]: size } }
+        this.countRead(cause)
+        const extra = await this.network.execute({ kind: artifact.kind, name: artifact.name, text: artifact.text, hash: artifact.hash, variables: next }, { signal })
+        if (extra.errors?.length || !extra.data) throw new ContinuationError(artifact.name, extra.errors ?? [], key)
+        const part = locateConnection(artifact.normalization, extra.data, key)
+        if (!part || !(part.data[edgesKey] as unknown[]).length) break
+        // A row that moved between reads comes back on the next page too. Count it once, so the range still fills.
+        const nodeId = (edge: unknown) => {
+          const node = (edge as Record<string, unknown> | null)?.[spec.node] as Record<string, unknown> | null | undefined
+          return node ? identify(node, artifact.keys) : null
         }
-        if (found) {
-          const length = (found.data[edgesKey] as unknown[]).length
-          const more = (found.data[infoKey] as Record<string, unknown>)[spec.hasNextPage] === true
-          const truncated = length < target && more
-          connectionTailFrom = truncated ? length : Infinity
-          refresh.onTruncated(truncated)
-        }
+        const seen = new Set((found.data[edgesKey] as unknown[]).map(nodeId))
+        const fresh = (part.data[edgesKey] as unknown[]).filter((edge) => !seen.has(nodeId(edge)))
+        found.data[edgesKey] = [...(found.data[edgesKey] as unknown[]), ...fresh]
+        found.data[infoKey] = part.data[infoKey]
+        count++
       }
     }
-    return connectionTailFrom
+    const length = (found.data[edgesKey] as unknown[]).length
+    const more = (found.data[infoKey] as Record<string, unknown> | null | undefined)?.[spec.hasNextPage] === true
+    // A restart keeps nothing past what it read: the rest would continue from the refused cursor.
+    const truncated = length < target && more && !refresh.restart
+    refresh.onTruncated(truncated)
+    return truncated ? length : Infinity
   }
 
   /** Send an operation and write its response into the store. */
@@ -1181,40 +1428,43 @@ export class Client {
     try {
       // A request cancelled before it starts is never sent.
       if (controller.signal.aborted) throw new DOMException("The request was cancelled", "AbortError")
-      let networkVariables = variables as Variables
-      const firstConnection = (selections: readonly Selection[]): LinkSelection | undefined => {
-        for (const selection of selections) {
-          if (selection.kind === "link" && selection.connection) return selection
-          if (selection.kind === "link" || selection.kind === "inline") { const found = firstConnection(selection.selections); if (found) return found }
-        }
-        return undefined
-      }
-      const refreshSelection = options.refreshConnection && firstConnection(artifact.normalization)
-      const refreshSpec = refreshSelection && refreshSelection.connection
-      const refreshArg = refreshSelection && refreshSelection.args.find(arg => arg.name === refreshSpec?.paging[0])
-      // The loaded rows in one request where the bound allows, for offset and keyset lists alike. At least the page the query asks
-      // for: asking only for what's loaded would let a new row push one out of a page with room.
-      if (options.refreshConnection && refreshSpec?.limit && refreshArg?.kind === "variable" && options.refreshConnection.loaded > 0) {
-        const page = (variables[refreshArg.variable] as Record<string, unknown> | undefined) ?? {}
-        networkVariables = { ...variables, [refreshArg.variable]: {
-          ...page,
-          ...(refreshSpec.offset ? { [refreshSpec.offset]: page[refreshSpec.offset] ?? 0 } : {}),
-          [refreshSpec.limit]: Math.max(Math.min(options.refreshConnection.loaded, options.refreshConnection.rows), Number(page[refreshSpec.limit]) || 0),
-        } }
-      }
+      const refreshes = options.refreshConnections
+      const networkVariables = refreshes ? refreshVariables(artifact, variables, refreshes) : variables as Variables
       options.beforeSend?.()
-      if (artifact.kind === "query") this.countRead(options.readCause ?? "manual")
-      const response = await this.network.execute(
-        { kind: artifact.kind, name: artifact.name, text: artifact.text, hash: artifact.hash, variables: networkVariables },
-        { signal: controller.signal }
-      )
-      if (this.store.isDisposed || controller.signal.aborted)
-        throw new DOMException("The request was cancelled", "AbortError")
-      options.observeResponse?.(response)
-      const connectionTailFrom = options.refreshConnection && response.data
-        ? await this.readLoadedRange(artifact, variables as Variables, response.data, options.refreshConnection, controller.signal, options.readCause ?? "manual")
-        : undefined
-      if (this.store.isDisposed || controller.signal.aborted) throw new DOMException("The request was cancelled", "AbortError")
+      const cause = options.readCause ?? "manual"
+      const send = async () => {
+        if (artifact.kind === "query") this.countRead(cause)
+        const response = await this.network.execute(
+          { kind: artifact.kind, name: artifact.name, text: artifact.text, hash: artifact.hash, variables: networkVariables },
+          { signal: controller.signal }
+        )
+        if (this.store.isDisposed || controller.signal.aborted)
+          throw new DOMException("The request was cancelled", "AbortError")
+        options.observeResponse?.(response)
+        const tails: Record<string, number> = {}
+        for (const [key, refresh] of refreshes && response.data ? Object.entries(refreshes) : []) {
+          const tail = await this.readLoadedRange(artifact, variables as Variables, response.data!, key, refresh, controller.signal, cause)
+          if (tail !== undefined) tails[key] = tail
+        }
+        if (this.store.isDisposed || controller.signal.aborted) throw new DOMException("The request was cancelled", "AbortError")
+        return { response, tails }
+      }
+      let sent: Awaited<ReturnType<typeof send>>
+      try {
+        sent = await send()
+      } catch (error) {
+        // A cursor the refresh followed was refused: read the range again from its first page, once.
+        const code = error instanceof ContinuationError && options.cursorRestart !== false ? this.cursorRefused(error) : null
+        if (code === null) throw error
+        try {
+          sent = await send()
+        } catch (again) {
+          throw again instanceof ContinuationError && this.cursorRefused(again) !== null ? error : again
+        }
+        refreshes![(error as ContinuationError).connection]?.onRestart?.(code)
+      }
+      const { response, tails } = sent
+      const connectionTails = Object.keys(tails).length ? tails : undefined
       const errors = response.errors ?? []
       options.beforeWrite?.()
       if (!response.data) throw new OperationError(artifact.name, errors)
@@ -1225,7 +1475,7 @@ export class Client {
       }
       const rootId = artifact.kind === "query" ? ROOT_ID : `client:${artifact.kind}:${++this.mutationCount}`
       const target = options.isolated ? new Store() : this.store
-      normalize(target, artifact.normalization, this.partialResults === "preserve-errors" ? withoutErrorNulls(response.data, errors) : response.data, { ...contextOf(artifact, variables), connectionTailFrom }, rootId, artifact.rootType)
+      normalize(target, artifact.normalization, this.partialResults === "preserve-errors" ? withoutErrorNulls(response.data, errors) : response.data, { ...contextOf(artifact, variables), ...(connectionTails ? { connectionTails } : {}) }, rootId, artifact.rootType)
       target.publish()
       const snapshot = target.lookup<T>(selectorOf(artifact, variables, rootId))
       if (rootId !== ROOT_ID) target.delete(rootId)
@@ -1270,6 +1520,7 @@ export class Client {
       subscribe: shared.subscribe,
       refetch: shared.refetch,
       loadMore: shared.loadMore,
+      restart: shared.restart,
       open: () => {
         if (opened || this.store.isDisposed) return
         opened = true
@@ -1509,6 +1760,12 @@ export class Client {
    * write it into the store; every view of the record updates. A null result without errors
    * means the record is now missing or denied, so it is removed, as on a DELETED event. A
    * failure (errors, a network error) leaves the stored record as it was.
+   *
+   * Calls for the same fragment made in one tick share one `nodes(NodeIds)` request, in chunks of
+   * `refetchBatch.maxNodes`, when the module was generated against a schema with `nodes`. Each call
+   * still gets its own result: `found`, and the errors at its entry or with no entry. A missing
+   * entry removes only its record; a failed request rejects every call in it and changes nothing.
+   * A call whose signal aborts rejects at once; the request is cancelled when every call in it has.
    */
   async refetchFragment<N extends string>(
     fragment: FragmentArtifact<any, N>,
@@ -1517,20 +1774,103 @@ export class Client {
   ): Promise<{ found: boolean; errors: readonly GraphQLErrorLike[] }> {
     if (!fragment.refetch) throw new Error(`${fragment.name} is not @refetchable`)
     const { selector } = fragmentSelector(fragment, ref)
-    const { snapshot, errors } = await this.execute(
-      fragment.refetch as OperationArtifact<{ node: unknown }>,
-      { NodeId: selector.id },
-      options.signal ? { signal: options.signal } : {}
-    )
+    const batch = fragment.refetchNodes
+    if (!batch || this.maxNodes <= 1) return this.refetchNode(fragment.refetch, selector.id, options.signal)
+    if (this.store.isDisposed) throw new Error("This client was disposed with its identity")
+    if (options.signal?.aborted) throw cancelled()
+    return new Promise((resolve, reject) => {
+      let queue = this.refetchQueues.get(batch.hash)
+      if (!queue) {
+        queue = { batch, single: fragment.refetch!, calls: [] }
+        this.refetchQueues.set(batch.hash, queue)
+        queueMicrotask(() => this.flushRefetches(batch.hash))
+      }
+      const call: RefetchCall = { id: selector.id, settled: false, resolve, reject, release: () => {} }
+      const signal = options.signal
+      if (signal) {
+        const abort = () => settle(call, { error: cancelled() })
+        signal.addEventListener("abort", abort, { once: true })
+        call.signal = signal
+        call.release = () => signal.removeEventListener("abort", abort)
+      }
+      queue.calls.push(call)
+    })
+  }
+
+  /** `refetchFragment` calls waiting for this tick's request, by batched query. */
+  private readonly refetchQueues = new Map<string, { batch: OperationArtifact; single: OperationArtifact; calls: RefetchCall[] }>()
+
+  private flushRefetches(hash: string): void {
+    const queue = this.refetchQueues.get(hash)
+    this.refetchQueues.delete(hash)
+    if (!queue) return
+    const calls = queue.calls.filter((call) => !call.settled)
+    if (this.store.isDisposed) {
+      for (const call of calls) settle(call, { error: cancelled() })
+      return
+    }
+    const ids = [...new Set(calls.map((call) => call.id))]
+    // One record needs no list: send the lookup a single call sends.
+    if (ids.length === 1) {
+      this.refetchNode(queue.single, ids[0]!, sharedSignal(calls)).then(
+        (result) => calls.forEach((call) => settle(call, { result })),
+        (error: unknown) => calls.forEach((call) => settle(call, { error }))
+      )
+      return
+    }
+    for (let start = 0; start < ids.length; start += this.maxNodes) {
+      const chunk = ids.slice(start, start + this.maxNodes)
+      const members = new Set(chunk)
+      void this.refetchNodes(queue.batch, chunk, calls.filter((call) => members.has(call.id)))
+    }
+  }
+
+  /** Read one record through `node(NodeId)`. */
+  private async refetchNode(
+    query: OperationArtifact,
+    id: string,
+    signal: AbortSignal | undefined
+  ): Promise<{ found: boolean; errors: readonly GraphQLErrorLike[] }> {
+    const { snapshot, errors } = await this.execute(query as OperationArtifact<{ node: unknown }>, { NodeId: id }, signal ? { signal } : {})
     const found = snapshot.data.node !== null && snapshot.data.node !== undefined
     if (!found && errors.length === 0) {
-      this.store.delete(selector.id)
+      this.store.delete(id)
       this.store.publish()
     }
     return { found, errors }
   }
 
+  /** Read several records through `nodes(NodeIds)`, which answers in the order asked, with null for each it can't give. */
+  private async refetchNodes(query: OperationArtifact, ids: readonly string[], calls: readonly RefetchCall[]): Promise<void> {
+    let results: Map<string, { found: boolean; errors: readonly GraphQLErrorLike[] }>
+    try {
+      const signal = sharedSignal(calls)
+      const { snapshot, errors } = await this.execute(query as OperationArtifact<{ nodes: readonly unknown[] | null }>, { NodeIds: ids }, signal ? { signal } : {})
+      const nodes = snapshot.data.nodes
+      const at = (error: GraphQLErrorLike) => (error.path?.[0] === "nodes" && typeof error.path[1] === "number" ? error.path[1] : null)
+      const general = errors.filter((error) => at(error) === null)
+      results = new Map()
+      let removed = false
+      ids.forEach((id, index) => {
+        const own = [...general, ...errors.filter((error) => at(error) === index)]
+        const found = Array.isArray(nodes) && nodes[index] !== null && nodes[index] !== undefined
+        if (!found && own.length === 0 && Array.isArray(nodes)) {
+          this.store.delete(id)
+          removed = true
+        }
+        results.set(id, { found, errors: own })
+      })
+      if (removed) this.store.publish()
+    } catch (error) {
+      for (const call of calls) settle(call, { error })
+      return
+    }
+    for (const call of calls) settle(call, { result: results.get(call.id)! })
+  }
+
   dispose(): void {
+    for (const queue of this.refetchQueues.values()) for (const call of queue.calls) settle(call, { error: cancelled() })
+    this.refetchQueues.clear()
     for (const stop of [...this.subscriptions]) stop()
     for (const resource of this.resources.values()) resource.cancelRereads()
     this.live?.dispose()
@@ -1619,27 +1959,151 @@ export function readFragment(fragment: FragmentArtifact<any, any>, ref: unknown,
 
 const defaultActive = () => typeof document === "undefined" || document.visibilityState !== "hidden"
 
-/** Follow stored links from a record to the first `@connection` field the selections read. */
-function findConnection(
+/** Follow stored links from a record to each `@connection` field the selections read, in order. */
+function findConnections(
   store: Store,
   selections: readonly Selection[],
   variables: Variables,
-  id: string
-): { spec: ConnectionSpec; selection: LinkSelection; id: string } | null {
+  id: string,
+  found: { spec: ConnectionSpec; selection: LinkSelection; id: string }[] = []
+): { spec: ConnectionSpec; selection: LinkSelection; id: string }[] {
   const record = store.get(id)
-  if (!record) return null
+  if (!record) return found
   for (const selection of selections) {
     if (selection.kind === "inline") {
-      const found = findConnection(store, selection.selections, variables, id)
-      if (found) return found
+      findConnections(store, selection.selections, variables, id, found)
       continue
     }
     if (selection.kind !== "link" || selection.plural) continue
     const ref = (record.fields.get(fieldStorageKey(selection, variables)) as { __ref?: string } | null | undefined)?.__ref
     if (!ref) continue
-    if (selection.connection) return { spec: selection.connection, selection, id: ref }
-    const found = findConnection(store, selection.selections, variables, ref)
+    if (selection.connection) found.push({ spec: selection.connection, selection, id: ref })
+    else findConnections(store, selection.selections, variables, ref, found)
+  }
+  return found
+}
+
+/** Codes that say a request was refused for access, which a restart from the first page can't cure. */
+const ACCESS_CODES: ReadonlySet<string> = new Set(["UNAUTHENTICATED", "FORBIDDEN", "ACCESS_DENIED", "STEP_UP_REQUIRED"])
+
+/** A refresh's request for a page after its first failed. */
+class ContinuationError extends OperationError {
+  constructor(
+    operation: string,
+    errors: readonly GraphQLErrorLike[],
+    /** The `@connection` key the request continued. */
+    readonly connection: string
+  ) {
+    super(operation, errors)
+  }
+}
+
+/** The response data of connection `key`, through single links from `data`. */
+function locateConnection(
+  selections: readonly Selection[],
+  data: Record<string, unknown>,
+  key: string
+): { selection: LinkSelection; data: Record<string, unknown> } | null {
+  for (const selection of selections) {
+    if (selection.kind === "inline") {
+      const found = locateConnection(selection.selections, data, key)
+      if (found) return found
+    }
+    if (selection.kind !== "link") continue
+    const child = data[selection.responseKey]
+    if (!child || typeof child !== "object" || Array.isArray(child)) continue
+    if (selection.connection) {
+      if (selection.connection.key === key) return { selection, data: child as Record<string, unknown> }
+      continue
+    }
+    const found = locateConnection(selection.selections, child as Record<string, unknown>, key)
     if (found) return found
   }
   return null
+}
+
+/** The type of connection `key`'s nodes, or of the connection when that can't be found. */
+function connectionNodeType(selections: readonly Selection[], key: string): string {
+  for (const selection of selections) {
+    if (selection.kind !== "link" && selection.kind !== "inline") continue
+    if (selection.kind === "link" && selection.connection?.key === key) {
+      const spec = selection.connection
+      const edges = selection.selections.find((entry): entry is LinkSelection => entry.kind === "link" && entry.fieldName === spec.edges)
+      const node = edges?.selections.find((entry): entry is LinkSelection => entry.kind === "link" && entry.fieldName === spec.node)
+      return node?.types[0] ?? selection.types[0] ?? spec.key
+    }
+    if (selection.kind === "link" && selection.connection) continue
+    const found = connectionNodeType(selection.selections, key)
+    if (found) return found
+  }
+  return ""
+}
+
+/**
+ * The variables a loaded-range refresh sends: each refreshed connection's paging variable asks for its loaded rows, within the
+ * bound, and at least the page the query asks for, since asking only for what's loaded would let a new row push one out of a
+ * page with room. Connections sharing a variable get the largest.
+ */
+function refreshVariables(artifact: OperationArtifact<any, any>, variables: Variables, refreshes: Readonly<Record<string, ConnectionRefresh>>): Variables {
+  const limits = new Map<string, { spec: ConnectionSpec; limit: number }>()
+  const visit = (selections: readonly Selection[]): void => {
+    for (const selection of selections) {
+      if (selection.kind === "inline") visit(selection.selections)
+      if (selection.kind !== "link") continue
+      const spec = selection.connection
+      if (!spec) {
+        visit(selection.selections)
+        continue
+      }
+      const refresh = refreshes[spec.key]
+      const arg = selection.args.find((entry) => entry.name === spec.paging[0])
+      if (!refresh || !spec.limit || arg?.kind !== "variable" || refresh.loaded <= 0) continue
+      const page = (variables[arg.variable] as Record<string, unknown> | undefined) ?? {}
+      const limit = Math.max(Math.min(refresh.loaded, refresh.rows), Number(page[spec.limit]) || 0)
+      if ((limits.get(arg.variable)?.limit ?? -1) < limit) limits.set(arg.variable, { spec, limit })
+    }
+  }
+  visit(artifact.normalization)
+  let result = variables
+  for (const [variable, { spec, limit }] of limits) {
+    const page = (variables[variable] as Record<string, unknown> | undefined) ?? {}
+    result = { ...result, [variable]: { ...page, ...(spec.offset ? { [spec.offset]: page[spec.offset] ?? 0 } : {}), [spec.limit!]: limit } }
+  }
+  return result
+}
+
+/** One `refetchFragment` call waiting for a batched request. */
+interface RefetchCall {
+  readonly id: string
+  signal?: AbortSignal
+  settled: boolean
+  resolve(result: { found: boolean; errors: readonly GraphQLErrorLike[] }): void
+  reject(error: unknown): void
+  /** Stop listening to the call's signal. */
+  release(): void
+}
+
+function settle(call: RefetchCall, outcome: { result: { found: boolean; errors: readonly GraphQLErrorLike[] } } | { error: unknown }): void {
+  if (call.settled) return
+  call.settled = true
+  call.release()
+  if ("result" in outcome) call.resolve(outcome.result)
+  else call.reject(outcome.error)
+}
+
+/** A signal that aborts once every call's signal has; none when a call has no signal. */
+function sharedSignal(calls: readonly RefetchCall[]): AbortSignal | undefined {
+  if (calls.some((call) => !call.signal)) return undefined
+  const controller = new AbortController()
+  let open = calls.length
+  for (const call of calls) {
+    if (call.signal!.aborted) open--
+    else call.signal!.addEventListener("abort", () => { if (--open === 0) controller.abort() }, { once: true })
+  }
+  if (open === 0) controller.abort()
+  return controller.signal
+}
+
+function cancelled(): DOMException {
+  return new DOMException("The request was cancelled", "AbortError")
 }
