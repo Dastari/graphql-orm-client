@@ -48,8 +48,12 @@ function Page({ loaded }: { loaded: LoadedQuery<TicketsPageQuery> }) {
 - Select only the fields the component renders. To render a child component, spread the
   child's fragment (`...WidgetHealth`) and pass the reference down. Do not select the child's
   fields in the parent.
-- You don't need to select `NodeId` or the key fields; the compiler adds them. A type without a
-  `NodeId` or a complete key is stored inside its parent, not as its own record.
+- You don't need to select `NodeId`, the key fields or `RecordVersion` for the store; the compiler
+  adds them to the request. They aren't in your data unless you select them: select `Id` where you
+  read it, as a React key on a list row (`Node { Id ...Row }`) or after a mutation. That keeps a
+  row's version, which every `Changed` event advances, out of the list's data. `identityFields:
+  "always"` in the generator config reads them everywhere, as 0.1.0-alpha.12 and earlier did. A type
+  without a `NodeId` or a complete key is stored inside its parent, not as its own record.
 
 ## Roots own the request
 

@@ -143,6 +143,54 @@ time synchronisation stepped back. A read-only window leaves it in place. The cl
 - The envelope format is now 2. A snapshot saved by 0.1.0-alpha.12 or earlier is deleted on first load and not
   restored, as every release's snapshots already were (the envelope carries the package version).
 
+### Changed: data holds the key, `NodeId` and version fields only where the document selects them
+
+The compiler adds each record's key fields, `NodeId` and `RecordVersion` to every selection, so the store can identify and order
+records. Until now they were also read into the data of every query and fragment, so a list's rows held `Id` and `RecordVersion`
+although the document selected neither. A `Changed` event advances `RecordVersion`, so the data of every query showing a
+versioned row changed on every event for it, and the component holding a list rendered again with a new `Edges` array even when
+everything it shows is behind fragments
+([#87](https://github.com/Dastari/graphql-orm-client/issues/87)).
+
+Now they're still sent and stored, and a query or fragment reads them only where its own document selects them. The operation
+text, what's stored, ordering, streams and refetches are unchanged; the generated types follow the data.
+
+To move:
+
+1. Regenerate (`graphql-orm-client generate`). Until you do, the old module keeps the old behaviour.
+2. Fix what the type checker reports. Each error is a read of `Id`, `NodeId` or the version where the document doesn't select
+   it, such as `key={Node.Id}` under `Node { ...Row }`. Select the field there (`Node { Id ...Row }`). A mutation result reads
+   only what the mutation selects, too.
+3. Code that reads data without the generated types (`any`, `JSON.stringify` of results, snapshot tests) won't be reported:
+   search it for those fields.
+
+`identityFields: "always"` in the generator config (or compile options) restores reading them everywhere, with no other change.
+`readAll` still deduplicates rows that select no key.
+
+### Changed: a version field that isn't a number fails generation
+
+The store orders records by comparing versions as numbers. A `versions` entry naming a field that isn't `Int` or `Float`, such
+as a `String` holding a 64-bit value, was never compared, so its type quietly had last-write-wins
+([#74](https://github.com/Dastari/graphql-orm-client/issues/74)). Generation now fails with `versions.<Type>: <Type>.<field> is
+<type>, not Int or Float`. It also fails when the field doesn't exist, or is a list, a Boolean or an object.
+
+To move, give the entry the comparison it needs:
+
+- `{ "field": "Revision", "compare": "decimal" }`: a decimal integer sent as a string, compared exactly as a big integer, past
+  2^53 too. A JSON number is compared too, but only up to 2^53, where a number stops being exact. A value that can't be
+  compared (not a decimal integer, or a number past 2^53) can't be ordered, and the last write to arrive wins.
+- `{ "field": "Revision", "compare": "number" }`: a custom scalar sent as a JSON number.
+- `null`: no ordering for the type, which is what it had.
+
+Nothing changes for `RecordVersion` or a configured `Int` or `Float` field. A `versions` entry for a type the schema doesn't
+have, which did nothing, now prints a generator warning; it still builds.
+
+### Fixed: a server `NodeId` is checked against the record's type
+
+The store used a response object's `NodeId` as its identity whenever it decoded, whatever type it named. It now uses it only
+when it names the object's own `__typename`; otherwise the object is identified by its key fields, as a type without `NodeId`
+is. graphql-orm always encodes the object's own type, so nothing changes for a response it serves.
+
 ## 0.1.0-alpha.12 (2026-11-07)
 
 Install from the GitHub release archive:

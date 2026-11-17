@@ -10,6 +10,7 @@ import {
   isInputObjectType,
   isNonNullType,
   isObjectType,
+  isScalarType,
   parse,
   print,
   specifiedRules,
@@ -71,20 +72,40 @@ export interface CompileOptions {
    * are stored inside their parent). Types not listed use `<Type>KeyInput` field order, else `Id` when present.
    */
   readonly keys?: Readonly<Record<string, readonly string[] | null>>
+  /** Explicit expiry field and representation; no fields are inferred by name. */
+  readonly lifetimes?: Readonly<Record<string, import("../store/lifetime.js").LifetimePolicy>>
   /**
    * The record-version field per type. A write carrying an older version never replaces a newer
    * stored record. Types not listed use graphql-orm's `RecordVersion` when they have it, and the
-   * compiler selects it; `null` turns that off for a type.
+   * compiler selects it; `null` turns that off for a type, and the last write to arrive wins.
+   *
+   * A field named on its own must be `Int` or `Float`; anything else fails generation, naming the
+   * type and field. `{ field, compare }` declares how its values compare: `"number"` for a custom
+   * scalar sent as a JSON number, `"decimal"` for a decimal integer sent as a string, compared
+   * exactly as a big integer, past 2^53 too. Under `"decimal"` a JSON number is compared only up to
+   * 2^53. A value that can't be compared that way (absent, not a decimal integer, or a number past
+   * 2^53) is written: the last write to arrive wins.
    */
-  /** Explicit expiry field and representation; no fields are inferred by name. */
-  readonly lifetimes?: Readonly<Record<string, import("../store/lifetime.js").LifetimePolicy>>
-  readonly versions?: Readonly<Record<string, string | null>>
+  readonly versions?: Readonly<Record<string, string | VersionPolicy | null>>
+  /**
+   * Whether the key, `NodeId` and version fields the compiler adds to a selection are read into query and fragment data.
+   * Default `"selected"`: they're sent and stored, but data holds them only where the document selects them itself, so a
+   * version that advances behind a fragment doesn't change the data of the query that spreads it. `"always"` reads them
+   * everywhere, as 0.1.0-alpha.12 and earlier did. Either way the operation text and what's stored are the same.
+   */
+  readonly identityFields?: "selected" | "always"
   /** The generated subscription field for a type. Default `${typename}Changed`. */
   readonly liveField?: (typename: string) => string
   /** Connection field names, when they differ from graphql-orm's PascalCase defaults. */
   readonly connection?: Partial<Omit<ConnectionSpec, "key">>
   /** `@paged` field names, when they differ from graphql-orm's `PageInput` and `PageInfo`. */
   readonly paged?: Partial<Omit<PagedSpec, "path" | "variable">>
+}
+
+/** A version field with a declared comparison (see `CompileOptions.versions`). */
+export interface VersionPolicy {
+  readonly field: string
+  readonly compare: "number" | "decimal"
 }
 
 export interface CompileResult {
@@ -201,7 +222,11 @@ function stripClientDirectives<T extends import("graphql").ASTNode>(node: T): T 
   }) as T
 }
 
-type ProjectionOptions = CompileOptions & { readonly streamProjection?: boolean }
+/**
+ * `streamProjection`: a generated stream's selection, which carries no `NodeId` or added version.
+ * `readSelection`: the selection data is read through, which leaves out the identity fields the document didn't select.
+ */
+type ProjectionOptions = CompileOptions & { readonly streamProjection?: boolean; readonly readSelection?: boolean }
 
 const NODE_ID = "NodeId"
 
@@ -222,10 +247,41 @@ const RECORD_VERSION = "RecordVersion"
  * `RecordVersion: Int!` for a managed version.
  */
 function versionFieldOf(type: GraphQLObjectType, options: CompileOptions): string | null {
+  return versionPolicyOf(type, options)?.field ?? null
+}
+
+function versionPolicyOf(type: GraphQLObjectType, options: CompileOptions): VersionPolicy | null {
   const configured = options.versions?.[type.name]
+  if (configured === null) return null
+  if (typeof configured === "string") return { field: configured, compare: "number" }
   if (configured !== undefined) return configured
   const recordVersion = type.getFields()[RECORD_VERSION]
-  return recordVersion !== undefined && getNamedType(recordVersion.type).name === "Int" ? RECORD_VERSION : null
+  return recordVersion !== undefined && getNamedType(recordVersion.type).name === "Int" ? { field: RECORD_VERSION, compare: "number" } : null
+}
+
+/**
+ * Why a configured version field can't order a type's records, or null when it can. The store compares versions as
+ * numbers unless told otherwise, so a string version would never be compared and the last write would win unseen.
+ */
+function versionProblem(type: GraphQLObjectType, configured: string | VersionPolicy): string | null {
+  const at = `versions.${type.name}`
+  const field = typeof configured === "string" ? configured : configured.field
+  if (typeof field !== "string" || !field) return `${at}: give a field name, { "field": "<name>", "compare": "number" | "decimal" }, or null`
+  const compare = typeof configured === "string" ? undefined : configured.compare
+  if (compare !== undefined && compare !== "number" && compare !== "decimal") return `${at}: compare must be "number" or "decimal"`
+  const definition = type.getFields()[field]
+  if (!definition) return `${at}: ${type.name}.${field} does not exist`
+  const named = getNamedType(definition.type)
+  const shown = `${type.name}.${field} is ${String(definition.type)}`
+  const fix = `Declare how it compares, as { "field": "${field}", "compare": "decimal" } for a decimal integer, or set it to null for last-write-wins.`
+  const list = isListType(isNonNullType(definition.type) ? definition.type.ofType : definition.type)
+  if (list || definition.args.length || !isScalarType(named) || named.name === "Boolean")
+    return `${at}: ${shown}, which can't order records. Name a number or decimal integer field, or set it to null for last-write-wins.`
+  if (compare === undefined && named.name !== "Int" && named.name !== "Float")
+    return `${at}: ${shown}, not Int or Float, so its values would never be compared and the last write would win. ${fix}`
+  if (compare === "number" && (named.name === "String" || named.name === "ID"))
+    return `${at}: ${shown}, which is sent as a string, not a number. ${fix}`
+  return null
 }
 
 /** Key fields of a type: explicit configuration, else `Id` when the type has it. */
@@ -343,11 +399,16 @@ function compileDocuments(
     }
   }
 
+  if (options.identityFields !== undefined && options.identityFields !== "selected" && options.identityFields !== "always")
+    throw new CompileError([`identityFields must be "selected" or "always"`])
+  // What's sent and stored has every identity field added; what data is read through has only those the document selects.
+  const readOptions: ProjectionOptions = options.identityFields === "always" ? options : { ...options, readSelection: true }
   const augment = (selectionSet: SelectionSetNode, parent: GraphQLCompositeType): SelectionSetNode =>
     augmentSelectionSet(schema, selectionSet, parent, options)
 
   const fragments: Record<string, FragmentArtifact> = {}
   const augmentedFragments = new Map<string, FragmentDefinitionNode>()
+  const readFragments = new Map<string, FragmentDefinitionNode>()
   for (const [name, node] of fragmentNodes) {
     const parent = schema.getType(node.typeCondition.name.value) as GraphQLCompositeType
     const augmented: FragmentDefinitionNode = {
@@ -356,12 +417,14 @@ function compileDocuments(
       selectionSet: augment(node.selectionSet, parent),
     }
     augmentedFragments.set(name, augmented)
+    const read: FragmentDefinitionNode = readOptions === options ? augmented : { ...augmented, selectionSet: augmentSelectionSet(schema, node.selectionSet, parent, readOptions) }
+    readFragments.set(name, read)
     fragments[name] = {
       kind: "fragment",
       ...(pollReason(node) ? { pollReason: pollReason(node) } : {}),
       name,
       typeCondition: parent.name,
-      selections: convert(schema, augmented.selectionSet, parent, fragmentNodes, false, options),
+      selections: convert(schema, read.selectionSet, parent, fragmentNodes, false, options),
       live: (() => {
         const directive = node.directives?.find((d) => d.name.value === "live")
         const enabled = directive?.arguments?.find((a) => a.name.value === "enabled")?.value
@@ -377,6 +440,12 @@ function compileDocuments(
   }
 
   const metadata = typeMetadata(schema, options)
+  // Not an error, so a project whose schema dropped a type keeps building; but an entry that does nothing shouldn't look like one that does.
+  if (!nested) for (const name of Object.keys(options.versions ?? {})) {
+    const type = schema.getType(name)
+    if (!type || !isObjectType(type))
+      (options.onWarning ?? console.warn)(`versions.${name}: the schema has no object type ${name}, so this entry orders nothing. Check the name, or remove the entry.`)
+  }
   const operations: Record<string, OperationArtifact> = {}
   for (const node of operationNodes) {
     const name = node.name!.value
@@ -386,6 +455,7 @@ function compileDocuments(
       ...node,
       selectionSet: augmentSelectionSet(schema, node.selectionSet, rootType, options, false),
     }
+    const readSelectionSet = readOptions === options ? augmented.selectionSet : augmentSelectionSet(schema, node.selectionSet, rootType, readOptions, false)
     const used = usedFragments(augmented.selectionSet, fragmentNodes)
     const sensitive = node.directives?.some(d => d.name.value === "sensitive") === true
     if (sensitive && (hasDirective(node.selectionSet, "batch") || [...used].some(name => hasDirective(fragmentNodes.get(name)!.selectionSet, "batch"))))
@@ -407,12 +477,13 @@ function compileDocuments(
       ...(sensitive ? { sensitive: true } : {}),
       keys: pick(metadata.keys, reachable),
       versions: pick(metadata.versions, reachable),
+      ...(Object.keys(pick(metadata.versionCompare, reachable)).length ? { versionCompare: pick(metadata.versionCompare, reachable) } : {}),
       ...(options.lifetimes ? { lifetimes: pick(options.lifetimes, reachable) } : {}),
       name,
       text,
       hash: createHash("sha256").update(text).digest("hex"),
       rootType: rootType.name,
-      selections: convert(schema, augmented.selectionSet, rootType, sensitive ? augmentedFragments : fragmentNodes, sensitive, options),
+      selections: convert(schema, readSelectionSet, rootType, sensitive ? readFragments : fragmentNodes, sensitive, options),
       normalization,
       fragments: Object.fromEntries([...used].sort().map((fragment) => [fragment, fragments[fragment]!])),
       ...(paged ? { paged } : {}),
@@ -1024,7 +1095,8 @@ function augmentSelectionSet(
     if (fk?.kind === Kind.STRING && !present.has(fk.value)) additions.push(field(fk.value))
   }
   if (!present.has("__typename")) additions.push(field("__typename"))
-  if (!(options as ProjectionOptions).streamProjection && hasNodeId(parent) && !present.has(NODE_ID)) additions.push(field(NODE_ID))
+  const { streamProjection, readSelection } = options as ProjectionOptions
+  if (!streamProjection && !readSelection && hasNodeId(parent) && !present.has(NODE_ID)) additions.push(field(NODE_ID))
   if (isObjectType(parent)) {
     const lifetime = options.lifetimes?.[parent.name]
     if (lifetime) {
@@ -1035,10 +1107,10 @@ function augmentSelectionSet(
         throw new CompileError([`Invalid lifetime format for ${parent.name}`])
       if (!present.has(lifetime.field)) additions.push(field(lifetime.field))
     }
-    for (const key of keyFieldsOf(schema, parent.name, options) ?? []) {
+    if (!readSelection) for (const key of keyFieldsOf(schema, parent.name, options) ?? []) {
       if (!present.has(key)) additions.push(field(key))
     }
-    if (!(options as ProjectionOptions).streamProjection && versionFieldOf(parent, options) === RECORD_VERSION && !present.has(RECORD_VERSION)) {
+    if (!streamProjection && !readSelection && versionFieldOf(parent, options) === RECORD_VERSION && !present.has(RECORD_VERSION)) {
       additions.push(field(RECORD_VERSION))
     }
   }
@@ -1066,21 +1138,31 @@ function possibleTypes(schema: GraphQLSchema, type: GraphQLCompositeType): strin
   return isAbstractType(type) ? schema.getPossibleTypes(type).map((entry) => entry.name).sort() : [type.name]
 }
 
-/** Key and version fields of every object type the selections can reach. */
+/** Key and version fields of every object type, and the version fields compared other than as numbers. */
 function typeMetadata(
   schema: GraphQLSchema,
   options: CompileOptions
-): { keys: Record<string, readonly string[]>; versions: Record<string, string> } {
+): { keys: Record<string, readonly string[]>; versions: Record<string, string>; versionCompare: Record<string, "decimal"> } {
   const keys: Record<string, readonly string[]> = {}
   const versions: Record<string, string> = {}
+  const versionCompare: Record<string, "decimal"> = {}
+  const problems: string[] = []
   for (const type of Object.values(schema.getTypeMap())) {
     if (!isObjectType(type) || type.name.startsWith("__")) continue
     const fields = keyFieldsOf(schema, type.name, options)
     if (fields) keys[type.name] = fields
-    const version = versionFieldOf(type, options)
-    if (version) versions[type.name] = version
+    const configured = options.versions?.[type.name]
+    const problem = configured === undefined || configured === null ? null : versionProblem(type, configured)
+    if (problem) {
+      problems.push(problem)
+      continue
+    }
+    const version = versionPolicyOf(type, options)
+    if (version) versions[type.name] = version.field
+    if (version?.compare === "decimal") versionCompare[type.name] = "decimal"
   }
-  return { keys, versions }
+  if (problems.length) throw new CompileError(problems)
+  return { keys, versions, versionCompare }
 }
 
 function isPlural(type: GraphQLOutputType): boolean {

@@ -61,7 +61,7 @@ function WidgetRow({ widget }: { widget: FragmentRef<typeof WidgetRowFragment> }
 const CatalogPageQuery = graphql(`
   query CatalogPage($Where: WidgetWhereInput) {
     Widgets(Where: $Where, Page: { limit: 50 }) {
-      Edges { Node { ...WidgetRow } }
+      Edges { Node { Id ...WidgetRow } }
       PageInfo { HasNextPage EndCursor }
     }
   }
@@ -79,6 +79,8 @@ function CatalogPage() {
 
 `useFragment` returns only the fragment's own fields. A child's fields are hidden behind its
 fragment reference (data masking), so a parent cannot come to depend on them by accident.
+The same holds for the fields the compiler adds for identity and ordering (see [Identity](#identity)): the root above
+selects `Id` because it uses it as a React key.
 
 ### Route loading (R18)
 
@@ -222,7 +224,18 @@ part of the identity. When a type has graphql-orm's generated `NodeId: ID!` fiel
 selects it and the store uses the server's value, which is right for any key shape. Otherwise
 the store encodes the `NodeId` from the type's key fields (`Id`, or the configured `keys`); both
 produce the same value for the same record. A record without a key (an embedded object or an
-aggregate row) is stored inside its parent.
+aggregate row) is stored inside its parent. A server `NodeId` is used only when the type name it
+decodes to is the object's `__typename`; otherwise the object is identified by its key fields, so
+one response object can never be written over a record of another type.
+
+The compiler adds `__typename`, the key fields, `NodeId` and graphql-orm's `RecordVersion` to every
+selection on a type that has them, and the request carries them. They're written to the store, but a
+query or fragment reads only the ones its document selects (R35). So a list whose rows are all
+behind fragments holds only `__typename` and fragment references per row, and a `Changed` event that
+advances a row's version changes the row's fragment data, not the list's. `__typename` is always
+read. `identityFields: "always"` (generator config or compile option) reads the added fields
+everywhere, as 0.1.0-alpha.12 and earlier did. Results of a `@sensitive` operation are the
+response as sent, so they hold the added fields at run time whatever their generated type says.
 
 ### Writes and ordering
 
@@ -232,7 +245,14 @@ aggregate row) is stored inside its parent.
   is dropped. Without a version, the last write to arrive wins. The compiler selects
   graphql-orm's `RecordVersion: Int!` wherever a type has it and uses it as the version, so
   managed versions need no configuration. `versions` names another field for a type, or
-  `null` to turn it off.
+  `null` to turn it off. A named field must be `Int` or `Float`, or generation fails with the
+  type and field (R34): a version that isn't a number would never be compared. `{ "field":
+  "Revision", "compare": "decimal" }` declares a decimal integer sent as a string, compared exactly
+  as a big integer; a JSON number under it is compared only up to 2^53, where numbers stop being
+  exact. `"compare": "number"` declares a custom scalar sent as a JSON number. A value that can't be
+  compared as declared (absent, not a decimal integer, or a number past 2^53) is written, and the
+  last write wins. The compiler selects `RecordVersion` itself; a configured field is ordered by
+  only where the documents select it.
 - A `Changed` event with action `DELETED` removes the record. A query that showed it finds the
   record missing and reads again; lists aren't edited in place. The exception is `DELETED` with change kind
   `PROPAGATED`: a child was deleted under a record that still exists (graphql-orm 0.93.0), so the record stays and
