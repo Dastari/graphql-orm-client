@@ -79,9 +79,6 @@ for (const directive of ["skip", "include"]) it(`rejects @${directive} on fields
   expect(() => generate(schema, sources)).toThrow(/unsupported/)
   expect(() => compile(schema, sources, { conditionalDirectives: "legacy" })).not.toThrow()
 })
-it("rejects fragment arguments clearly", () => {
-  expect(() => compile(schema, [`fragment Args on Widget @argumentDefinitions(id: {type: "ID!"}) { Name }`])).toThrow(/fragment arguments are unsupported/)
-})
 it("opens a list stream before the read, preserves it through mount replay, and collects on release", async () => {
   vi.useFakeTimers()
   const { buildSchema } = await import("graphql")

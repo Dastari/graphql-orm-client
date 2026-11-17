@@ -39,6 +39,7 @@ import type {
   PagedSpec,
   Selection,
 } from "../artifact.js"
+import { applyFragmentArguments, declaredArguments, scopedName, spreadValues, usesFragmentArguments } from "./fragment-arguments.js"
 import { hasDefault, printStable } from "./print.js"
 
 /** Severity of a project policy diagnostic. */
@@ -181,7 +182,7 @@ function clientSchemaOf(schema: GraphQLSchema): GraphQLSchema {
   return extended
 }
 
-const CLIENT_DIRECTIVE_NAMES = new Set(["live", "poll", "connection", "refetchable", "paged", "sensitive", "batch"])
+const CLIENT_DIRECTIVE_NAMES = new Set(["live", "poll", "connection", "refetchable", "paged", "sensitive", "batch", "argumentDefinitions", "arguments"])
 
 /** graphql-orm's connection and keyset field names. */
 const DEFAULT_CONNECTION = {
@@ -364,18 +365,28 @@ function compileDocuments(
     operationNames.add(name)
   }
 
+  // A fragment with arguments is sent as a copy per argument set, with the values written in: those copies are what's validated
+  // and sent. Readers read the fragments as written, and resolve their arguments from each spread.
+  let wireOperations: ReadonlyMap<OperationDefinitionNode, OperationDefinitionNode> = new Map()
+  let wireFragmentNodes: ReadonlyMap<string, FragmentDefinitionNode> = fragmentNodes
+  if (usesFragmentArguments([...operationNodes, ...fragmentNodes.values()])) {
+    const applied = applyFragmentArguments(schema, operationNodes, fragmentNodes)
+    if (applied.problems.length) throw new CompileError([...problems, ...applied.problems])
+    wireOperations = applied.operations
+    wireFragmentNodes = applied.fragments
+  }
+  const wireOf = (operation: OperationDefinitionNode): OperationDefinitionNode => wireOperations.get(operation) ?? operation
+
   // Validate the whole set as one document so cross-file fragment spreads resolve.
   const combined: DocumentNode = {
     kind: Kind.DOCUMENT,
-    definitions: [...operationNodes, ...fragmentNodes.values()],
+    definitions: [...operationNodes.map(wireOf), ...wireFragmentNodes.values()],
   }
   visit(combined, {
     Directive(node) {
       const name = node.name.value
       if ((name === "skip" || name === "include") && options.conditionalDirectives !== "legacy")
         problems.push(`@${name} is unsupported: conditional reads, generated optional types and live projections are not implemented. Split the route query; conditionalDirectives: "legacy" temporarily restores unsafe previous compilation.`)
-      if (name === "argumentDefinitions" || name === "arguments")
-        problems.push(`@${name}: fragment arguments are unsupported; declare variables on the route operation instead`)
     },
   })
   // Fragments may be compiled without an operation that uses them.
@@ -414,9 +425,10 @@ function compileDocuments(
     augmentSelectionSet(schema, selectionSet, parent, options)
 
   const fragments: Record<string, FragmentArtifact> = {}
+  // As sent, by name: with fragment arguments, a copy per argument set.
   const augmentedFragments = new Map<string, FragmentDefinitionNode>()
   const readFragments = new Map<string, FragmentDefinitionNode>()
-  for (const [name, node] of fragmentNodes) {
+  for (const [name, node] of wireFragmentNodes) {
     const parent = schema.getType(node.typeCondition.name.value) as GraphQLCompositeType
     const augmented: FragmentDefinitionNode = {
       ...node,
@@ -424,14 +436,17 @@ function compileDocuments(
       selectionSet: augment(node.selectionSet, parent),
     }
     augmentedFragments.set(name, augmented)
-    const read: FragmentDefinitionNode = readOptions === options ? augmented : { ...augmented, selectionSet: augmentSelectionSet(schema, node.selectionSet, parent, readOptions) }
-    readFragments.set(name, read)
+    readFragments.set(name, readOptions === options ? augmented : { ...augmented, selectionSet: augmentSelectionSet(schema, node.selectionSet, parent, readOptions) })
+  }
+  for (const [name, node] of fragmentNodes) {
+    const parent = schema.getType(node.typeCondition.name.value) as GraphQLCompositeType
+    const read = wireFragmentNodes === fragmentNodes ? readFragments.get(name)!.selectionSet : augmentSelectionSet(schema, node.selectionSet, parent, readOptions)
     fragments[name] = {
       kind: "fragment",
       ...(pollReason(node) ? { pollReason: pollReason(node) } : {}),
       name,
       typeCondition: parent.name,
-      selections: convert(schema, read.selectionSet, parent, fragmentNodes, false, options),
+      selections: convert(schema, read, parent, fragmentNodes, false, options, localsOf(node)),
       live: (() => {
         const directive = node.directives?.find((d) => d.name.value === "live")
         const enabled = directive?.arguments?.find((a) => a.name.value === "enabled")?.value
@@ -458,13 +473,16 @@ function compileDocuments(
     const name = node.name!.value
     const rootType = schema.getRootType(node.operation)
     if (!rootType) throw new CompileError([`The schema has no ${node.operation} root`])
+    const wireNode = wireOf(node)
     const augmented: OperationDefinitionNode = {
-      ...node,
-      selectionSet: augmentSelectionSet(schema, node.selectionSet, rootType, options, false),
+      ...wireNode,
+      selectionSet: augmentSelectionSet(schema, wireNode.selectionSet, rootType, options, false),
     }
-    const readSelectionSet = readOptions === options ? augmented.selectionSet : augmentSelectionSet(schema, node.selectionSet, rootType, readOptions, false)
-    const used = usedFragments(augmented.selectionSet, fragmentNodes)
     const sensitive = node.directives?.some(d => d.name.value === "sensitive") === true
+    // A @sensitive result is read with its fragments inlined, so through the copies sent; any other through the fragments as written.
+    const readNode = sensitive ? wireNode : node
+    const readSelectionSet = readOptions === options && readNode === wireNode ? augmented.selectionSet : augmentSelectionSet(schema, readNode.selectionSet, rootType, readOptions, false)
+    const used = usedFragments(node.selectionSet, fragmentNodes)
     if (sensitive && (hasDirective(node.selectionSet, "batch") || [...used].some(name => hasDirective(fragmentNodes.get(name)!.selectionSet, "batch"))))
       throw new CompileError([`${name}: @sensitive cannot use @batch relations`])
     if (sensitive && [...used].some(name => fragments[name]?.live))
@@ -643,6 +661,11 @@ function compileRefetch(
   for (const [name, node] of fragmentNodes) {
     const directive = (node.directives ?? []).find((entry) => entry.name.value === "refetchable")
     if (!directive) continue
+    if (declaredArguments(node)) {
+      problems.push(`Fragment ${name} is @refetchable and declares arguments, but its refetch query can't know the values each spread passed. ` +
+        `Make a fragment without arguments @refetchable, or read the route query again (refetchQueries)`)
+      continue
+    }
     const nameArg = directive.arguments?.find((arg) => arg.name.value === "queryName")
     const queryName = nameArg?.value.kind === Kind.STRING ? nameArg.value.value : `${name}Refetch`
     const nodeField = schema.getQueryType()?.getFields()["node"]
@@ -725,6 +748,10 @@ function compileLive(
     }
     const { fieldName, entity, action, changeKind, arg, mode } = stream
     if (options.liveSelection === "as-written") {
+      const withArguments = names.filter((name) => declaredArguments(fragmentNodes.get(name)!))
+      if (withArguments.length) throw new CompileError(withArguments.map((name) =>
+        `Fragment ${name} is live and declares arguments. With liveSelection: "as-written" the ${typename} stream spreads ${name}, and one stream is shared by every query that holds a ${typename}, so it can't carry one spread's arguments. ` +
+        `Remove liveSelection: "as-written" (the default stream projection leaves fields with arguments out, and the queries holding the record read them again), or mark ${name} @live(enabled: false)`))
       const problems = names.flatMap((name) => variableUses(schema, fragmentNodes, name).map(({ site, verb, fragment, variable }) =>
         `Fragment ${name} is live, but ${site}${fragment === name ? "" : ` (in fragment ${fragment})`} ${verb} the operation variable $${variable}. ` +
         `With liveSelection: "as-written" the ${typename} stream spreads ${name}, and one stream is shared by every query that holds a ${typename}, so it can't carry one query's variables. ` +
@@ -857,7 +884,9 @@ function variableUses(
   const uses: { site: string; verb: "takes" | "uses"; fragment: string; variable: string }[] = []
   const note = (node: import("graphql").ASTNode, site: string, verb: "takes" | "uses", fragment: string) => {
     const variables = new Set<string>()
-    visit(node, { Variable(variable) { variables.add(variable.name.value) } })
+    // A fragment's own argument isn't an operation variable: a spread passes it.
+    const locals = localsOf(fragmentNodes.get(fragment)!)
+    visit(node, { Variable(variable) { if (!locals?.names.has(variable.name.value)) variables.add(variable.name.value) } })
     for (const variable of variables) uses.push({ site, verb, fragment, variable })
   }
   const seen = new Set<string>()
@@ -1191,18 +1220,28 @@ function isPlural(type: GraphQLOutputType): boolean {
   return isListType(inner)
 }
 
-function argumentSpec(name: string, value: ValueNode): ArgumentSpec {
+/** The fragment whose selections are being converted, when it declares arguments: a variable of one of those names is its own. */
+type Locals = { readonly fragment: string; readonly names: ReadonlySet<string> } | undefined
+
+function localsOf(node: FragmentDefinitionNode): Locals {
+  const declared = declaredArguments(node)
+  return declared ? { fragment: node.name.value, names: new Set(declared.map((argument) => argument.name)) } : undefined
+}
+
+function argumentSpec(name: string, value: ValueNode, locals?: Locals): ArgumentSpec {
   switch (value.kind) {
-    case Kind.VARIABLE:
-      return { kind: "variable", name, variable: value.name.value }
+    case Kind.VARIABLE: {
+      const variable = value.name.value
+      return { kind: "variable", name, variable: locals?.names.has(variable) ? scopedName(locals.fragment, variable) : variable }
+    }
     case Kind.OBJECT:
       return {
         kind: "object",
         name,
-        fields: value.fields.map((entry) => argumentSpec(entry.name.value, entry.value)),
+        fields: value.fields.map((entry) => argumentSpec(entry.name.value, entry.value, locals)),
       }
     case Kind.LIST:
-      return { kind: "list", name, items: value.values.map((item, index) => argumentSpec(String(index), item)) }
+      return { kind: "list", name, items: value.values.map((item, index) => argumentSpec(String(index), item, locals)) }
     case Kind.NULL:
       return { kind: "literal", name, value: null }
     case Kind.INT:
@@ -1216,17 +1255,19 @@ function argumentSpec(name: string, value: ValueNode): ArgumentSpec {
   }
 }
 
-function argumentsOf(nodes: readonly ArgumentNode[] | undefined): ArgumentSpec[] {
-  return (nodes ?? []).map((node) => argumentSpec(node.name.value, node.value))
+function argumentsOf(nodes: readonly ArgumentNode[] | undefined, locals?: Locals): ArgumentSpec[] {
+  return (nodes ?? []).map((node) => argumentSpec(node.name.value, node.value, locals))
 }
 
+/** `locals`: the fragment being read, when it declares arguments. Inlined spreads are always of copies with their values written in. */
 function convert(
   schema: GraphQLSchema,
   selectionSet: SelectionSetNode,
   parent: GraphQLCompositeType,
   fragments: ReadonlyMap<string, FragmentDefinitionNode>,
   inlineSpreads: boolean,
-  options: CompileOptions = {}
+  options: CompileOptions = {},
+  locals?: Locals
 ): Selection[] {
   const result: Selection[] = []
   for (const selection of selectionSet.selections) {
@@ -1235,7 +1276,7 @@ function convert(
     if (selection.kind === Kind.FIELD) {
       const name = selection.name.value
       const responseKey = selection.alias?.value ?? name
-      const args = argumentsOf(selection.arguments)
+      const args = argumentsOf(selection.arguments, locals)
       if (!selection.selectionSet && selection.directives?.some(d => d.name.value === "batch"))
         throw new CompileError([`${parent.name}.${name}: @batch requires a singular relation selection`])
       if (name === "__typename" || !selection.selectionSet) {
@@ -1259,7 +1300,7 @@ function convert(
         ...(batch ? { batch } : {}),
         plural: isPlural(fieldDef.type),
         types: possibleTypes(schema, named),
-        selections: convert(schema, selection.selectionSet, named, fragments, inlineSpreads, options),
+        selections: convert(schema, selection.selectionSet, named, fragments, inlineSpreads, options, locals),
         ...(connectionSpec(selection, options, fieldDef) ? { connection: connectionSpec(selection, options, fieldDef)! } : {}),
         ...conditional,
       })
@@ -1270,7 +1311,7 @@ function convert(
         kind: "inline",
         typeCondition,
         possibleTypes: typeCondition ? possibleTypes(schema, target) : null,
-        selections: convert(schema, selection.selectionSet, target, fragments, inlineSpreads, options),
+        selections: convert(schema, selection.selectionSet, target, fragments, inlineSpreads, options, locals),
         ...conditional,
       })
     } else {
@@ -1287,11 +1328,13 @@ function convert(
         })
       } else {
         const target = schema.getType(typeCondition) as GraphQLCompositeType
+        const values = spreadValues(definition, selection)
         result.push({
           kind: "spread",
           name: selection.name.value,
           typeCondition,
           possibleTypes: possibleTypes(schema, target),
+          ...(values ? { args: values.map(([name, value]) => argumentSpec(name, value, locals)) } : {}),
           ...conditional,
         })
       }

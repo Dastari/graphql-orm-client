@@ -51,6 +51,17 @@ export function fieldStorageKey(
   return `${storageKey(selection.fieldName, args, variables)}@connection(${key})`
 }
 
+/**
+ * The variables a fragment that declares arguments is read with: the spreading scope's, and each of the fragment's
+ * arguments under `<Fragment>.<argument>`, resolved in the spreading scope. The compiler names the fragment's own
+ * variables that way, so an operation variable of the same name is never mistaken for one.
+ */
+export function fragmentScope(fragment: string, args: readonly ArgumentSpec[], variables: Variables): Variables {
+  const scope: Record<string, unknown> = { ...variables }
+  for (const arg of args) scope[`${fragment}.${arg.name}`] = resolve(arg, variables)
+  return scope
+}
+
 /** The resolved value of one argument, or undefined when the field doesn't take it. */
 export function argumentValue(args: readonly ArgumentSpec[], name: string, variables: Variables): unknown {
   const spec = args.find((arg) => arg.name === name)

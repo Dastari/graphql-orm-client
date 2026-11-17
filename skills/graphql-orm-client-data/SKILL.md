@@ -1,6 +1,6 @@
 ---
 name: graphql-orm-client-data
-description: Write components and data flows with graphql-orm-client. Use whenever a component shows or changes server data: fragments and route roots (loadQuery), pagination (@paged, @connection), refetching records (@refetchable), mutations and write outcomes, secrets (@sensitive), batched relations (@batch), readAll, deleted rows, persistence, porting from Apollo, and testing with graphql-orm-client/test.
+description: Write components and data flows with graphql-orm-client. Use whenever a component shows or changes server data: fragments and route roots (loadQuery), fragment arguments, pagination (@paged, @connection), refetching (@refetchable), mutations, write outcomes, secrets (@sensitive), @batch relations, readAll, deleted rows, persistence, porting from Apollo, and testing with graphql-orm-client/test.
 ---
 
 # Fragments, roots, pagination and mutations
@@ -67,10 +67,37 @@ function Page({ loaded }: { loaded: LoadedQuery<TicketsPageQuery> }) {
   fragment instead, so the root's query includes it.
 - Start the root in the browser route loader (`client.loadQuery`) and consume its handle with
   `useLoadedQuery`; forward the router abort signal and dispose abandoned handles. It does not suspend.
-- `@skip`/`@include` selections and fragment arguments (`@argumentDefinitions`/`@arguments`) are
-  unsupported build errors. Use separate roots and operation variables. For existing conditional
-  documents, `conditionalDirectives: "legacy"` temporarily keeps unsafe old behaviour while migrating;
-  remove it after splitting roots. Whole-query hook `skip` is still supported.
+- `@skip`/`@include` selections are unsupported build errors. Use separate roots and operation
+  variables. For existing conditional documents, `conditionalDirectives: "legacy"` temporarily keeps
+  unsafe old behaviour while migrating; remove it after splitting roots. Whole-query hook `skip` is
+  still supported.
+
+## Fragment arguments
+
+When one component is shown twice with different field arguments (two image sizes, two note limits),
+give its fragment arguments instead of writing a second fragment:
+
+```graphql
+fragment Thumb on Widget @argumentDefinitions(size: {type: "Int!", defaultValue: 64}) {
+  Name
+  Image(Size: $size)
+}
+query WidgetPage($Id: String!, $Big: Int!) {
+  small: Widget(Id: $Id) { ...Thumb }
+  large: Widget(Id: $Id) { ...Thumb @arguments(size: $Big) }
+}
+```
+
+- Declare each as `name: {type: "<GraphQL type>", defaultValue: <value>}` (default optional). Inside the
+  fragment `$name` is the argument; other variables are the operation's.
+- Pass a literal or a variable with `@arguments`. One not passed takes its default, or null without one.
+  `generate` fails for a missing required argument, an undeclared one, or a wrong type.
+- Each spread's reference carries its own values: `useFragment(Thumb, data.small)` and
+  `useFragment(Thumb, data.large)` read different sizes. Spread one fragment twice with different values
+  under separate aliases, never twice on one object (a build error).
+- `@live` fragments with arguments work: fields with arguments refresh through the holding query's re-read,
+  not the stream. Not under `liveSelection: "as-written"`, and a `@refetchable` fragment can't declare
+  arguments (both are build errors).
 
 ## Filters and lists
 

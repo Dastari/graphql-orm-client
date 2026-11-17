@@ -475,6 +475,27 @@ try {
   await post('mutation { DeleteWidget(Id: "err-a") { Success } }')
   pass('real errors through the router classify by code: a stale ExpectedVersion, a tampered cursor, a zero limit')
  }
+ // Fragment arguments are client-only: the router gets a copy of the fragment with the values written in.
+ {
+  const docs=compile(schema,[
+   `fragment TopWidgets on Query @argumentDefinitions(limit: {type: "Int!"}, id: {type: "String", defaultValue: "w1"}) {
+     Widgets(OrderBy: [{ Name: ASC }, { Id: ASC }], Page: {Limit: $limit, Offset: 0}) { Edges { Node { Id Name } } PageInfo { TotalCount } }
+     Widget(Id: $id) { Id Name }
+   }`,
+   `query Tops($n: Int!) { ...TopWidgets @arguments(limit: $n) }`,
+  ])
+  const operation=docs.operations.Tops
+  assert(!/@argumentDefinitions|@arguments/.test(operation.text), operation.text)
+  const client=createClient({network:createHttpNetwork({url:routerUrl,headers})})
+  const { snapshot, errors }=await client.execute(operation,{n:1})
+  assert.deepEqual(errors,[])
+  const top=readFragment(docs.fragments.TopWidgets,snapshot.data)
+  assert.equal(top.Widgets.Edges.length,1)
+  assert(top.Widgets.PageInfo.TotalCount>=1)
+  assert.equal(top.Widget.Id,'w1')
+  client.dispose()
+  pass('R28 a fragment with arguments is sent as plain GraphQL and read with its own values')
+ }
  const readAllArtifact = compile(schema, [`query Bounded($Page: PageInput) {
    Widgets(Page: $Page) @connection(key: "bounded") { Edges { Node { Id Name } } PageInfo { TotalCount } }
  }`]).operations.Bounded

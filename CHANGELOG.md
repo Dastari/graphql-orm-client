@@ -14,6 +14,22 @@ Migration: if generation now fails naming a `documents` entry, replace a glob wi
 (`"src/**/*.ts"` becomes `"src"`; `extensions` picks the file types), or remove an entry for a directory that's gone. The
 module generated before was missing those documents.
 
+### Added: fragment arguments
+
+A fragment can declare arguments with `@argumentDefinitions(size: {type: "Int!", defaultValue: 64})`, and a spread passes them
+with `@arguments(size: 512)` or `@arguments(size: $Big)`, so one fragment can be spread twice in a query with different values
+under two aliases. Each spread's reference reads the fragment with its own values, the store keeps each value under its own
+arguments, and the generated types are the fragment's own, as for any fragment. The directives aren't sent: the operation text
+has one copy of the fragment per argument set, named `<Fragment>_<hash>`, with the values written in. `generate` fails for a
+spread missing a required argument (naming the fragment and the argument), an undeclared argument, a value or variable of the
+wrong type, and one fragment spread twice on one object with different arguments. A `@live` fragment with arguments keeps its
+fields with arguments out of the stream and refreshes them through the holding query's re-read; under
+`liveSelection: "as-written"` it fails generation. A `@refetchable` fragment can't declare arguments. See
+[fragment arguments](docs/design.md#fragment-arguments-r28).
+
+Migration: none. Documents that used these directives failed generation before. Documents without them compile to the same
+text and hashes. `FragmentSpreadSelection` gains an optional `args`.
+
 ## 0.1.0-alpha.13 (2026-11-17)
 
 Install from the GitHub release archive:

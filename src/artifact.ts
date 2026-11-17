@@ -111,6 +111,12 @@ export interface FragmentSpreadSelection {
   readonly name: string
   readonly typeCondition: string
   readonly possibleTypes: readonly string[]
+  /**
+   * For a fragment that declares arguments (`@argumentDefinitions`): each one's value at this spread, in the spreading
+   * scope. That's the value passed with `@arguments`, else the declared default, else null. The fragment is read with these
+   * values; inside it, a variable naming one of them is `<Fragment>.<argument>`. Absent when the fragment declares none.
+   */
+  readonly args?: readonly ArgumentSpec[]
   /** The selection has `@skip` or `@include`, kept under `conditionalDirectives: "legacy"`: the response can leave it out. */
   readonly conditional?: true
 }
