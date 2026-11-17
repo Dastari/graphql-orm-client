@@ -1,6 +1,6 @@
 ---
 name: graphql-orm-client-live
-description: Keep data current on screen with graphql-orm-client, using @live fragments and generated Changed streams; draw live status (useLiveHealth); recover live updates after the socket's sign-in expires (reconnectLive); and diagnose stale data, refused streams and polling with the doctor. Use when data must update by itself or looks stale.
+description: Keep data current on screen with graphql-orm-client, using @live fragments and generated Changed streams; draw live status (useLiveHealth); recover live updates after the socket's sign-in expires (reconnectLive); diagnose stale data, refused streams and polling with the doctor and, in development, the store inspector. Use when data must update by itself or looks stale.
 ---
 
 # Live data
@@ -125,6 +125,20 @@ Then, in the running application:
 5. `client.live.status()` has more per type: `held`, `subscriptions`, `restartAttempts`, and `lastEnd` for why a stream ended. A climbing
    `restartAttempts` usually means a custom `live.subscribe` isn't getting a fresh connection after a schema reload: use `graphqlWsTransport`.
 6. Frequent `SUBSCRIPTION_CONTINUITY_LOST` means a bulk writer is outrunning the server's `event_channel_capacity`.
+7. To see why a record is or isn't on screen, in development, attach the inspector:
+
+   ```ts
+   if (import.meta.env.DEV) void import("graphql-orm-client/inspector").then(({ inspect }) => {
+     const inspector = inspect(client)
+     inspector.subscribe((event) => { if (event.type === "read") console.debug(event.read.operation, event.read.cause) })
+   })
+   ```
+
+   `records()` lists each stored record with `heldBy` (the queries keeping it) and `coveredBy` (the streams writing its events), `queries()` and
+   `streams()` the rest, and `reads()` why each query was read: `event` or `list` when an event made it read again, else a `liveHealth().reads`
+   cause such as `poll`, `burst`, `confirm`, `restart` or `reconnect`. It never sees a response, so `@sensitive` and `no-store` results can't
+   reach it, and it empties when the client is disposed. It doesn't attach where `NODE_ENV` is `production`; where nothing sets `NODE_ENV`, pass
+   `enabled: import.meta.env.DEV`, not `true`. Don't import it outside a development check, and don't put it on `window`.
 
 Test what happens when streams fail with `graphql-orm-client/test`: see Testing in the data skill.
 
