@@ -182,6 +182,12 @@ both snapshot integrity and generated provenance, even for schema changes that l
 unchanged. Fix snapshot integrity with `schema pull --url <router>`, then run `generate`.
 Projects without a sidecar retain the existing generation and check behavior.
 
+The `graphql` peer is 16 or 17 (R32). The snapshot, the persistence `schemaHash` and every operation's text and hash are
+printed the way graphql 16 prints them, whichever is installed: graphql 17 spaces object values (`{ a: 1 }`) and prints a
+schema default as written, where 16 prints `{a: 1}` and the coerced default with input fields' own defaults filled in.
+`src/compiler/print.ts` does both, and its tests run against each version in CI. graphql 17 also validates schema defaults
+that 16 accepted, so a snapshot can fail `generate` on 17 alone; that is a schema fault to fix in the service.
+
 ## Compiler
 
 `graphql-orm-client generate` reads every `graphql(...)` document in the application. It uses

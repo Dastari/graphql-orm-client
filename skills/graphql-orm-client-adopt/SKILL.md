@@ -8,7 +8,7 @@ description: Install graphql-orm-client in an application: pin a version, pull t
 Status: early alpha. Check the installed package's `docs/design.md` and changelog before
 writing code, and do not invent APIs it does not list.
 
-Install a versioned GitHub release archive (`pnpm add https://github.com/Dastari/graphql-orm-client/releases/download/v<version>/graphql-orm-client-<version>.tgz`), pin that exact version, and keep the lockfile. While the package is pre-1.0, read the changelog's migration steps for each version you move to. Then read the installed `README.md`, `docs/design.md` and `docs/graphql-orm-contract.md`.
+Install a versioned GitHub release archive (`pnpm add https://github.com/Dastari/graphql-orm-client/releases/download/v<version>/graphql-orm-client-<version>.tgz`), pin that exact version, and keep the lockfile. It needs one copy of `graphql`, version 16 or 17; generated output and schema snapshots are the same with either. While the package is pre-1.0, read the changelog's migration steps for each version you move to. Then read the installed `README.md`, `docs/design.md` and `docs/graphql-orm-contract.md`.
 The client only works against graphql-orm services and their router.
 
 1. **Schema snapshot.** Keep the router's SDL in the repository (for example

@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto"
-import { printSchema } from "graphql"
 import {
   Kind,
   getNamedType,
@@ -20,6 +19,7 @@ import {
 } from "graphql"
 import type { Selection } from "../artifact.js"
 import { CompileError, compile, type CompileOptions } from "./compile.js"
+import { printSchemaStable } from "./print.js"
 
 export interface GenerateOptions extends CompileOptions {
   /** Emit a schema fingerprint for opt-in persistence; schema changes then affect --check. */
@@ -203,7 +203,7 @@ export function generate(schema: GraphQLSchema, sources: readonly string[], opti
     "",
     ...(options.persistence ? [
       `/** Schema fingerprint for persistence envelopes. */`,
-      `export const schemaHash = ${JSON.stringify(createHash("sha256").update(printSchema(schema)).digest("hex"))}`,
+      `export const schemaHash = ${JSON.stringify(createHash("sha256").update(printSchemaStable(schema)).digest("hex"))}`,
     ] : []),
     ...lines,
     "",

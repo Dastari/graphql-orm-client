@@ -37,6 +37,7 @@ import type {
   PagedSpec,
   Selection,
 } from "../artifact.js"
+import { printStable } from "./print.js"
 
 /** Severity of a project policy diagnostic. */
 export type StrictLevel = "error" | "warn" | "off"
@@ -370,7 +371,7 @@ function compileDocuments(
     const wireFragments = new Map([...augmentedFragments].map(([name, node]) => [name, stripClientDirectives(node)]))
     const wireUsed = usedFragments(wireOperation.selectionSet, wireFragments)
     const text = [wireOperation, ...[...wireUsed].sort().map(fragment => wireFragments.get(fragment)!)]
-      .map(definition => print(definition)).join("\n\n")
+      .map(definition => printStable(definition)).join("\n\n")
     const normalization = convert(schema, augmented.selectionSet, rootType, augmentedFragments, true, options)
     const reachable = reachableTypes(normalization)
     const paged = pagedSpecOf(schema, node, rootType, options)
