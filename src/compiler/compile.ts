@@ -80,9 +80,10 @@ export interface CompileOptions {
    *
    * A field named on its own must be `Int` or `Float`; anything else fails generation, naming the
    * type and field. `{ field, compare }` declares how its values compare: `"number"` for a custom
-   * scalar sent as a JSON number, `"decimal"` for a decimal integer sent as a string or a number
-   * (compared exactly, past 2^53 too). A value that can't be compared that way is written: the
-   * last write to arrive wins.
+   * scalar sent as a JSON number, `"decimal"` for a decimal integer sent as a string, compared
+   * exactly as a big integer, past 2^53 too. Under `"decimal"` a JSON number is compared only up to
+   * 2^53. A value that can't be compared that way (absent, not a decimal integer, or a number past
+   * 2^53) is written: the last write to arrive wins.
    */
   readonly versions?: Readonly<Record<string, string | VersionPolicy | null>>
   /**
@@ -413,6 +414,12 @@ function compileDocuments(
   }
 
   const metadata = typeMetadata(schema, options)
+  // Not an error, so a project whose schema dropped a type keeps building; but an entry that does nothing shouldn't look like one that does.
+  if (!nested) for (const name of Object.keys(options.versions ?? {})) {
+    const type = schema.getType(name)
+    if (!type || !isObjectType(type))
+      (options.onWarning ?? console.warn)(`versions.${name}: the schema has no object type ${name}, so this entry orders nothing. Check the name, or remove the entry.`)
+  }
   const operations: Record<string, OperationArtifact> = {}
   for (const node of operationNodes) {
     const name = node.name!.value

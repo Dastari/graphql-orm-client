@@ -253,6 +253,50 @@ describe("compiler-added identity and version fields", () => {
     expect(result.total).toBe(5)
     client.dispose()
   })
+
+  it("readAll identifies the rows of a @sensitive query, which aren't stored, in either mode", async () => {
+    const all = Array.from({ length: 5 }, (_, i) => ticket(`t${i}`, 1))
+    const sensitive = `query SecretTitles($Page: PageInput) @sensitive { Tickets(Page: $Page) @connection(key: "secret") { Edges { Node { Title } } PageInfo { HasNextPage TotalCount } } }`
+    for (const identityFields of ["selected", "always"] as const) {
+      const artifact = compile(schema, [sensitive], { identityFields }).operations.SecretTitles!
+      const client = createClient({
+        network: {
+          execute: async ({ variables }) => {
+            const { Limit, Offset } = (variables as { Page: { Limit: number; Offset: number } }).Page
+            return { data: page(all.slice(Offset, Offset + Limit), Offset + Limit < all.length, all.length) }
+          },
+        },
+      })
+      const result = await readAll(client, artifact, { Page: { Limit: 2, Offset: 0 } }, { limit: 5, pageSize: 2 })
+      expect(result.rows.map((row) => (row as Row).Title)).toEqual(all.map((row) => row.Title))
+      expect(client.store.get(encodeNodeId("Ticket", ["t0"]))).toBeUndefined()
+      client.dispose()
+    }
+  })
+
+  it("readAll pairs each row with its own identity when another read of the list lands in between", async () => {
+    const { operations } = compile(schema, documents)
+    const rows = [ticket("t0", 1, "zero"), ticket("t1", 1, "one")]
+    const pending: ((rows: Row[]) => void)[] = []
+    const client = createClient({
+      network: {
+        execute: () => new Promise((resolve) => pending.push((answer) => resolve({ data: page(answer, false, answer.length) }))),
+      },
+    })
+    const variables = { Page: { Limit: 2, Offset: 0 } }
+    const reading = readAll(client, operations.TicketTitles!, variables, { limit: 2 })
+    // The same query and variables, read elsewhere at the same time, comes back in the other order.
+    const other = client.execute(operations.TicketTitles!, variables)
+    await Promise.resolve()
+    expect(pending).toHaveLength(2)
+    // Both answers arrive together: the other read is written after readAll's response and before readAll resumes.
+    pending[0]!(rows)
+    pending[1]!([...rows].reverse())
+    const result = await reading
+    await other
+    expect(result.rows.map((row) => (row as Row).Title)).toEqual(["zero", "one"])
+    client.dispose()
+  })
 })
 
 describe("version fields that aren't numbers", () => {
@@ -277,6 +321,16 @@ describe("version fields that aren't numbers", () => {
     const options = { versions: { Note: { field: "Revision", compare: "decimal" } as const }, onWarning: () => {} }
     expect(generate(schema, notes, options)).toContain(`"versionCompare":{"Note":"decimal"}`)
     expect(() => generate(schema, notes, { versions: { Note: "Revision" }, onWarning: () => {} })).toThrow(/versions\.Note: Note\.Revision/)
+  })
+
+  it("an entry for a type the schema doesn't have is a warning, not an error", () => {
+    const warnings: string[] = []
+    const result = compile(schema, notes, { versions: { Missing: "Revision", PageInput: "Limit", Note: "Stamp" }, onWarning: (message) => warnings.push(message) })
+    expect(result.operations.NoteList!.versions).toEqual({ Note: "Stamp" })
+    expect(warnings).toEqual([
+      "versions.Missing: the schema has no object type Missing, so this entry orders nothing. Check the name, or remove the entry.",
+      "versions.PageInput: the schema has no object type PageInput, so this entry orders nothing. Check the name, or remove the entry.",
+    ])
   })
 
   it("a declared decimal comparison keeps a newer string-versioned record when an older one arrives after it", () => {

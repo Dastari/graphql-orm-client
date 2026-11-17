@@ -235,9 +235,10 @@ response as sent, so they hold the added fields at run time whatever their gener
   managed versions need no configuration. `versions` names another field for a type, or
   `null` to turn it off. A named field must be `Int` or `Float`, or generation fails with the
   type and field (R27): a version that isn't a number would never be compared. `{ "field":
-  "Revision", "compare": "decimal" }` declares a decimal integer sent as a string or number, compared
-  exactly as a big integer; `"compare": "number"` declares a custom scalar sent as a JSON number.
-  A value that can't be compared as declared (absent, or not a decimal integer) is written, and the
+  "Revision", "compare": "decimal" }` declares a decimal integer sent as a string, compared exactly
+  as a big integer; a JSON number under it is compared only up to 2^53, where numbers stop being
+  exact. `"compare": "number"` declares a custom scalar sent as a JSON number. A value that can't be
+  compared as declared (absent, not a decimal integer, or a number past 2^53) is written, and the
   last write wins. The compiler selects `RecordVersion` itself; a configured field is ordered by
   only where the documents select it.
 - A `Changed` event with action `DELETED` removes the record. A query that showed it finds the

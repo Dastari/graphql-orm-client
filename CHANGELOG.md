@@ -75,12 +75,14 @@ as a `String` holding a 64-bit value, was never compared, so its type quietly ha
 
 To move, give the entry the comparison it needs:
 
-- `{ "field": "Revision", "compare": "decimal" }`: a decimal integer sent as a string or a number, compared exactly, past 2^53
-  too. A value that isn't a decimal integer can't be ordered, and the last write to arrive wins.
+- `{ "field": "Revision", "compare": "decimal" }`: a decimal integer sent as a string, compared exactly as a big integer, past
+  2^53 too. A JSON number is compared too, but only up to 2^53, where a number stops being exact. A value that can't be
+  compared (not a decimal integer, or a number past 2^53) can't be ordered, and the last write to arrive wins.
 - `{ "field": "Revision", "compare": "number" }`: a custom scalar sent as a JSON number.
 - `null`: no ordering for the type, which is what it had.
 
-Nothing changes for `RecordVersion` or a configured `Int` or `Float` field.
+Nothing changes for `RecordVersion` or a configured `Int` or `Float` field. A `versions` entry for a type the schema doesn't
+have, which did nothing, now prints a generator warning; it still builds.
 
 ### Fixed: a server `NodeId` is checked against the record's type
 

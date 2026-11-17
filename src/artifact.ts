@@ -172,7 +172,8 @@ export interface OperationArtifact<TData = unknown, TVariables = Record<string, 
   /** Record-version field per type, where the type has one. */
   readonly versions: Readonly<Record<string, string>>
   /**
-   * Types whose version is a decimal integer, sent as a string or a number and compared exactly. Versions of other
+   * Types whose version is a decimal integer, compared as a big integer: exactly when sent as a string, and up to 2^53
+   * when sent as a number. Versions of other
    * types are compared as numbers. Absent when no type declares it.
    */
   readonly versionCompare?: Readonly<Record<string, "decimal">>

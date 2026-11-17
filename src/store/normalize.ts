@@ -9,7 +9,7 @@ export interface NormalizeContext {
   readonly keys: Readonly<Record<string, readonly string[]>>
   readonly lifetimes?: OperationArtifact["lifetimes"]
   readonly versions: Readonly<Record<string, string>>
-  /** Types whose version is a decimal integer, compared exactly. */
+  /** Types whose version is a decimal integer, compared as a big integer. */
   readonly versionCompare?: OperationArtifact["versionCompare"]
   readonly variables: Variables
   /** Collects the ids of objects stored under a path because they have no key. */
@@ -78,7 +78,10 @@ function accepts(
   return incoming >= stored
 }
 
-/** A decimal integer version as a bigint, so values past 2^53 compare exactly; null when it isn't one. */
+/**
+ * A decimal integer version as a bigint, so a string past 2^53 compares exactly; null when it isn't one. A number past 2^53
+ * has already lost its exact value in JSON parsing, so it's null too, and the write is accepted.
+ */
 function decimal(value: unknown): bigint | null {
   if (typeof value === "number") return Number.isSafeInteger(value) ? BigInt(value) : null
   // A version is an integer of a few dozen digits at most; a longer string isn't one.
