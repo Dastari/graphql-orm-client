@@ -10,7 +10,8 @@ Status: early alpha. Check the installed `docs/design.md` and `docs/graphql-orm-
 ## The default path
 
 1. **Mark a fragment `@live` if it shows a record that can change while it's on screen.** If you aren't sure, mark it. Fields can include
-   relations and computed fields. The compiler builds a stream that can carry them, and re-reads what it can't.
+   relations, computed fields and fields under `@skip`/`@include`. The compiler builds a stream that can carry them, and re-reads what
+   it can't. A stream has no variables, so it carries a conditional field only when another live fragment selects it unconditionally.
 2. **Pass `live` to `createClient`:** `live: { artifacts: live, ...graphqlWsTransport(ws) }`, with `live` from the generated module and
    `ws` from graphql-ws. Don't write subscription operations, reconnect handling, restarts or refetches around a stream.
 3. **Regenerate.** `@live` on a type with no usable `Changed` stream fails the build, naming the fragment. Remove `@live`, or declare

@@ -1,4 +1,4 @@
-import type { ArgumentSpec, ConnectionSpec } from "../artifact.js"
+import type { ArgumentSpec, ConnectionSpec, SelectionCondition } from "../artifact.js"
 
 export type Variables = Readonly<Record<string, unknown>>
 
@@ -55,4 +55,17 @@ export function fieldStorageKey(
 export function argumentValue(args: readonly ArgumentSpec[], name: string, variables: Variables): unknown {
   const spec = args.find((arg) => arg.name === name)
   return spec ? resolve(spec, variables) : undefined
+}
+
+/**
+ * Whether a selection with these `@skip`/`@include` conditions applies under the variables. A variable left out takes the
+ * default the operation declares; one with neither counts as false (the server refuses such a request).
+ */
+export function included(conditions: readonly SelectionCondition[] | undefined, variables: Variables): boolean {
+  if (!conditions) return true
+  for (const condition of conditions) {
+    const value = typeof condition.if === "boolean" ? condition.if : (variables[condition.if.variable] ?? condition.if.default) === true
+    if (value !== (condition.directive === "include")) return false
+  }
+  return true
 }

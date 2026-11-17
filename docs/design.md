@@ -120,16 +120,46 @@ specific error. Route operations already own their variables and build-time comp
 local defaults and argument substitution would require distinct fragment reference identities and
 reader variable scopes. Use operation variables rather than silently losing those scopes.
 
-`@skip` and `@include` are rejected at build time by default, on fields, spreads and inline fragments,
-including live fragments. Previously the wire query preserved the directive, but normalisation and
-read selections did not represent its condition: an omitted field read as missing, generated types
-required it, and flattened live projections could select it unconditionally. This is unsafe and is
-not conditional-selection support. `conditionalDirectives: "legacy"` in generator config (or compile
-options) temporarily preserves that previous behaviour for migration. Split conditional selections
-into separate route roots, remove the setting and regenerate. Proper variable-aware conditional
-readers, optional generated fields and stream projections remain proposed (R27 in [the requirements](requirements.md));
-fragment arguments are R28. The hook's `skip` option
-skips a whole operation and is unaffected.
+`@skip` and `@include` on fields, fragment spreads and inline fragments are evaluated with the operation's
+variables (R27 in [the requirements](requirements.md)). The directive stays in the operation text, and the compiler records
+it on the selection as `conditions`: each one is `@skip` or `@include` with a literal `if`, or a variable with the default the
+operation declares for it. The reader and the normaliser evaluate them with the selector's variables:
+
+- A selection its condition leaves out isn't read and isn't written. It's absent from the data, it doesn't make the read
+  `missing`, and it isn't a reason to read again. A write to a field only a skipped selection reads doesn't change the
+  snapshot, so it doesn't notify. `missingFields` reports a field whose condition keeps it and the response leaves out, and
+  never one it skips.
+- A change of the variable is a different query instance, as with any variable. It reads the store under the new value:
+  complete when the store holds what that value selects, otherwise it reads from the network. Neither value makes the other
+  look incomplete.
+- Garbage collection marks only what the retained selectors' conditions keep, so a record reached only through a skipped
+  selection is collected.
+- A variable left out takes the default its operation declares. A fragment is compiled once, so the operations that spread it
+  must agree on that default; when two give different defaults, the build fails naming the fragment, the variable and the
+  operations. A variable with no default and no value counts as false; the server refuses such a request anyway.
+
+Generated types make a selection optional (`readonly Note?: ...`) when a condition can leave it out. A response key selected
+both with and without a condition stays required, and the fields only its conditional selection adds are optional. A
+conditional spread is typed `({} | FragmentRefs<"Name">)`: the reference is there or it isn't. Narrow it with
+`hasFragment(fragment, ref)` before `readFragment` or `useFragment`. A literal `@include(if: true)` or `@skip(if: false)`
+doesn't make anything optional.
+
+A stream has no variables to evaluate a condition with. A field that live fragments select only under `@skip` or `@include`
+stays out of the full stream projection, the generator warns that the stream excludes it, and the fragments that select it
+re-read their holders on an event, with each holder's own variables. A field another live fragment of the type selects
+unconditionally rides the stream as before, and the conditional fragment then needs no re-read for it. A literal condition
+that always skips a field leaves it out without a re-read. The `@live` holders a query reports come from the spreads its
+conditions keep. One limit: whether an event re-reads a query is decided per operation, not per value of the variable, so a
+query whose condition currently skips the field still re-reads on an event for its type. It costs a read, never stale data.
+
+`conditionalDirectives` (generator config or compile options) chooses the behaviour. `"evaluate"` is the default. `"reject"`
+fails the build on `@skip` and `@include`, as 0.1.0-alpha.13 and earlier did by default. `"legacy"` is deprecated and warns
+at each build: the directive stays on the wire only, so a skipped field reads as missing, generated types require it and the
+stream selects it unconditionally, as before. Selections compiled with it are marked `conditional` and `missingFields` doesn't
+check them. To move off it, remove the setting, regenerate, and handle each conditional field as optional and each
+conditional spread with `hasFragment`.
+
+The hook's `skip` option skips a whole operation and is unaffected.
 
 ### Framework server shells
 
@@ -1245,8 +1275,9 @@ path (list indices count as one path), naming the operation, the type, the recor
 `createClient({ missingFields: "error" })` adds an error at that path to the result's `errors` instead, with `extensions.code`
 `RESPONSE_FIELD_MISSING` (`classifyError` kind `unknown`), so `errorsAtPath` finds it; the query is still `ready` with partial data,
 as with a GraphQL error at a path. `missingFields: "off"` says nothing. A null is a value, so a null at a nullable field is never
-reported. Nor is a field under `@skip` or `@include` compiled with `conditionalDirectives: "legacy"` (the compiler marks those
-selections `conditional`; a module generated before this skips the check for documents using them), a `@batch` relation, or a field
+reported. Nor is a field its `@skip` or `@include` leaves out under the operation's variables, a field under `@skip` or `@include` compiled with
+`conditionalDirectives: "legacy"` (the compiler marks those selections `conditional`; a module generated before this skips the check
+for documents using them), a `@batch` relation, or a field
 at or below a path an error names. It applies to every operation's response, mutations included, but not to subscription events.
 The warning causes no read: a query showing an incomplete record reads again only when a write to that record leaves it missing, as before.
 

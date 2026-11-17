@@ -3,7 +3,7 @@ import { RESPONSE_FIELD_MISSING, missingFieldMessage, missingFields } from "./mi
 import { withoutErrorNulls } from "./partial.js"
 import { hadNoResponse, markNoResponse, rootKeys, wasNotSent, writeStatus, type WriteOutcome } from "./outcome.js"
 import type { ConnectionSpec, FragmentArtifact, FragmentRefFor, LinkSelection, OperationArtifact, PagedSpec, Selection } from "./artifact.js"
-import { fieldStorageKey, stableStringify, type Variables } from "./store/arguments.js"
+import { fieldStorageKey, included, stableStringify, type Variables } from "./store/arguments.js"
 import { contextOf, identify, normalize } from "./store/normalize.js"
 import { IDLE_TYPE_HEALTH, diagnosticMessage, typeHealth, worstOf, type LiveDiagnostic, type LiveHealth, type LiveHolding, type LiveTypeHealth } from "./health.js"
 import { LiveManager, type LiveOptions, type SubscriptionSink } from "./live.js"
@@ -1684,8 +1684,8 @@ export class Client {
   }
 
   /** Report fields the response leaves out, per `missingFields`; returns the errors to resolve with. */
-  private checkFields(artifact: OperationArtifact<any, any>, data: Record<string, unknown>, errors: readonly GraphQLErrorLike[]): readonly GraphQLErrorLike[] {
-    const missing = missingFields(artifact, data, errors)
+  private checkFields(artifact: OperationArtifact<any, any>, data: Record<string, unknown>, errors: readonly GraphQLErrorLike[], variables: Variables): readonly GraphQLErrorLike[] {
+    const missing = missingFields(artifact, data, errors, variables)
     if (!missing.length) return errors
     if (this.missingFields === "error")
       return [...errors, ...missing.map((field) => ({ message: missingFieldMessage(artifact.name, field), path: field.path, extensions: { code: RESPONSE_FIELD_MISSING } }))]
@@ -1765,7 +1765,7 @@ export class Client {
       let errors = response.errors ?? []
       options.beforeWrite?.()
       if (!response.data) throw new OperationError(artifact.name, errors)
-      if (this.missingFields !== "off") errors = this.checkFields(artifact, response.data, errors)
+      if (this.missingFields !== "off") errors = this.checkFields(artifact, response.data, errors, variables as Variables)
       if (artifact.sensitive) return {
         snapshot: { data: response.data as T, missing: false, seen: new Set(), selector: selectorOf(artifact, variables) },
         errors,
@@ -2213,6 +2213,19 @@ export function refData(ref: unknown): FragmentRefData | null {
   return ((ref as Record<symbol, unknown>)[FRAGMENT_REF] as FragmentRefData | undefined) ?? null
 }
 
+/**
+ * Whether `ref` carries a spread of `fragment`. A spread under `@skip` or `@include` is typed as possibly absent, and is absent
+ * when its condition leaves it out; check with this before `readFragment` or `useFragment`.
+ *
+ * @example
+ * ```ts
+ * if (hasFragment(WidgetDetail, data.Widget)) return <Detail widget={data.Widget} />
+ * ```
+ */
+export function hasFragment<N extends string, R>(fragment: FragmentArtifact<any, N>, ref: R): ref is R & FragmentRefFor<N> {
+  return refData(ref)?.fragments.has(fragment.name) === true
+}
+
 /** The selector a fragment reads through a reference produced by a spread of that fragment. */
 export function fragmentSelector(fragment: FragmentArtifact<any, any>, ref: unknown): { store: Store; selector: Selector } {
   const data = refData(ref)
@@ -2272,6 +2285,7 @@ function findConnections(
   const record = store.get(id)
   if (!record) return found
   for (const selection of selections) {
+    if (!included(selection.conditions, variables)) continue
     if (selection.kind === "inline") {
       findConnections(store, selection.selections, variables, id, found)
       continue

@@ -14,6 +14,28 @@ Migration: if generation now fails naming a `documents` entry, replace a glob wi
 (`"src/**/*.ts"` becomes `"src"`; `extensions` picks the file types), or remove an entry for a directory that's gone. The
 module generated before was missing those documents.
 
+### Added: `@skip` and `@include` are evaluated with the operation's variables
+
+`@skip` and `@include` on fields, fragment spreads and inline fragments now compile by default
+([#100](https://github.com/Dastari/graphql-orm-client/issues/100)). The directive stays in the operation text, and readers and
+normalisation evaluate it with the operation's variables: a field the condition leaves out is absent from the data, not missing, and
+causes no read. `missingFields` reports a field the condition keeps and the response leaves out. Generated types make a conditional
+field optional, and type a conditional spread as maybe absent; narrow it with the new `hasFragment(fragment, ref)` before
+`readFragment` or `useFragment`. A field `@live` fragments select only conditionally stays out of the stream (the generator warns
+that the stream excludes it), and the fragments selecting it re-read their holders on an event with their own variables. A variable's
+declared default applies when it's left out; operations that spread one fragment must give its variable the same default, or the
+build fails naming them.
+
+Nothing changes for a working application: until now these directives failed the build unless `conditionalDirectives: "legacy"` was set.
+
+- **Without `conditionalDirectives`:** nothing to do. Documents that failed the build with `@skip` or `@include` now build. To keep
+  that build error, set `conditionalDirectives: "reject"`.
+- **With `conditionalDirectives: "legacy"`:** it still works as before (a skipped field reads as missing, its type is required, and
+  the stream selects it), and it now warns at each build that it's deprecated and will be removed. To move off it: remove the
+  setting and regenerate; fix what the type checker reports by handling each conditional field as possibly `undefined`, and wrapping
+  each read through a conditional spread in `if (hasFragment(Fragment, ref))`. A fragment whose condition variable has different
+  defaults in the operations that spread it fails the build: give it the same default in each, or none.
+
 ## 0.1.0-alpha.13 (2026-11-17)
 
 Install from the GitHub release archive:

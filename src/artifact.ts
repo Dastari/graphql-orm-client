@@ -10,6 +10,15 @@ export type ArgumentSpec =
   | { readonly kind: "object"; readonly name: string; readonly fields: readonly ArgumentSpec[] }
   | { readonly kind: "list"; readonly name: string; readonly items: readonly ArgumentSpec[] }
 
+/**
+ * A `@skip` or `@include` on a selection. `if` is a literal, or an operation variable with the default the operations
+ * declare for it (absent when they declare none). A selection applies when no `@skip` holds and every `@include` does.
+ */
+export interface SelectionCondition {
+  readonly directive: "skip" | "include"
+  readonly if: boolean | { readonly variable: string; readonly default?: boolean }
+}
+
 export interface ScalarSelection {
   readonly kind: "scalar"
   readonly responseKey: string
@@ -17,6 +26,8 @@ export interface ScalarSelection {
   readonly args: readonly ArgumentSpec[]
   /** The selection has `@skip` or `@include`, kept under `conditionalDirectives: "legacy"`: the response can leave it out. */
   readonly conditional?: true
+  /** Its `@skip` and `@include`: it applies only when they hold for the operation's variables. */
+  readonly conditions?: readonly SelectionCondition[]
 }
 
 /** A paginated list field marked `@connection`: its pages merge into one stored list. */
@@ -92,6 +103,8 @@ export interface LinkSelection {
   readonly connection?: ConnectionSpec
   /** The selection has `@skip` or `@include`, kept under `conditionalDirectives: "legacy"`: the response can leave it out. */
   readonly conditional?: true
+  /** Its `@skip` and `@include`: it applies only when they hold for the operation's variables. */
+  readonly conditions?: readonly SelectionCondition[]
 }
 
 export interface InlineFragmentSelection {
@@ -103,6 +116,8 @@ export interface InlineFragmentSelection {
   readonly selections: readonly Selection[]
   /** The selection has `@skip` or `@include`, kept under `conditionalDirectives: "legacy"`: the response can leave it out. */
   readonly conditional?: true
+  /** Its `@skip` and `@include`: it applies only when they hold for the operation's variables. */
+  readonly conditions?: readonly SelectionCondition[]
 }
 
 /** A spread of another fragment. Readers return a masked reference; normalisers inline it. */
@@ -113,6 +128,8 @@ export interface FragmentSpreadSelection {
   readonly possibleTypes: readonly string[]
   /** The selection has `@skip` or `@include`, kept under `conditionalDirectives: "legacy"`: the response can leave it out. */
   readonly conditional?: true
+  /** Its `@skip` and `@include`: it applies only when they hold for the operation's variables. */
+  readonly conditions?: readonly SelectionCondition[]
 }
 
 export type Selection =
