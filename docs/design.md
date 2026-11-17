@@ -1208,6 +1208,7 @@ const persistence = persistClient(client, {
   identityKey: signedInIdentityKey,
   schemaHash,
   serverRelease: deploymentRevision,
+  maxAgeMs: 7 * 24 * 3600_000, // the default; Infinity restores a snapshot of any age
   onDiagnostic: diagnostic => report(diagnostic),
 })
 await persistence.ready
@@ -1232,8 +1233,17 @@ Windows of one identity share a key, because each has its own store (R19). The l
 
 `clear()` tells the identity's other windows through a `BroadcastChannel`, where one exists. Each stops saving, and a window that can write deletes once more after any write it had under way. They keep their data in memory until the application disposes them. `deleteOnDispose: true` restores the earlier behaviour of deleting on disposal. Use it only with one window per identity.
 
-Envelopes contain format version, package version, schema hash, server release and identity.
-Any mismatch is diagnosed and deleted, with no migration. Generator setting `persistence: true` exports `schemaHash`, a
+Envelopes contain format version, package version, schema hash, server release, identity and `savedAt`, the time of
+the write. Any mismatch is diagnosed and deleted, with no migration. Every release changes the package version, so a
+new release discards what an earlier one saved. Format 2 added `savedAt`; a format 1 envelope, as 0.1.0-alpha.12 and
+earlier wrote, is a mismatch, and so is a format 2 envelope without a numeric `savedAt`.
+
+`maxAgeMs` (7 days by default) is the oldest snapshot restored, counted from its last write. An older one is
+reported as `PERSISTENCE_EXPIRED`, deleted and not restored, and so is one whose `savedAt` is later than now, which
+happens only when the device clock moved back. A read-only window leaves it in place, as it does a mismatch.
+`maxAgeMs: Infinity` restores a snapshot of any age. Age is checked when a client attaches, not in the background,
+so a snapshot stays on the device until the identity is loaded again or `clear()` runs. A window that reads but
+writes nothing doesn't refresh `savedAt`. `now` replaces `Date.now` for tests. Generator setting `persistence: true` exports `schemaHash`, a
 SHA-256 of printed schema SDL; a consumer can also supply its tracked R23 snapshot hash consistently.
 The application must supply `serverRelease` and change it on every deployment affecting the API.
 Neither SDL nor operation hashes can detect a release with unchanged schema. The client cannot
@@ -1252,7 +1262,18 @@ Writers that put secrets directly into the shared store are responsible for thos
 
 Writes coalesce for `throttleMs` (250 ms by default). `flush()` awaits restore and a pending snapshot;
 call it before navigation when persistence matters. The default `maxBytes` is 1 MiB of UTF-8 JSON,
-applied before parse and before writes. Oversized snapshots delete the previous stored payload.
+applied before parse and before writes.
+
+A flush serialises only the records written since the last flush (the first flush serialises them all). Each record's
+JSON is measured then and kept while the snapshot fits, so a flush joins kept text instead of copying the store; the
+kept text is bounded by `maxBytes`. When a flush finds
+the snapshot over `maxBytes`, it reports `PERSISTENCE_SIZE` once, deletes the saved snapshot once, and drops the kept
+text. Until the store fits again (records are collected or deleted, or fields shrink), flushes measure what was written
+and save nothing; the next load restores nothing. The first flush that fits serialises every record and saves a
+complete snapshot. Nothing partial is saved: a subset would have to include every record that any saved record
+reaches, or a restored connection would point at rows it doesn't hold, and the store keeps no record of use to
+choose a subset by. Raise `maxBytes` for an application whose working set is larger.
+
 Malformed records, envelope mismatches, storage unavailability and quota failures report
 `PERSISTENCE_*` diagnostics and never fail a query. Diagnostic callbacks cannot break persistence.
 The budget bounds accepted payloads, not an adapter's allocation before returning a value.
