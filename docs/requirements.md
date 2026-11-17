@@ -269,6 +269,13 @@ from `graphql-orm-v0.90.1` (router 0.8.1), with a version matrix in CI. It asser
 key modes, continuity frames, node lookup, managed version ordering and pagination, and repeats
 Node and browser recovery, on Chromium, Firefox and WebKit. See [the coverage and fixture limits](../conformance/README.md).
 A conformance failure remains a failure; this does not claim the proposed R2/R3 behaviour is built.
+The matrix keeps a current graphql-orm and router in it, and the suite follows router changes that alter what it can read, such as
+introspection turned off by default ([#56](https://github.com/Dastari/graphql-orm-client/issues/56)), and re-checks what the client
+does because of server bugs once they are fixed ([#78](https://github.com/Dastari/graphql-orm-client/issues/78)).
+*Acceptance:* CI runs the current graphql-orm release and its router; the contract's status line and rows say what was read or run
+at which version; burst loss, `complete` after `error`, and `node` for an unknown id each have a recorded result.
+*Built:* CI runs `graphql-orm-v0.90.1`, `v0.94.0`, `v0.126.0` (router 0.11.0) and `v0.170.0` (router 0.15.5); results are in
+[the contract](graphql-orm-contract.md).
 
 **R22. Budgets.** Checked in CI: 10,000 rows in the store, a burst of 100 events a second, the
 compile time of 250 documents against a 45,000-line schema, the bundle size of the main and react

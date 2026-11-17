@@ -16,6 +16,8 @@ The client only works against graphql-orm services and their router.
    Set `schema` in the project config first. Commit the SDL and its `.sha256` sidecar.
    Use `schema pull --check` in CI for server drift; it never writes and an unreachable server fails.
    Credentials come from `--token-env NAME` or `--header-env name=NAME`, never literal flags.
+   It reads the schema by introspection, which graphql-orm-router 0.11.0 and later refuse unless their configuration sets
+   `"introspection": true` (exit 5).
    Once the hash exists, `generate --check` also verifies snapshot integrity and provenance.
    After pulling a changed schema, run `generate`. Existing projects without a sidecar keep working.
 2. **Generate.** Add `graphql-orm-client.config.json` (`schema`, `documents`, `out`,
