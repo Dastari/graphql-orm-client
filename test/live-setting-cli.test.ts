@@ -16,7 +16,8 @@ it('threads fragment file paths through generation and checks every duplicate de
     const config = { schema: 'schema.graphql', documents: ['src'], out: 'src/generated.ts', live: { default: ['src/area/**'] }, queryOwners: ['src/owners/**'] }
     writeFileSync(join(dir, 'graphql-orm-client.config.json'), JSON.stringify(config))
     const bin = resolve('bin/graphql-orm-client.mjs')
-    execFileSync(process.execPath, [bin, 'generate'], { cwd: dir })
+    const stdout = execFileSync(process.execPath, [bin, 'generate'], { cwd: dir, encoding: 'utf8' })
+    expect(stdout).toContain('live.default "src/area/**": 1 file, 1 fragment: 1 newly live\n')
     expect(readFileSync(join(dir, 'src/generated.ts'), 'utf8')).toContain('LiveWidget')
     writeFileSync(join(dir, 'src/area/duplicate.ts'), query)
     const result = spawnSync(process.execPath, [bin, 'generate'], { cwd: dir, encoding: 'utf8' })

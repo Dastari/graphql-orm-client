@@ -21,6 +21,7 @@ import {
   type LoadedQuery,
   type FetchPolicy,
   type GraphQLErrorLike,
+  type MutateOptions,
   type PagedState,
   type QueryState,
 } from "../client.js"
@@ -336,8 +337,8 @@ export function useRefetchableFragment(
   return { ...state, data: snapshot?.data ?? null, refetch }
 }
 
-/** The options of `client.mutate`. */
-export type MutationOptions = NonNullable<Parameters<Client["mutate"]>[2]>
+/** The options of `client.mutate`, with `confirm` typed for the mutation's result. */
+export type MutationOptions<T = unknown> = MutateOptions<T>
 
 export interface MutationState {
   /** True while any commit from this hook is in flight. */
@@ -356,8 +357,8 @@ export function useMutation<T = unknown, V extends Variables = Variables>(
   mutation: OperationArtifact<T, V>
 ): MutationState & {
   /** Explicit retry surface: call again after authentication with fresh variables; nothing is queued. */
-  commitOutcome: (variables: V, options?: MutationOptions) => ReturnType<Client["mutateOutcome"]>
-  commit: (variables: V, options?: MutationOptions) => Promise<{ data: T; errors: readonly GraphQLErrorLike[] }>
+  commitOutcome: (variables: V, options?: MutationOptions<T>) => ReturnType<Client["mutateOutcome"]>
+  commit: (variables: V, options?: MutationOptions<T>) => Promise<{ data: T; errors: readonly GraphQLErrorLike[] }>
 } {
   const client = useClient()
   const [state, setState] = useState<MutationState>({ inFlight: false, error: null })
@@ -370,7 +371,7 @@ export function useMutation<T = unknown, V extends Variables = Variables>(
     }
   }, [])
   const commit = useCallback(
-    async (variables: V, options: MutationOptions = {}) => {
+    async (variables: V, options: MutationOptions<T> = {}) => {
       pending.current += 1
       setState((previous) => ({ ...previous, inFlight: true }))
       let error: Error | null = null
@@ -388,7 +389,7 @@ export function useMutation<T = unknown, V extends Variables = Variables>(
     },
     [client, mutation]
   )
-  const commitOutcome = useCallback(async (variables: V, options: MutationOptions = {}) => {
+  const commitOutcome = useCallback(async (variables: V, options: MutationOptions<T> = {}) => {
     pending.current += 1
     setState(previous => ({ ...previous, inFlight: true }))
     const result = await client.mutateOutcome(mutation, variables, options)

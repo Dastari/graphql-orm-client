@@ -23,10 +23,17 @@ function run(cmd, args, extra = {}) {
 console.log(`Conformance ${version}; scratch ${scratch}`)
 const start = Date.now()
 if(version!==pinned) await run('cargo',['generate-lockfile','--manifest-path',`${scratch}/service/Cargo.toml`])
-await run('cargo', ['build', '--locked', '--manifest-path', `${scratch}/service/Cargo.toml`])
+// From 0.143.0 `schema_roots!` needs a handwritten root's field names; the attribute doesn't exist before then.
+const minor = Number(version.match(/v0\.(\d+)/)?.[1] ?? 0)
+await run('cargo', ['build', '--locked', ...(minor >= 143 ? ['--features', 'root-field-names'] : []), '--manifest-path', `${scratch}/service/Cargo.toml`])
 await run('cargo', ['install', '--git', 'https://github.com/Dastari/graphql-orm', '--tag', version, 'graphql-orm-router', '--locked', '--debug', '--root', `${scratch}/router`, '--force'])
+// The tag sets the router version too. Read it from what was installed, so the suite can tell router behaviours apart.
+const installed = JSON.parse(await readFile(`${scratch}/router/.crates2.json`, 'utf8')).installs
+const routerVersion = Object.keys(installed).map(key => key.match(/^graphql-orm-router (\S+) /)?.[1]).find(Boolean)
+if (!routerVersion) throw Error('graphql-orm-router version not found in .crates2.json')
+console.log(`graphql-orm-router ${routerVersion}`)
 console.log(`Rust build/install: ${((Date.now() - start) / 1000).toFixed(1)}s`)
 const runtime = await mkdtemp(`${scratch}/run-`)
-await run(process.execPath, ['conformance/orm.mjs'], { CONFORMANCE_SCRATCH: runtime, SERVICE_BIN: `${scratch}/target/debug/client-conformance-service`, ROUTER_BIN: `${scratch}/router/bin/graphql-orm-router` })
+await run(process.execPath, ['conformance/orm.mjs'], { CONFORMANCE_SCRATCH: runtime, SERVICE_BIN: `${scratch}/target/debug/client-conformance-service`, ROUTER_VERSION: routerVersion, ROUTER_BIN: `${scratch}/router/bin/graphql-orm-router` })
 
 console.log(`Conformance total: ${((Date.now() - start) / 1000).toFixed(1)}s`)
