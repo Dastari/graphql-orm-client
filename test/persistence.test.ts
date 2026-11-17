@@ -213,17 +213,47 @@ it("writes savedAt, and restores a snapshot up to maxAgeMs old",async()=>{
  expect(saved(a).savedAt).toBe(1_000_000)
  time+=7*24*3600_000;const c=client();await persistClient(c,{...options,adapter:a,now:()=>time}).ready
  expect(c.store.size).toBeGreaterThan(0);c.dispose()
+ // A clock stepped back by up to a minute, as time synchronisation can, keeps a fresh snapshot.
+ time=1_000_000-60_000;const skewed=client();await persistClient(skewed,{...options,adapter:a,now:()=>time}).ready
+ expect(skewed.store.size).toBeGreaterThan(0);expect(a.values.size).toBe(1);skewed.dispose()
 })
 it.each([
  ["older than maxAgeMs",{maxAgeMs:60_000},60_001],
  ["older than the 7-day default",{},7*24*3600_000+1],
- ["saved later than the clock says it is now",{},-1],
+ ["saved more than a minute later than the clock says it is now",{},-60_001],
 ])("deletes without restoring a snapshot %s",async(_name,extra,age)=>{
  const a=adapter(),first=client(),p=persistClient(first,{...options,adapter:a,now:()=>1_000_000});await p.ready
  await first.execute(ops.WidgetPage!,{Id:"w"});await p.flush();first.dispose()
  const diagnostic=vi.fn(),c=client();await persistClient(c,{...options,...extra,adapter:a,now:()=>1_000_000+age,onDiagnostic:diagnostic}).ready
  expect(c.store.size).toBe(0);expect(a.values.size).toBe(0);expect(diagnostic).toHaveBeenCalledWith(expect.objectContaining({code:"PERSISTENCE_EXPIRED"}))
  c.dispose()
+})
+it.each([
+ ["a read-only window",true,false],
+ ["a window after clear()",false,true],
+] as const)("%s keeps no record of what it writes",async(_name,readOnly,clear)=>{
+ // Writes and deletions leave the store empty; count the ids put into sets, against a client with no persistence.
+ const adds=async(attach:boolean)=>{
+  const c=client()
+  if(attach){const p=persistClient(c,{...options,readOnly,adapter:adapter()});await p.ready;if(clear)await p.clear()}
+  const add=vi.spyOn(Set.prototype,"add");let count=0
+  try {
+   for(let i=0;i<200;i++){c.store.setField(c.store.getOrCreate(`leak-${i}`,"Widget"),"Name","x");c.store.publish();c.store.delete(`leak-${i}`);c.store.publish()}
+   count=add.mock.calls.filter(([v])=>typeof v==="string"&&v.startsWith("leak-")).length
+  } finally { add.mockRestore() }
+  expect(c.store.size).toBe(0);c.dispose();return count
+ }
+ expect(await adds(true)).toBe(await adds(false))
+})
+it("a window that saves does collect what it writes, for its next flush",async()=>{
+ const counts:number[]=[]
+ for(const attach of [false,true]){
+  const c=client();if(attach)await persistClient(c,{...options,adapter:adapter()}).ready
+  const add=vi.spyOn(Set.prototype,"add")
+  try { c.store.setField(c.store.getOrCreate("leak-0","Widget"),"Name","x");c.store.publish();counts.push(add.mock.calls.filter(([v])=>v==="leak-0").length) } finally { add.mockRestore() }
+  c.dispose()
+ }
+ expect(counts[1]).toBeGreaterThan(counts[0]!)
 })
 it("maxAgeMs: Infinity restores a snapshot of any age, and a read-only window leaves an expired one",async()=>{
  const a=adapter(),first=client(),p=persistClient(first,{...options,adapter:a,now:()=>0});await p.ready

@@ -1239,8 +1239,9 @@ new release discards what an earlier one saved. Format 2 added `savedAt`; a form
 earlier wrote, is a mismatch, and so is a format 2 envelope without a numeric `savedAt`.
 
 `maxAgeMs` (7 days by default) is the oldest snapshot restored, counted from its last write. An older one is
-reported as `PERSISTENCE_EXPIRED`, deleted and not restored, and so is one whose `savedAt` is later than now, which
-happens only when the device clock moved back. A read-only window leaves it in place, as it does a mismatch.
+reported as `PERSISTENCE_EXPIRED`, deleted and not restored, and so is one whose `savedAt` is more than a minute later
+than now, which happens only when the device clock moved back. The minute allows for a clock that time
+synchronisation stepped back slightly. A read-only window leaves it in place, as it does a mismatch.
 `maxAgeMs: Infinity` restores a snapshot of any age. Age is checked when a client attaches, not in the background,
 so a snapshot stays on the device until the identity is loaded again or `clear()` runs. A window that reads but
 writes nothing doesn't refresh `savedAt`. `now` replaces `Date.now` for tests. Generator setting `persistence: true` exports `schemaHash`, a

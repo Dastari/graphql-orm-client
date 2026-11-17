@@ -57,7 +57,8 @@ store goes over, not one per flush.
 The persistence envelope now records `savedAt`, the time of its last write, and `persistClient` takes `maxAgeMs`
 ([#75](https://github.com/Dastari/graphql-orm-client/issues/75)). A snapshot older than that, by default 7 days, is
 reported as `PERSISTENCE_EXPIRED`, deleted and not restored: the application starts as it would with nothing saved.
-So is one saved later than the device clock says it is now. A read-only window leaves it in place. The clock is
+So is one saved more than a minute later than the device clock says it is now; the minute allows for a clock that
+time synchronisation stepped back. A read-only window leaves it in place. The clock is
 `Date.now` unless you pass `now`.
 
 - To keep restoring a snapshot of any age, as before, pass `maxAgeMs: Infinity`.

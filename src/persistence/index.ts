@@ -20,7 +20,7 @@ export interface PersistenceOptions {
   readonly maxBytes?: number
   /**
    * Oldest snapshot to restore, in milliseconds since it was last written. Default 7 days. An older snapshot, or one
-   * whose time is later than now, is deleted and not restored. `Infinity` restores a snapshot of any age.
+   * saved more than a minute later than now (the clock moved back), is deleted and not restored. `Infinity` restores a snapshot of any age.
    */
   readonly maxAgeMs?: number
   /** Clock for `savedAt` and `maxAgeMs`, default `Date.now`. */
@@ -78,10 +78,20 @@ export function persistClient(client: Client, options: PersistenceOptions): Pers
   let restoring = true
   let dirty = false
   const safeDelete = () => serial(adapter, key, () => adapter.delete(key)).catch(e => report("PERSISTENCE_DELETE", e))
+  // Each saved record's JSON is measured at the first flush after it's written, so a flush costs what changed. The text is kept
+  // only while the snapshot fits, which bounds it by the budget; over budget the sizes alone say when it fits again.
+  const sizes = new Map<string, number>()
+  const texts = new Map<string, string>()
+  const written = new Set<string>()
+  let measured = false // the first flush measures every record, including any written before persistence was attached
+  let recordBytes = 0
+  let over = false
   const stop = () => {
     stopped = true
     if (timer !== null) clearTimeout(timer)
     timer = null
+    // A stopped controller never flushes again, so nothing it holds would be released before disposal.
+    written.clear(); sizes.clear(); texts.clear(); recordBytes = 0
   }
   // Another window's sign-out has to stop this one saving, or its next write would put the data back.
   const channel = () => typeof BroadcastChannel === "function" ? new BroadcastChannel(key) : null
@@ -91,14 +101,6 @@ export function persistClient(client: Client, options: PersistenceOptions): Pers
     stop()
     if (!readOnly) void safeDelete() // ordered after a write of ours that was already under way
   }
-  // Each saved record's JSON is measured at the first flush after it's written, so a flush costs what changed. The text is kept
-  // only while the snapshot fits, which bounds it by the budget; over budget the sizes alone say when it fits again.
-  const sizes = new Map<string, number>()
-  const texts = new Map<string, string>()
-  const written = new Set<string>()
-  let measured = false // the first flush measures every record, including any written before persistence was attached
-  let recordBytes = 0
-  let over = false
   const flush = async () => {
     if (timer !== null) clearTimeout(timer)
     timer = null
@@ -141,7 +143,12 @@ export function persistClient(client: Client, options: PersistenceOptions): Pers
     dirty = true
     if (!stopped && !restoring && !readOnly && timer === null) timer = setTimeout(() => { timer = null; void flush() }, delay)
   }
-  if (!stopped) client.store.observeWrites(changed => { for (const id of changed) written.add(id); schedule() }, () => {
+  if (!stopped) client.store.observeWrites(changed => {
+    // A read-only or stopped window never flushes, so it mustn't collect ids for a flush.
+    if (readOnly || stopped) return
+    for (const id of changed) written.add(id)
+    schedule()
+  }, () => {
     stop()
     windows?.close()
     if (deleteOnDispose && !readOnly) void safeDelete()
@@ -158,8 +165,9 @@ export function persistClient(client: Client, options: PersistenceOptions): Pers
       if (typeof envelope.savedAt !== "number" || !Number.isFinite(envelope.savedAt)) throw new Error("Persistence envelope has no savedAt")
       if (!Array.isArray(envelope.records) || !envelope.records.every(validRecord)) throw new Error("Corrupt persisted records")
       const age = now() - envelope.savedAt
-      if (!(age >= 0 && age <= maxAge)) {
-        report("PERSISTENCE_EXPIRED", age < 0 ? "Persisted snapshot was saved later than now" : "Persisted snapshot is older than maxAgeMs")
+      // A minute's tolerance for a clock stepped back slightly, as time synchronisation does.
+      if (!(age >= -60_000 && age <= maxAge)) {
+        report("PERSISTENCE_EXPIRED", age < 0 ? "Persisted snapshot was saved more than a minute later than now" : "Persisted snapshot is older than maxAgeMs")
         if (!readOnly) await safeDelete()
         return
       }
