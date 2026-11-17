@@ -300,6 +300,52 @@ Nothing else is dropped: a call whose place can't be told is kept with a warning
 TypeScript can't parse, or a project without TypeScript, keeps every call, as before. Run `generate`: if the module
 changes, it had an operation or fragment that was only in a comment or a string.
 
+### Fixed: a refetch showed its data before its errors
+
+A refetch wrote its response to the store, and the query's store watch published the new data with the previous response's
+`errors` (usually none) before the query set the new ones. For a render or more, a partial response looked complete: under
+`legacy` always, and under `partialResults: "preserve-errors"` whenever another field changed or an error had no path. A watched
+query now takes its own response's data, errors and status in one state change
+([#63](https://github.com/Dastari/graphql-orm-client/issues/63)). Nothing to change in applications; a workaround that treated
+data as complete only at `status: "ready"` can stay or go.
+
+### Added: a warning for a response that leaves out a selected field
+
+A response missing a field the operation selects used to make the query `ready` with `undefined` in the typed data and nothing
+logged. Now, outside production, the client warns once per operation and path, naming the operation, type, record and response key
+([#66](https://github.com/Dastari/graphql-orm-client/issues/66)). `createClient({ missingFields: "error" })` reports it as an
+error at that path in `errors` instead (code `RESPONSE_FIELD_MISSING`), and `"off"` says nothing. A null at a nullable field is
+never reported.
+
+Regenerate if you compile with `conditionalDirectives: "legacy"`: the compiler now marks `@skip`/`@include` selections, so a
+field they leave out isn't reported. A module generated earlier skips the check for documents that use them.
+
+### Added: `refetchQueries` by variables
+
+`client.refetchQueries` and `mutate(..., { refetchQueries })` take `{ query, variables }` entries, where `variables` is a
+predicate given each open instance's variables or an object whose fields must match, so only the instances showing the changed
+records read again ([#67](https://github.com/Dastari/graphql-orm-client/issues/67)):
+`client.refetchQueries([{ query: Detail, variables: (v) => changed.has(v.Id) }])`. Artifacts, names and `"active"` work as before.
+
+### Changed: reads have a 30-second deadline; opt-in retry; queries in error read again when the browser is back online
+
+- `createHttpNetwork` now gives each query a deadline of 30 seconds (`DEFAULT_READ_DEADLINE_MS`). A read with no response by then
+  ends the query in `error`, classified `network`, where it used to stay `loading`. **To keep the old behaviour, pass
+  `createHttpNetwork({ url, reads: { deadlineMs: null } })`**; to change the time, pass a number. Writes still have no deadline
+  unless `writes.deadlineMs` is set. A read that needs longer than 30 seconds needs a larger `reads.deadlineMs`.
+- A deadline that passes while the body is still arriving now fails as no response (`network`, retried with `reads.retry`), and the
+  caller's abort at that point as `cancelled`. Both used to throw `HttpError(200)` without a byte limit, and an unmarked
+  `AbortError` with one.
+- `createClient({ reads: { retry: true } })` (or `{ retries, baseMs, maxMs, random }`) retries a watched query's read that failed
+  before any response, up to 3 more times with back-off and jitter. Off unless set. A write is never retried. Closing the query,
+  disposing the client or a newer read ends the wait.
+- In a browser, open queries in `error` now read again on the window's `online` event. **To keep the old behaviour, pass
+  `createClient({ reads: { refetchOnOnline: false } })`.**
+- `liveHealth().reads` counts two new causes, `retry` and `online`, and `ReadCause` has the two new members. A `switch` over
+  `ReadCause` with no `default` needs the two cases.
+
+([#72](https://github.com/Dastari/graphql-orm-client/issues/72))
+
 ## 0.1.0-alpha.12 (2026-11-07)
 
 Install from the GitHub release archive:

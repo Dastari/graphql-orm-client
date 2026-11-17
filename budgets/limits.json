@@ -88,14 +88,14 @@
       "margin": "About seven times the local median, for shared CI runners. Was 30000: tightened after a nested compile re-extended the whole schema per live type, which took this from 7.6 s to about 24 s and stayed under the old limit."
     },
     "mainRawBytes": {
-      "max": 72900,
-      "measured": 71869,
-      "margin": "Minified standalone entry closure, external peers; streams and readAll have their own entries. Measured size plus about 1,000. Raised 2026-11-17 for write-outcome evidence (#60, #61, #62: mostly the validation rule names the router sends as codes), to 69821, then for stopping live delivery on an authentication close and resuming it (#73), to 71869. Growth past this needs a reason."
+      "max": 77500,
+      "measured": 76437,
+      "margin": "Minified standalone entry closure, external peers; streams and readAll have their own entries. Measured size plus about 1,000. Raised 2026-11-17 for write-outcome evidence (#60, #61, #62: mostly the validation rule names the router sends as codes), to 69821, for stopping live delivery on an authentication close and resuming it (#73), to 71869, and for query reads (#63, #66, #67, #72: deadlines, retry, missing-field reports, refetch by variables), to 76437. Growth past this needs a reason."
     },
     "mainGzipBytes": {
-      "max": 23400,
-      "measured": 23101,
-      "margin": "Gzip of the same closure, plus about 300. Raised with the raw limit on 2026-11-17, twice (22574, then 23101)."
+      "max": 25000,
+      "measured": 24705,
+      "margin": "Gzip of the same closure, plus about 300. Raised with the raw limit on 2026-11-17, three times (22574, 23101, then 24705)."
     },
     "reactRawBytes": {
       "max": 10000,

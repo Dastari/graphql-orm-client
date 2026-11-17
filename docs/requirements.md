@@ -339,6 +339,31 @@ reading them everywhere. *Acceptance:* a `Changed` event for a versioned row who
 changes the list query's data nor notifies its subscribers through the store (the list's own R3 re-read, coalesced by
 `live.minRereadMs`, still runs), and a document that selects `Id` or the version reads it.
 
+**R36. A response arrives whole.** A response's data and its errors reach a query's state in one change, so no render shows a
+partial response as complete ([#63](https://github.com/Dastari/graphql-orm-client/issues/63)).
+*Acceptance:* under both `partialResults` modes, a refetch that returns a refused field produces no state with the new data and
+the previous errors. *Built.*
+
+**R37. A left-out field is reported.** A response that omits a selected field (a non-conformant server, a gateway that drops a
+field, a schema changed under the client) is reported, not silently `ready`: a development warning naming the operation, type,
+record and response key, once per operation and path, and an opt-in mode that reports it as an error at that path. No warning for
+a null at a nullable field or a legacy `@skip`/`@include` field, and no read loop
+([#66](https://github.com/Dastari/graphql-orm-client/issues/66)).
+*Acceptance:* a test shows the warning once, its absence for nulls and conditional fields, the strict error at the path, and a
+bounded number of reads. *Built:* `missingFields: "warn" | "error" | "off"`.
+
+**R38. Refetch by variables.** `refetchQueries`, on the client and on `mutate`, selects open queries by their variables as well as
+by operation, with a predicate or a partial object, so a change stream naming a few records reads only the views showing them
+([#67](https://github.com/Dastari/graphql-orm-client/issues/67)).
+*Acceptance:* with two open instances on different variables, only the matching one fetches; existing forms are unchanged. *Built.*
+
+**R39. Reads recover by themselves.** A read has a default deadline, with a setting to change or remove it. Opt-in, a read that
+failed before any response is retried a bounded number of times with back-off and jitter, never a write, and the wait ends with
+disposal or a newer read. Open queries in `error` read again when the browser comes back online
+([#72](https://github.com/Dastari/graphql-orm-client/issues/72)).
+*Acceptance:* a read that never answers ends in `error` at the deadline. With retry on, a read that fails twice and then succeeds
+ends `ready` with no call from the application, and a write is never sent twice. Tests cover disposal during a retry. *Built.*
+
 ## 4. Proving it
 
 **R20. A test kit.** `graphql-orm-client/test`: a mock transport keyed by operation name that validates

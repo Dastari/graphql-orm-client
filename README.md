@@ -143,6 +143,8 @@ catalogue. This client is built on those guarantees.
 | Progress, AI text deltas, terminal output, search results | `createStream`, `useEphemeralStream` | `/streams`, `/react` |
 | Offline start, and lifetime fields | `persistClient`, generator `lifetimes` | `/persistence` |
 | One record's refresh | `@refetchable`, `useRefetchableFragment` | `/react` |
+| Reading again only the views showing some records | `refetchQueries([{ query, variables }])` | main |
+| Reads that survive a dropped connection | `reads: { retry }` on `createClient`; a default read deadline | main |
 | Testing freshness with no server | `createMockNetwork`, `createMockStreams`, `createTestClock` | `/test` |
 | Coming from Apollo | [the option map](docs/design.md#coming-from-apollo) | |
 

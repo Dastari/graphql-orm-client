@@ -28,7 +28,10 @@ describe("createHttpNetwork", () => {
     const [call] = calls
     expect(call!.url).toBe("/graphql")
     expect(call!.init.method).toBe("POST")
-    expect(call!.init.signal).toBe(controller.signal)
+    // The caller's signal, combined with the default read deadline.
+    expect(call!.init.signal!.aborted).toBe(false)
+    controller.abort()
+    expect(call!.init.signal!.aborted).toBe(true)
     const headers = new Headers(call!.init.headers)
     expect(headers.get("authorization")).toBe("Bearer t")
     expect(headers.get("content-type")).toBe("application/json")

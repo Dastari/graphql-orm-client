@@ -111,7 +111,8 @@ function Page({ loaded }: { loaded: LoadedQuery<TicketsPageQuery> }) {
 - `errorPolicy: "none"` → treat `query.errors.length` as an error; codes are on
   `errors[i].extensions.code`. `useMutation`'s `error` is an `OperationError` with the same codes.
 - `client.query` → `client.query(Query, variables, { policy, signal })`, resolving `{ data, errors }`.
-- `refetchQueries` → `client.refetchQueries([Query, "Name"])` or `mutate(..., { refetchQueries })`.
+- `refetchQueries` → `client.refetchQueries([Query, "Name"])` or `mutate(..., { refetchQueries })`. To read again only the open
+  instances showing some records, pass `{ query: Detail, variables: (v) => changed.has(v.Id) }` or `{ query: Detail, variables: { Id: "a" } }`.
 - `useSubscription`/`client.subscribe` for a plain subscription document → the same names; they
   use `live.subscribe`. For records that should stay current on screen, use `@live` instead.
 - Offset `fetchMore` → `@connection` + `loadMore()`; offset tables with `previousData` → `@paged`.
@@ -196,7 +197,11 @@ expect(client.live.status().Ticket.subscriptions).toBe(1)
 - A failed refetch keeps the rows already shown: `status` is `error`, `error` is set, and `data` is the last good result. Show the
   error beside the rows, not instead of them. Don't render a failed read as an empty list.
 - Use `errorsAtPath(errors, ["alias"])` to show one refused root or alias beside the rest of the response. Set
-  `partialResults: "preserve-errors"` on the client so a refused field doesn't overwrite a good stored value with null.
+  `partialResults: "preserve-errors"` on the client so a refused field doesn't overwrite a good stored value with null. A
+  response's data and its errors reach the query state in one change, so a render never sees new data without its errors.
+- A response that leaves out a selected field logs a warning outside production, naming the operation, type, record and key. Fix the
+  server or gateway, or regenerate; don't paper over it with a default. `createClient({ missingFields: "error" })` reports it in
+  `errors` at that path instead (code `RESPONSE_FIELD_MISSING`).
 
 
 ## Polling and query owners
