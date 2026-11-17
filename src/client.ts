@@ -1,6 +1,6 @@
 import type { ReadCause } from "./health.js"
 import { withoutErrorNulls } from "./partial.js"
-import { wasNotSent, writeStatus, type WriteOutcome } from "./outcome.js"
+import { rootKeys, wasNotSent, writeStatus, type WriteOutcome } from "./outcome.js"
 import type { ConnectionSpec, FragmentArtifact, FragmentRefFor, LinkSelection, OperationArtifact, PagedSpec, Selection } from "./artifact.js"
 import { fieldStorageKey, stableStringify, type Variables } from "./store/arguments.js"
 import { contextOf, identify, normalize } from "./store/normalize.js"
@@ -118,10 +118,61 @@ export interface ExecuteOptions {
   alsoRead?: readonly Selection[]
 }
 
+/** Options for `Client.mutate` and `Client.mutateOutcome`, and React `useMutation`'s `commit` and `commitOutcome`. */
+export interface MutateOptions<T = unknown> {
+  /**
+   * The response you expect, shaped like the mutation's result (with __typename and keys).
+   * It shows at once and is rolled back when the real response or an error arrives. Fields
+   * changed since (by a live event, say) are not rolled back.
+   */
+  optimisticResponse?: Record<string, unknown>
+  /** Cancels the request; the optimistic layer is rolled back. */
+  signal?: AbortSignal
+  /**
+   * Open queries to read again once the mutation succeeds (by artifact or operation name), as
+   * for `client.refetchQueries`. The mutation resolves after they have been read.
+   */
+  refetchQueries?: readonly (OperationArtifact<any, any> | string)[]
+  /** `store` (default) or `no-store`: return the response without writing any of it into the store. */
+  policy?: MutationPolicy
+  /** Observe certainty without changing this method's returned/thrown behaviour. */
+  onOutcome?: (outcome: WriteOutcome) => void
+  /** Explicit read for known affected records after an unconfirmed write; never a write replay. */
+  reconcile?: () => Promise<unknown>
+  /**
+   * What confirms this write when its result has no `Success` field, in place of the rule that every selected root has
+   * `Success: true`. Called only for a response with data and no errors; a response with any error stays unconfirmed.
+   * It receives the response's data as the server sent it, before the store reads it, so fields of spread fragments are
+   * there although `T` doesn't name them. Return `true` only for evidence your schema gives, such as a non-null root of a
+   * result with no `Success` or `Error` field (one with them is non-null when the write failed too); `false` or a throw
+   * leaves the write `unconfirmed`. Affects only the outcome, never what `mutate` returns or throws.
+   */
+  confirm?: (data: T) => boolean
+  /**
+   * Error codes this server sends only for a write that didn't happen, such as `NOT_FOUND` or `CONFLICT` from a command
+   * that sets no `extensions.outcome`. With data (or `data: null`), the write is `refused`, and `reconcile` isn't called,
+   * only when no error has an `extensions.outcome`, every error has one of these codes and a path of exactly one root
+   * field, and every root field the operation selects is null with its own such error. Anything else stays `unconfirmed`:
+   * null propagation can erase a root that committed before a nested field failed, and roots run in order, so an earlier
+   * root may have committed before a later one was refused. On a response with no `data` key the codes add to the known
+   * pre-execution codes.
+   */
+  refusedCodes?: readonly string[]
+}
+
 export interface ClientOptions {
   readonly network: Network
   /** Opt-in: error-associated nulls do not erase previous good fields. Default is legacy overwrite. */
   readonly partialResults?: "legacy" | "preserve-errors"
+  /**
+   * How `mutateOutcome` and `commitOutcome` classify a write response with no `data` key. `by-code` (default): `refused`
+   * only when every error's `extensions.code` is a known pre-execution failure (parse, validation, variables, authentication,
+   * authorization, persisted document, request limits) or one of the call's `refusedCodes`; otherwise `unconfirmed`, because a
+   * router can answer an execution failure that followed a commit without `data`. A body with no `data` and no errors (`{}`)
+   * is `unconfirmed` too. `refused`: every such response, `{}` included, is
+   * `refused`, as 0.1.0-alpha.12 and earlier did. Neither changes what `mutate` or `commit` return or throw.
+   */
+  readonly writeWithoutData?: "by-code" | "refused"
   readonly store?: StoreOptions
   /** Keep records read through `@live` fragments current with generated Changed subscriptions. */
   readonly live?: LiveOptions
@@ -822,8 +873,11 @@ export class Client {
   /** How error-associated null writes affect previously cached values. */
   readonly partialResults: "legacy" | "preserve-errors"
 
+  private readonly writeWithoutData: "by-code" | "refused"
+
   constructor(options: ClientOptions) {
     this.partialResults = options.partialResults ?? "legacy"
+    this.writeWithoutData = options.writeWithoutData === "refused" ? "refused" : "by-code"
     this.network = options.network
     this.polling = options.polling ?? {}
     this.subscribeTransport = options.live?.subscribe ?? null
@@ -1418,27 +1472,7 @@ export class Client {
   async mutate<T = unknown, V extends Variables = Variables>(
     artifact: OperationArtifact<T, V>,
     variables: V,
-    options: {
-      /**
-       * The response you expect, shaped like the mutation's result (with __typename and keys).
-       * It shows at once and is rolled back when the real response or an error arrives. Fields
-       * changed since (by a live event, say) are not rolled back.
-       */
-      optimisticResponse?: Record<string, unknown>
-      /** Cancels the request; the optimistic layer is rolled back. */
-      signal?: AbortSignal
-      /**
-       * Open queries to read again once the mutation succeeds (by artifact or operation name), as
-       * for `client.refetchQueries`. The mutation resolves after they have been read.
-       */
-      refetchQueries?: readonly (OperationArtifact<any, any> | string)[]
-      /** `store` (default) or `no-store`: return the response without writing any of it into the store. */
-      policy?: MutationPolicy
-      /** Observe certainty without changing this method's returned/thrown behaviour. */
-      onOutcome?: (outcome: WriteOutcome) => void
-      /** Explicit read for known affected records after an unconfirmed write; never a write replay. */
-      reconcile?: () => Promise<unknown>
-    } = {}
+    options: MutateOptions<T> = {}
   ): Promise<{ data: T; errors: readonly GraphQLErrorLike[] }> {
     if (artifact.kind !== "mutation") throw new Error(`${artifact.name} is not a mutation`)
     // A misspelt policy must not quietly store a secret.
@@ -1477,8 +1511,12 @@ export class Client {
       throw error
     } finally {
       rollback()
-      const status = response ? writeStatus(response)
-        : wasNotSent(failure) || !sent ? "failed" : "unconfirmed"
+      const status = response ? writeStatus(response, {
+        withoutData: this.writeWithoutData,
+        refusedCodes: options.refusedCodes,
+        roots: options.refusedCodes && rootKeys(artifact.normalization),
+        confirm: options.confirm as ((data: Record<string, unknown>) => boolean) | undefined,
+      }) : wasNotSent(failure) || !sent ? "failed" : "unconfirmed"
       let reconciliation: WriteOutcome["reconciliation"] = status === "unconfirmed" ? "unavailable" : "not-needed"
       if (status === "unconfirmed" && options.reconcile && !this.store.isDisposed) {
         try { await options.reconcile(); reconciliation = "reread" }
@@ -1496,7 +1534,7 @@ export class Client {
    */
   async mutateOutcome<T, V extends Variables>(
     artifact: OperationArtifact<T, V>, variables: V,
-    options: NonNullable<Parameters<Client["mutate"]>[2]> = {}
+    options: MutateOptions<T> = {}
   ): Promise<{ data?: T; errors: readonly GraphQLErrorLike[]; error?: unknown; outcome: WriteOutcome }> {
     let outcome: WriteOutcome = { status: "failed", reconciliation: "not-needed" }
     try {

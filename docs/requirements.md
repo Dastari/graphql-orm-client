@@ -152,6 +152,20 @@ Writes have their own deadline and response limit, apart from reads. A hook supp
 retry after step-up authentication, with no queued replay and no credential held.
 *Acceptance:* each outcome is distinguishable in a test, and the unconfirmed path re-reads the record.
 
+Accepted additions, built:
+
+- A write whose result has no `Success` field can be confirmed by evidence the caller names, with partial errors still unconfirmed
+  and no reading of message text ([#60](https://github.com/Dastari/graphql-orm-client/issues/60)). *Acceptance:* a per-call
+  `confirm` confirms a clean response without `Success` and is never asked about one with errors.
+- A caller can name error codes that mean its write didn't happen, applied only when the server says nothing about the outcome,
+  so a refusal doesn't trigger a pointless reconciliation read ([#61](https://github.com/Dastari/graphql-orm-client/issues/61)).
+  *Acceptance:* `refusedCodes` gives `refused` with no re-read when every selected root is null with its own coded error at
+  the root's path; a nested or pathless error, a root without its own error, or an `extensions.outcome` keeps it unconfirmed.
+- A response with no `data` key is refused only when its error codes are known pre-execution failures, because a router can answer
+  an execution failure without `data` ([#62](https://github.com/Dastari/graphql-orm-client/issues/62)). *Acceptance:*
+  `PLAN_EXECUTION_FAILED` without `data` is unconfirmed and re-read, a validation code is refused, and a client setting restores
+  the earlier rule.
+
 **R11. Ephemeral streams.** A first-class stream for data that isn't an entity and doesn't belong in
 the store: progress, AI text deltas, terminal output, search results. It has a resume cursor, sequence
 de-duplication, replay after reconnect, a bounded buffer and render coalescing. This replaces the
