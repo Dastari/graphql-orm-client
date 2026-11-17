@@ -211,6 +211,13 @@ and the router's codes to an `ErrorKind`, with `unknown` for anything else. Miss
 `Success: false` carries only free text (`Error: "Entity not found"`); requested as
 [graphql-orm#385](https://github.com/Dastari/graphql-orm/issues/385).
 
+**R32. Both current graphql versions.** An application can use graphql 16 or 17 as the single copy of `graphql`, and
+the generated output, operation hashes and schema snapshot are the same text with either
+([#80](https://github.com/Dastari/graphql-orm-client/issues/80)).
+*Acceptance:* `pnpm check` and `pnpm build` pass with graphql 16 and 17 in CI, the peer range admits both, and anything the
+compiler uses that changed between them is handled.
+*Built:* peer `^16.9.0 || ^17.0.0`, a CI job on 17, and printing of object values and schema defaults that matches graphql 16.
+
 ## 4. Proving it
 
 **R20. A test kit.** `graphql-orm-client/test`: a mock transport keyed by operation name that validates
