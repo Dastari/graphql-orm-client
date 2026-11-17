@@ -134,3 +134,49 @@ describe("schema pull", () => {
     expect(result.stderr).not.toContain("hidden-secret")
   })
 })
+
+describe("credentials in clear text", () => {
+  const token = { TEST_TOKEN: "secret-token" }
+  it("refuses a credential for a non-loopback http: URL, in schema pull", async () => {
+    const result = await run(project(), ["schema", "pull", "--url", "http://router.invalid/graphql", "--token-env", "TEST_TOKEN"], token)
+    expect(result.code).toBe(2)
+    expect(result.stderr).toContain("clear text")
+    expect(result.stderr).not.toContain("secret-token")
+  })
+  it("sends it after a warning with --allow-insecure-credentials", async () => {
+    const result = await run(project(), ["schema", "pull", "--url", "http://router.invalid/graphql", "--token-env", "TEST_TOKEN", "--allow-insecure-credentials"], token)
+    expect(result.code).toBe(3)
+    expect(result.stderr).toContain("Warning")
+    expect(result.stderr).toContain("clear text")
+  })
+  it.each(["http://localhost.:1/graphql", "http://api.localhost:1/graphql", "http://localhost.example:1/graphql", "http://[::ffff:10.0.0.1]:1/graphql"])("refuses %s, which can go to DNS or off this machine", async (url) => {
+    const result = await run(project(), ["schema", "pull", "--url", url, "--token-env", "TEST_TOKEN"], token)
+    expect(result.code).toBe(2)
+    expect(result.stderr).toContain("clear text")
+  })
+  it.each(["http://localhost:1", "http://LOCALHOST:1", "http://127.0.0.2:1", "http://127.1:1", "http://[::1]:1", "http://[0:0:0:0:0:0:0:1]:1"])("accepts the loopback address %s", async (url) => {
+    const result = await run(project(), ["schema", "pull", "--url", url, "--token-env", "TEST_TOKEN"], token)
+    expect(result.code).toBe(3)
+    expect(result.stderr).not.toContain("clear text")
+  })
+  it("keeps the server's error text out of the doctor's output unless --server-messages is passed", async () => {
+    const dir = project()
+    const url = await server(() => ({ errors: [{ message: "internal detail: db host 10.1.2.3" }] }))
+    const quiet = await run(dir, ["doctor", "--url", url, "--token-env", "TEST_TOKEN"], token)
+    expect(quiet.code).toBe(1)
+    expect(quiet.stdout).toContain("introspection unavailable or disabled")
+    expect(quiet.stdout + quiet.stderr).not.toContain("10.1.2.3")
+    const verbose = await run(dir, ["doctor", "--url", url, "--server-messages"])
+    expect(verbose.stdout).toContain("internal detail: db host 10.1.2.3")
+  })
+  it("refuses a credential for a non-loopback http: URL, in the doctor", async () => {
+    const result = await run(project(), ["doctor", "--url", "http://router.invalid/graphql", "--token-env", "TEST_TOKEN"], token)
+    expect(result.code).toBe(2)
+    expect(result.stderr).toContain("clear text")
+  })
+  it("doesn't object to http: without a credential", async () => {
+    const result = await run(project(), ["schema", "pull", "--url", "http://router.invalid/graphql"])
+    expect(result.code).toBe(3)
+    expect(result.stderr).not.toContain("clear text")
+  })
+})

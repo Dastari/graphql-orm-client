@@ -28,6 +28,7 @@ export {
 export type {
   ClientOptions,
   LoadedQuery,
+  MutateOptions,
   FetchPolicy,
   GraphQLErrorLike,
   GraphQLResponse,

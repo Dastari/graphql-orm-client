@@ -229,7 +229,8 @@ describe("unkeyed results", () => {
     expect((await client.query(ops.LookupName, { Text: "a" })).data).toEqual({ LookupName: "Acme" })
     expect((await client.query(ops.LookupName, { Text: "none" })).data).toEqual({ LookupName: null })
     expect((await client.query(ops.QueueSummary, { Queue: "q" })).data).toEqual({
-      TicketSummary: { __typename: "TicketSummary", Open: 3, Closed: 9, Oldest: { __typename: "Ticket", Id: "t7", RecordVersion: 1, Title: "ticket-t7" } },
+      // The key and version the compiler adds are stored, not read: the query selects only Title.
+      TicketSummary: { __typename: "TicketSummary", Open: 3, Closed: 9, Oldest: { __typename: "Ticket", Title: "ticket-t7" } },
     })
     const report = client.watchQuery<{ ReportRows: { Label: string; Count: number }[] }>(ops.Report, { Limit: 10 })
     report.open()

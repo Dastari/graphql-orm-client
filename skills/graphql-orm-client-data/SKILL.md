@@ -12,7 +12,7 @@ Status: early alpha. Check the installed `docs/design.md` for the current API.
 1. Give each component that shows server data its own fragment, in the same file. Mark it `@live` if the record can change while it's on
    screen (see the live skill).
 2. Spread that fragment up to one query owned by the route. Start it in the route loader.
-3. Run `graphql-orm-client generate`. Import `graphql` from the generated module, so a wrong field fails the build. Read its warnings: one
+3. Run `graphql-orm-client generate`, or `generate --watch` while you work. Import `graphql` from the generated module, so a wrong field fails the build. Read its warnings: one
    saying a fragment won't update on screen means it should be `@live`.
 4. Change data with `useMutation`. Spread the affected fragments into the mutation so the response updates the store.
 
@@ -48,8 +48,16 @@ function Page({ loaded }: { loaded: LoadedQuery<TicketsPageQuery> }) {
 - Select only the fields the component renders. To render a child component, spread the
   child's fragment (`...WidgetHealth`) and pass the reference down. Do not select the child's
   fields in the parent.
-- You don't need to select `NodeId` or the key fields; the compiler adds them. A type without a
-  `NodeId` or a complete key is stored inside its parent, not as its own record.
+- You don't need to select `NodeId`, the key fields or `RecordVersion` for the store; the compiler
+  adds them to the request. They aren't in your data unless you select them: select `Id` where you
+  read it, as a React key on a list row (`Node { Id ...Row }`) or after a mutation. That keeps a
+  row's version, which every `Changed` event advances, out of the list's data. `identityFields:
+  "always"` in the generator config reads them everywhere, as 0.1.0-alpha.12 and earlier did. A type
+  without a `NodeId` or a complete key is stored inside its parent, not as its own record.
+- A table or adapter that needs whole rows uses `useFragmentList(Fragment, refs)` instead of one
+  `useFragment` per row. Passing `data?.Things.Edges.map((edge) => edge.Node)` on every render is fine:
+  it compares rows by record, so a render with the same rows does no work, and a change to one row reads
+  only that row.
 
 ## Roots own the request
 
@@ -161,7 +169,8 @@ expect(client.live.status().Ticket.subscriptions).toBe(1)
 - An operation with no answer fails, and so does a request that doesn't fit `schema`. A query keeps a
   rejection in its state, so check `network.failures` where a test could miss it.
 - On one stream: `emit`, `next`, `refuse(code, { frame })`, `loseContinuity`, `reload`, `unavailable`,
-  `fail`, `end`. `streams.reload()` and `streams.fail()` act on all of them. `streams.reconnect()` is a
+  `fail`, `end`. `streams.reload()` and `streams.fail()` act on all of them; `streams.fail({ code: 4401, reason: "Unauthorized", wasClean: true })`
+  closes them for authentication. `streams.reconnect()` is a
   socket drop the transport recovers from by itself, where nothing ends: use it with `onReconnect`.
 - `clock.advance(ms)` fires timers without letting promises settle; use `clock.tick(ms)` when a request is
   involved.
@@ -173,7 +182,13 @@ expect(client.live.status().Ticket.subscriptions).toBe(1)
   because a watch retains results. A sensitive document spreading a `@live` fragment fails the build.
 - Use `client.mutateOutcome`, or `commitOutcome` from `useMutation`, when the UI must tell the user whether a write happened. Status is
   `confirmed`, `refused`, `failed` or `unconfirmed`. `mutate` and `commit` are unchanged. A write is never retried: pass `reconcile` to
-  read the record again after an `unconfirmed` one, and call again yourself after step-up authentication.
+  read the record again after an `unconfirmed` one, and call again yourself after step-up authentication. A write confirms when
+  every root has `Success: true` and there are no errors; for a mutation with no `Success` field, pass `confirm: data => ...` naming
+  what your schema guarantees (say, a non-null root, but only for a result with no `Success` or `Error` field). It's never asked
+  about a response with errors. Pass `refusedCodes` (for example `["NOT_FOUND", "CONFLICT"]`) for codes your server sends only when
+  nothing was written; a write reads as `refused`, without a re-read, only when every root field the mutation selects is null with
+  its own such error at that root's path. A nested error, a pathless one, or a root with no error of its own stays `unconfirmed`. A response with no `data` is `refused` only for parse, validation, auth, persisted-document and limit codes: a router
+  can answer a failure after a commit without `data`.
 - To decide what to do about a failure, use `classifyError(error)`, never the message text. Pass it `query.error`, what `commit`
   rejected with, or `query.errors`. Switch on `kind`: `conflict` (a stale `ExpectedVersion`: reload the record), `cursor-invalid`
   (start the list again), `not-found`, `unauthenticated`, `forbidden`, `unavailable` (try later), `network` (no response: for a
@@ -219,6 +234,8 @@ Adapter, budget and failure behaviour are in the installed design.
 
 - **On sign-out, call `persistence.clear()`, then dispose.** Disposing alone keeps the saved data, and nothing else removes it. `clear()` also stops the identity's other windows saving it.
 - **In a pop-out or other secondary window, pass `readOnly: true`.** It restores and never writes or deletes. Without it, the window's own smaller snapshot can replace the main window's.
+- A snapshot older than `maxAgeMs` (default 7 days since its last write) is deleted and not restored; `maxAgeMs: Infinity` restores any age. Pass `now` to control the clock in tests.
+- A store larger than `maxBytes` (default 1 MiB) saves nothing until it fits again, and reports `PERSISTENCE_SIZE` once. Watch for it in `onDiagnostic` and raise `maxBytes` if the working set is larger.
 
 ## Batched relation names
 

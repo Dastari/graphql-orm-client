@@ -145,8 +145,11 @@ export interface MockStreams {
   one(name: string, variables?: Readonly<Record<string, unknown>>): MockStream
   /** Reload every open stream, as when the router publishes a new graph. */
   reload(): void
-  /** Fail every open stream, as when the socket's reconnect attempts run out. */
-  fail(): void
+  /**
+   * Fail every open stream, as when the socket's reconnect attempts run out. Pass the close event to close for a reason,
+   * such as `{ code: 4401, reason: "Unauthorized", wasClean: true }` for a socket closed for authentication.
+   */
+  fail(event?: { readonly code: number; readonly reason: string; readonly wasClean: boolean }): void
   /**
    * A socket drop that the transport recovers from by itself: graphql-ws resubscribes, nothing ends and
    * events in the gap are gone. Calls `onReconnect` listeners, as its `connected` event with `wasRetry`.
@@ -229,7 +232,7 @@ export function createMockStreams(options: MockStreamsOptions = {}): MockStreams
       return matching[0]!
     },
     reload: () => [...open].forEach((stream) => stream.reload()),
-    fail: () => [...open].forEach((stream) => stream.fail()),
+    fail: (event) => [...open].forEach((stream) => stream.fail(event)),
     reconnect: () => [...reconnects].forEach((listener) => listener()),
     onReconnect(listener) {
       reconnects.add(listener)

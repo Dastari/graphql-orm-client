@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process"
-import { buildSchema, introspectionFromSchema, parse } from "graphql"
+import { buildSchema, introspectionFromSchema, parse, printSchema } from "graphql"
 import { describe, expect, it } from "vitest"
 import { compile } from "../src/compiler/index.js"
 import { assertReadOnly, formatDoctorReport, runDoctor, type DoctorOptions, type DoctorSocket } from "../src/doctor/index.js"
@@ -170,10 +170,64 @@ describe("runDoctor", () => {
     it(`names a stream refused with ${label}, with a failing result`, async () => {
       const server = router({ script })
       const report = await runDoctor({ ...base, fetch: server.fetch, WebSocket: server.WebSocket })
-      expect(of(report, "Ticket")).toMatchObject({ verdict: "refused", code: "INVALID_INPUT", detail: "no", fragments: ["TicketTitle"] })
+      expect(of(report, "Ticket")).toMatchObject({ verdict: "refused", code: "INVALID_INPUT", detail: "the server refused the stream; its message is withheld", fragments: ["TicketTitle"] })
       expect(report.passed).toBe(false)
+      const verbose = await runDoctor({ ...base, serverMessages: true, fetch: server.fetch, WebSocket: server.WebSocket })
+      expect(of(verbose, "Ticket")).toMatchObject({ verdict: "refused", code: "INVALID_INPUT", detail: "no" })
     })
   }
+
+  describe("what the server says", () => {
+    const leaky = "token abc123 was rejected for tenant 42"
+    const refuse: Script = (name, send) => name === "LiveTicket" && send({ type: "error", payload: [{ message: leaky, extensions: { code: "FORBIDDEN" } }] })
+
+    it("reports the code and a fixed description, and the server's text only when asked", async () => {
+      const server = router({ script: refuse })
+      const report = await runDoctor({ ...base, fetch: server.fetch, WebSocket: server.WebSocket })
+      expect(of(report, "Ticket")).toMatchObject({ verdict: "refused", code: "FORBIDDEN" })
+      expect(JSON.stringify(report)).not.toContain("abc123")
+      expect(formatDoctorReport(report)).toMatch(/refused\s+Ticket\s+FORBIDDEN: the server refused the stream/)
+      const verbose = await runDoctor({ ...base, serverMessages: true, fetch: server.fetch, WebSocket: server.WebSocket })
+      expect(formatDoctorReport(verbose)).toContain(leaky)
+    })
+
+    it("withholds the text of an inconclusive answer, and still calls it unknown", async () => {
+      const server = router({ script: (name, send) => name === "LiveTicket" && send({ type: "error", payload: [{ message: leaky, extensions: { code: "SERVICE_UNAVAILABLE" } }] }) })
+      const report = await runDoctor({ ...base, fetch: server.fetch, WebSocket: server.WebSocket })
+      expect(of(report, "Ticket")).toMatchObject({ verdict: "unknown", code: "SERVICE_UNAVAILABLE", detail: expect.stringContaining("unavailable") })
+      expect(JSON.stringify(report)).not.toContain("abc123")
+    })
+
+    it("doesn't print a code that isn't a plain name", async () => {
+      const server = router({ script: (name, send) => name === "LiveTicket" && send({ type: "error", payload: [{ message: "no", extensions: { code: leaky } }] }) })
+      const report = await runDoctor({ ...base, fetch: server.fetch, WebSocket: server.WebSocket })
+      expect(of(report, "Ticket")).toMatchObject({ verdict: "refused", code: null })
+      expect(JSON.stringify(report)).not.toContain("abc123")
+    })
+
+    it("withholds what graphql-js says about an introspection result it can't build", async () => {
+      const escaped = "Bad\u001b[31mName"
+      const data = introspectionFromSchema(buildSchema(sdl)) as unknown as { __schema: { types: { name: string }[] } }
+      data.__schema.types.find((type) => type.name === "Note")!.name = escaped
+      const fetch = (async () => new Response(JSON.stringify({ data }))) as unknown as typeof globalThis.fetch
+      const server = router()
+      const report = await runDoctor({ ...base, fetch, WebSocket: server.WebSocket })
+      expect(report.schemaProblem).toBe("Introspection failed: the served introspection result isn't a usable schema")
+      expect(JSON.stringify(report)).not.toContain("\\u001b")
+      expect(formatDoctorReport(report)).not.toContain("\u001b")
+      const verbose = await runDoctor({ ...base, serverMessages: true, fetch, WebSocket: server.WebSocket })
+      expect(verbose.schemaProblem).toContain(escaped)
+    })
+
+    it("withholds introspection error text and a socket's close reason", async () => {
+      const server = router({ served: null, init: (socket) => socket.fire("close", { code: 4403, reason: leaky }) })
+      const report = await runDoctor({ ...base, fetch: server.fetch, WebSocket: server.WebSocket })
+      expect(report.schemaProblem).toBe("Introspection failed: introspection unavailable or disabled (HTTP 200)")
+      expect(of(report, "Ticket")).toMatchObject({ verdict: "unknown", detail: "the socket closed with 4403" })
+      expect(JSON.stringify(report)).not.toContain("abc123")
+      expect(formatDoctorReport(report)).not.toContain("abc123")
+    })
+  })
 
   it("doesn't call an outage a refusal: it's unknown", async () => {
     for (const code of ["SERVICE_UNAVAILABLE", "SUBSCRIPTION_SCHEMA_RELOAD", "SUBSCRIPTION_LIMIT_EXCEEDED"]) {
@@ -190,12 +244,55 @@ describe("runDoctor", () => {
     expect(of(report, "Ticket")).toMatchObject({ verdict: "unknown", detail: "the stream ended with no error and no event" })
   })
 
-  it("names a type with no stream as missing, and one that requires a key as unknown", async () => {
+  it("names a type with no stream that polls by declaration as polling, and one that requires a key as unknown", async () => {
     const server = router()
     const report = await runDoctor({ ...base, fetch: server.fetch, WebSocket: server.WebSocket })
-    expect(of(report, "Note")).toMatchObject({ verdict: "missing", operation: null, fragments: ["NoteBody"] })
+    expect(of(report, "Note")).toMatchObject({ verdict: "polling", operation: null, fragments: ["NoteBody"], detail: expect.stringContaining('"No stream"') })
     expect(of(report, "Order")).toMatchObject({ verdict: "unknown", detail: expect.stringContaining("requires a key") })
     expect(report.passed).toBe(false)
+  })
+
+  describe("a type with no stream", () => {
+    const streamless = buildSchema(`
+      type Query { Bars: [Bar!]! }
+      type Bar { Id: String! Name: String! }
+      input BarKeyInput { Id: String! }
+    `)
+    const page = "query Bars { Bars { ...BarFields } }"
+    const doctor = (compiledFor: ReturnType<typeof compile>, strict = false) => {
+      const server = router({ served: printSchema(streamless) })
+      return runDoctor({ ...base, compiled: compiledFor, strict, fetch: server.fetch, WebSocket: server.WebSocket })
+    }
+
+    it("passes as polling when it is live only through the live default", async () => {
+      const result = compile(streamless, ["fragment BarFields on Bar { Id Name }", page], { live: "default", keys: { Bar: ["Id"] }, onWarning: () => {} })
+      expect(result.liveUnavailable).toEqual(["Bar"])
+      for (const strict of [false, true]) {
+        const report = await doctor(result, strict)
+        expect(of(report, "Bar")).toMatchObject({ verdict: "polling", operation: null, fragments: ["BarFields"], detail: expect.stringContaining("implicit (live default)") })
+        expect(report.passed).toBe(true)
+      }
+    })
+
+    it("passes as polling when its @live fragment declares @poll, naming the reason", async () => {
+      const result = compile(streamless, ['fragment BarFields on Bar @live @poll(reason: "no stream") { Id Name }', page], { keys: { Bar: ["Id"] } })
+      const report = await doctor(result)
+      expect(of(report, "Bar")).toMatchObject({ verdict: "polling", detail: expect.stringContaining('"no stream"') })
+      expect(report.passed).toBe(true)
+      expect(formatDoctorReport(report)).toMatch(/polling\s+Bar\s+.*"no stream"/)
+    })
+
+    it("is missing when an explicit @live fragment declares no poll, even beside one that does", async () => {
+      const result = compile(streamless, [
+        "fragment BarFields on Bar @live { Id Name }",
+        'fragment BarName on Bar @live @poll(reason: "no stream") { Name }',
+        "query BarsAgain { Bars { ...BarName } }",
+        page,
+      ], { keys: { Bar: ["Id"] }, strict: { liveWithoutStream: "warn" }, onWarning: () => {} })
+      const report = await doctor(result)
+      expect(of(report, "Bar")).toMatchObject({ verdict: "missing", fragments: ["BarFields", "BarName"], detail: expect.stringContaining("BarFields") })
+      expect(report.passed).toBe(false)
+    })
   })
 
   describe("against a schema that has moved on", () => {
@@ -233,7 +330,9 @@ describe("runDoctor", () => {
     it("reports documents as unknown when the schema can't be read, and still opens streams", async () => {
       const server = router({ served: null })
       const report = await runDoctor({ ...base, compiled: passingCompiled, fetch: server.fetch, WebSocket: server.WebSocket })
-      expect(report).toMatchObject({ passed: false, servedTypes: null, documentsChecked: null, schemaProblem: "Introspection failed: introspection is disabled" })
+      expect(report).toMatchObject({ passed: false, servedTypes: null, documentsChecked: null, schemaProblem: expect.stringContaining("introspection unavailable or disabled") })
+      const verbose = await runDoctor({ ...base, compiled: passingCompiled, serverMessages: true, fetch: server.fetch, WebSocket: server.WebSocket })
+      expect(verbose.schemaProblem).toBe("Introspection failed: introspection is disabled")
       expect(report.streams.every((stream) => stream.verdict === "not-refused")).toBe(true)
       const text = formatDoctorReport(report)
       expect(text).toContain("Schema: unknown.")
@@ -245,7 +344,7 @@ describe("runDoctor", () => {
   describe("when the socket fails", () => {
     it("reports every stream unknown when the connection is refused", async () => {
       const server = router({ init: (socket) => socket.fire("close", { code: 4401, reason: "Unauthorized" }) })
-      const report = await runDoctor({ ...base, fetch: server.fetch, WebSocket: server.WebSocket })
+      const report = await runDoctor({ ...base, serverMessages: true, fetch: server.fetch, WebSocket: server.WebSocket })
       expect(report.streams.filter((stream) => stream.operation !== null && stream.typename !== "Order").map((stream) => [stream.verdict, stream.detail])).toEqual(
         expect.arrayContaining([["unknown", "the socket closed with 4401 (Unauthorized)"]])
       )
@@ -315,9 +414,9 @@ describe("runDoctor", () => {
   it("prints each verdict with the fragments it affects", async () => {
     const server = router({ script: (name, send) => name === "LiveTicket" && send({ type: "error", payload: [{ message: "no", extensions: { code: "INVALID_INPUT" } }] }) })
     const text = formatDoctorReport(await runDoctor({ ...base, fetch: server.fetch, WebSocket: server.WebSocket }))
-    expect(text).toMatch(/refused\s+Ticket\s+INVALID_INPUT: no \[TicketTitle\]/)
+    expect(text).toMatch(/refused\s+Ticket\s+INVALID_INPUT: the server refused the stream; its message is withheld \[TicketTitle\]/)
     expect(text).toMatch(/not-refused\s+Slot/)
-    expect(text).toMatch(/missing\s+Note/)
+    expect(text).toMatch(/polling\s+Note/)
     expect(text).toContain("for this identity")
     expect(text).toContain("Failed")
   })
@@ -340,6 +439,30 @@ describe("the doctor command", () => {
     const result = bin(["--url", "http://x", "--token-env", "NOT_SET_ANYWHERE"], { NOT_SET_ANYWHERE: "" })
     expect(result.status).toBe(2)
     expect(result.stderr).toContain("NOT_SET_ANYWHERE")
+  })
+
+  it("refuses to send a credential in clear text to a host that isn't this machine", () => {
+    const env = { DOCTOR_TOKEN: "sekret" }
+    for (const args of [
+      ["--url", "http://router.internal/graphql"],
+      ["--url", "https://router.internal/graphql", "--ws-url", "ws://router.internal/graphql"],
+    ]) {
+      for (const credential of [["--token-env", "DOCTOR_TOKEN"], ["--header-env", "x-api-key=DOCTOR_TOKEN"]]) {
+        const result = bin([...args, ...credential], env)
+        expect(result.status).toBe(2)
+        expect(result.stderr).toContain("clear text")
+        expect(result.stderr).toContain("--allow-insecure-credentials")
+        expect(result.stderr).not.toContain("sekret")
+      }
+    }
+  })
+
+  it("refuses a socket URL that isn't ws or wss, or carries credentials", () => {
+    for (const ws of ["http://router.internal/graphql", "wss://user:pass@router.internal/graphql", "nonsense"]) {
+      const result = bin(["--url", "https://router.internal/graphql", "--ws-url", ws])
+      expect(result.status).toBe(2)
+      expect(result.stderr).not.toContain("pass@")
+    }
   })
 
   it("is listed in the usage", () => {
