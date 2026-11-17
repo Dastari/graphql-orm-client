@@ -203,7 +203,10 @@ artifact per root:
   fragment references to hand down.
 - **Live subscription document.** For roots that contain `@live` fragments, a subscription
   with full and keys-only projections for each type; legacy generation can retain fragment spreading.
-- **Types.** TypeScript result, variable and fragment-reference types.
+- **Types.** TypeScript result, variable and fragment-reference types. A variable or input object
+  field is optional when it is nullable or has a default. A non-null one with a default is optional
+  but not nullable (`readonly Limit?: number`): leaving it out applies the server's default, and an
+  explicit `null` is invalid ([#65](https://github.com/Dastari/graphql-orm-client/issues/65)).
 
 The compiler validates the documents against the router's schema snapshot. A fragment on a
 type without a `NodeId` or a complete key is allowed; its data is stored inside the parent
@@ -350,8 +353,17 @@ order can't come from there: introspection through router 0.8.1 at `graphql-orm-
 `Name, Site`, while the service's SDL and its `NodeId` use `Site, Name`. So the client finds the order by exact
 match against a held record's server `NodeId`, without decoding it, before opening a stream.
 
+A field that takes an operation variable (`Label(Locale: $loc)`) is one of the fields with arguments
+that the full projection leaves out. One stream serves every query holding a record of the type, so it
+can't carry one query's variables. The event writes the other fields at once, and each holding query
+re-reads the omitted field with its own variables, through `rereadFragments` (or `liveReread` when the
+query selects it directly) ([#64](https://github.com/Dastari/graphql-orm-client/issues/64)).
+
 `liveSelection: "as-written"` in generator config preserves previous subscription text. Generation
-warns, naming each fragment and field the new projection would exclude. Old artifacts without
+warns, naming each fragment and field the new projection would exclude. An as-written stream spreads
+the live fragments, so a live fragment there can't use an operation variable: the compiler refuses
+it, naming the fragment, the field and the variable, instead of reporting the variable as undefined
+in the generated subscription. Old artifacts without
 `thinOperation` retain their subscription and refusal behavior; no artifact version bump is needed.
 
 Automatic stale, reconnect and R4 confirming reads share one per-query scheduler. It runs a leading
@@ -1114,6 +1126,11 @@ the package default changes. It makes object fragments live without a directive.
 source files, relative to the config directory. It matches the file a fragment is written in, not the files
 that spread it: a page whose rows come from fragments in a shared folder needs that folder in the pattern.
 A pattern that matches no file defining a fragment makes nothing live, so the generator warns and names it.
+The generator also prints one line per pattern, through `onSummary` (default `console.log`), so a trial reports what it changed without a
+diff of the generated module ([#59](https://github.com/Dastari/graphql-orm-client/issues/59)):
+`live.default "src/area/**": 3 files, 11 fragments: 4 newly live, 5 opted out, 1 keyless, 1 without a stream`. Each covered fragment is in one
+outcome: newly live (with a stream), already live (`@live`), opted out, keyless, without a stream (live, and polls), or on an interface or
+union. `compile(...).liveAreas` holds the same report with the fragment names.
 Plain-string `compile(schema, sources)` keeps its explicit behaviour; pass `documentPaths` when
 using area mode programmatically. Unknown files do not match area globs.
 
@@ -1124,6 +1141,11 @@ An implicit live fragment with no usable stream warns, appears in `liveUnavailab
 normal fallback interval (30 seconds unless changed); health reports `no-stream` and polling, or
 unavailable if fallback is disabled. Explicit `@live` on that type follows R5's error policy.
 Only fragments on object types with a key become implicitly live. A keyless value type has no identity and no stream, and its data comes with its parent, so it stays as it is. Abstract fragments need explicit intent.
+A type can have a usable `Changed` stream and still have no key, usually because the project set `keys: { Type: null }`. Its fragments
+can't be live, so under every live setting the compiler reports the type once, naming its unmarked fragments and the cause, at the
+`strict.fragmentNotLive` level; `@live(enabled: false)` on a fragment says it's meant. An explicit `@live` on such a type fails under
+`strict.liveWithoutStream` with that cause, not "no usable Changed stream"
+([#58](https://github.com/Dastari/graphql-orm-client/issues/58)).
 Lists open streams only for types with a live fragment somewhere in the project. Default mode
 widens that set; an opted-out fragment does not disable another live fragment of the same type.
 

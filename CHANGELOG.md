@@ -77,6 +77,49 @@ Moving an application to graphql 17:
    accepted can fail `generate` on 17; the message names the default to fix, and the fix belongs in the service's schema.
 4. Validation messages from `generate` and `doctor` come from graphql and read differently on 17. Don't match on their text.
 
+### Fixed: a keyless type with a `Changed` stream was skipped without a word
+
+A type can have a usable `Changed` stream and still have no key, usually because the project set `keys: { Type: null }`. Its fragments
+can't be live, and under `live: "default"`, an area pattern or `strict.fragmentNotLive` nothing said so. The compiler now reports each
+such type once, naming its unmarked fragments and the configured identity, at the `strict.fragmentNotLive` level (`"warn"` unless set).
+An explicit `@live` on one fails under `strict.liveWithoutStream` saying the identity is configured off, where it used to say the type
+had no usable `Changed` stream ([#58](https://github.com/Dastari/graphql-orm-client/issues/58)).
+
+No regeneration needed to keep working. On regenerating:
+
+- If you set `strict.fragmentNotLive: "error"`, the build fails for these fragments. Mark each one `@live(enabled: false)` if it's meant
+  to stay as it is, or remove the `keys` entry, or set `fragmentNotLive: "warn"` to get the earlier build back.
+- A test matching the old `@live` error text ("no usable Changed stream") on such a type needs the new text.
+
+### Added: a summary line per `live.default` pattern
+
+`generate` prints one line per pattern in `live: { default: [...] }`, for example
+`live.default "src/area/**": 3 files, 11 fragments: 4 newly live, 5 opted out, 1 keyless, 1 without a stream`, so a trial says what it
+changed without a diff of the generated module. `compile(...).liveAreas` holds the same report with fragment names, and
+`GenerateOptions.onSummary` receives the lines (default `console.log`)
+([#59](https://github.com/Dastari/graphql-orm-client/issues/59)). Nothing prints under `"explicit"` or `"default"`. A script that reads
+`graphql-orm-client generate`'s standard output under an area pattern sees these lines before `Wrote ...`.
+
+### Fixed: a live fragment with an operation variable failed naming a generated operation
+
+With the default stream projection, a `@live` fragment may select a field that takes an operation variable (`Label(Locale: $loc)`): the
+stream leaves it out, and each query holding the record reads it again with its own variables. This already worked; it is now tested
+and documented. Under `liveSelection: "as-written"`, whose stream spreads the fragment, it failed with `Variable "$loc" is not defined by
+operation "LiveFoo"`, naming an operation nobody wrote. It now fails naming the fragment, the field and the variable, why (one stream
+serves every holder), and the fixes: a literal argument, moving the field to a fragment that isn't live, `@live(enabled: false)`, or
+leaving `"as-written"` ([#64](https://github.com/Dastari/graphql-orm-client/issues/64)). Nothing to change in applications.
+
+### Fixed: generated input types required non-null fields that have a default
+
+An input object field that is non-null with a default, such as `Limit: Int! = 50` or `Tags: [String!]! = []`, may be left out: the
+server applies the default. The generated type made it required, so callers repeated server defaults. It is now optional and not
+nullable (`readonly Limit?: number`), in nested inputs and lists of inputs as well, as a variable with a default already was
+([#65](https://github.com/Dastari/graphql-orm-client/issues/65)).
+
+Regenerate to get the new types. A module generated before keeps compiling and working; nothing changes at run time. After
+regenerating, callers that pass these fields still compile and may drop them. Code that reads such a field from a value typed as the
+generated input type now sees `number | undefined` and needs a fallback.
+
 ## 0.1.0-alpha.12 (2026-11-07)
 
 Install from the GitHub release archive:

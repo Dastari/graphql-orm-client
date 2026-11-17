@@ -69,6 +69,11 @@ export function printSchemaStable(schema: GraphQLSchema): string {
   return result
 }
 
+/** Whether an argument or input field declares a default: graphql 16 sets `defaultValue`, graphql 17 sets `default`. */
+export function hasDefault(input: GraphQLArgument | GraphQLInputField): boolean {
+  return input.defaultValue !== undefined || (input as { default?: unknown }).default !== undefined
+}
+
 /** The coerced default: graphql 16 keeps it in `defaultValue`; graphql 17 keeps the literal or external value in `default`. */
 function defaultValueOf(input: GraphQLArgument | GraphQLInputField): unknown {
   if (input.defaultValue !== undefined) return input.defaultValue

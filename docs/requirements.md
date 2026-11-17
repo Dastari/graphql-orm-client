@@ -33,6 +33,16 @@ in, and the generator warns about one that matches no fragment's file. Accepted 
 and R6 hold; `default` is opt-in, not recommended by default. The owner must decide before changing the package default.
 *Acceptance:* a new fragment with no directive updates from a stream.
 
+A trial of the setting reports itself. *Built:* the generator prints one line per area pattern: the files and fragments it covers,
+and how many are newly live, already live, opted out, keyless, without a stream, or on an interface or union
+([#59](https://github.com/Dastari/graphql-orm-client/issues/59)). *Acceptance:* a pattern over a mixed area prints its counts, and
+`compile(...).liveAreas` names the fragments in each outcome.
+
+A type with a usable stream that has no key (often `keys: { Type: null }`) is never skipped silently. *Built:* one diagnostic per type
+under every live setting, at the `strict.fragmentNotLive` level, naming its fragments and the configured identity; an explicit `@live` on it
+fails naming that cause, not a missing stream ([#58](https://github.com/Dastari/graphql-orm-client/issues/58)). *Acceptance:* the same
+message under `default`, an area pattern and `explicit`; `off`, `error` and `@live(enabled: false)` behave as for other fragments.
+
 **R2. The compiler decides what goes in a stream. Built.** Full projections carry keys,
 version and scalars without arguments; thin projections carry keys only. Relations/composites and
 `NodeId` never enter a new stream. `INVALID_INPUT` switches a type to thin for this client, with
@@ -43,6 +53,12 @@ artifacts preserve legacy selection/refusal behavior. A server marker remains pr
 *Acceptance:* the natural row fragment with a relation and computed field falls back to an accepted
 thin stream and refreshes all fields. Verified 8/8 runs per `ws` setting (16 total), against generated
 graphql-orm 0.90.1 and router 0.8.1, including actual admission refusal and a changed relation link.
+
+A live fragment may select a field that takes an operation variable. The stream, shared by every holder, leaves it out, and each
+holding query re-reads it with its own variables. Under `liveSelection: "as-written"`, which spreads the fragment into the stream, the
+compiler refuses it naming the fragment, field and variable, why, and the fixes
+([#64](https://github.com/Dastari/graphql-orm-client/issues/64)). *Acceptance:* an event updates the other fields at once and the
+variable field after one re-read of each holder with its own variables (mock network and streams).
 
 **R3. Lists stay correct.** *Built:* regenerated list metadata and un-narrowed streams, including
 empty and count-only lists; shared bounded re-reads and loaded-range pagination refresh.
@@ -259,6 +275,11 @@ the generated output, operation hashes and schema snapshot are the same text wit
 *Acceptance:* `pnpm check` and `pnpm build` pass with graphql 16 and 17 in CI, the peer range admits both, and anything the
 compiler uses that changed between them is handled.
 *Built:* peer `^16.9.0 || ^17.0.0`, a CI job on 17, and printing of object values and schema defaults that matches graphql 16.
+
+**R33. Generated input types follow input coercion. Built.** A non-null input object field with a default may be left out, so its
+generated type is optional and not nullable (`readonly Limit?: number`), as a defaulted variable already was. Callers no longer repeat
+server defaults ([#65](https://github.com/Dastari/graphql-orm-client/issues/65)). *Acceptance:* nested inputs and lists of inputs
+generate optional, non-nullable fields for `Int! = 0`, `Boolean! = false`, `[String!]! = []` and similar.
 
 ## 4. Proving it
 
