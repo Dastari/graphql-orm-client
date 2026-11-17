@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it } from "vitest"
 import { createServer, type Server } from "node:http"
 import type { AddressInfo } from "node:net"
 import { execFile, execFileSync } from "node:child_process"
@@ -13,10 +13,6 @@ const exec = promisify(execFile)
 const bin = resolve("bin/graphql-orm-client.mjs")
 const dirs: string[] = []
 const servers: Server[] = []
-// The command imports dist, which a clean checkout doesn't have and a working tree can hold a stale copy of.
-beforeAll(() => {
-  execFileSync(process.execPath, [resolve("node_modules/typescript/bin/tsc"), "-p", "tsconfig.build.json"])
-}, 120_000)
 afterEach(async () => {
   await Promise.all(servers.splice(0).map((s) => new Promise<void>((r) => s.close(() => r()))))
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
@@ -51,7 +47,8 @@ async function server(reply: (req: any) => object, status = 200) {
 }
 const data = () => introspectionFromSchema(buildSchema("type Query { hello: String } type Widget { z: String a: Int }"))
 
-describe("schema pull", () => {
+// Each test runs the CLI several times, which takes longer than the default 5 s while the rest of the suite runs alongside.
+describe("schema pull", { timeout: 30_000 }, () => {
   it("sorts server output, detects drift without writes, and tracks generated provenance", async () => {
     const dir = project()
     let reversed = false

@@ -2,7 +2,7 @@ import { execFileSync, spawn } from "node:child_process"
 import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { watchFiles, type WatchOptions } from "../src/compiler/watch.js"
 
 /** A stand-in for `fs.watch` that a test fires by hand. */
@@ -120,11 +120,6 @@ describe("watchFiles", () => {
 })
 
 describe("generate --watch", () => {
-  // The command imports dist, which a clean checkout doesn't have and a working tree can hold a stale copy of.
-  beforeAll(() => {
-    execFileSync(process.execPath, [resolve("node_modules/typescript/bin/tsc"), "-p", "tsconfig.build.json"])
-  }, 120_000)
-
   it("regenerates after a document or schema change, and reports an error without exiting", async () => {
     const dir = mkdtempSync(join(tmpdir(), "generate-watch-"))
     mkdirSync(join(dir, "src"))

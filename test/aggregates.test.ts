@@ -47,4 +47,5 @@ const wrong: number = data.summary[0]!.Metrics[0]!.Value
 const nonnull: string = data.summary[0]!.Metrics[0]!.Value
 `)
  execFileSync(process.execPath, [resolve("node_modules/typescript/bin/tsc"), "--ignoreConfig", "--noEmit", "--strict", "--skipLibCheck", "--types", "node", "--target", "ES2022", "--module", "NodeNext", `${dir}/consumer.ts`], { stdio: "pipe" })
-})
+  // tsc takes over a second alone, and longer than the default 5 s while the rest of the suite runs alongside.
+}, 30_000)

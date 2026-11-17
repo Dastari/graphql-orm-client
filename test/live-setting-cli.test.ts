@@ -2,8 +2,7 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { beforeAll, expect, it } from 'vitest'
-beforeAll(() => { execFileSync(process.execPath, [resolve('node_modules/typescript/bin/tsc'), '-p', 'tsconfig.build.json']) }, 120000)
+import { expect, it } from 'vitest'
 it('threads fragment file paths through generation and checks every duplicate declaration path', () => {
   const dir = mkdtempSync(join(tmpdir(), 'live-setting-'))
   try {
