@@ -85,7 +85,7 @@ function Page({ loaded }: { loaded: LoadedQuery<TicketsPageQuery> }) {
 - A query can hold several `@connection` lists. Give each its own `key` and its own paging
   variable (`$OpenPage`, `$ClosedPage`); call `loadMore({ connection: "closed" })` and read
   `connections.closed.hasMore`/`loadingMore`. Plain `loadMore()` and `hasMore` are the first list's.
-  Lists sharing one paging variable can't load more: `loadMore` rejects and says so.
+  Keyset lists sharing one paging variable can't load more: `loadMore` rejects and says so.
 - When the server refuses a keyset cursor (`CURSOR_INVALID`, after a deploy moves the sort keys),
   the list starts again from its first page by itself and reads the loaded rows again; don't add
   your own recovery or change variables to get a fresh list. `connections[key].restarts` counts it.

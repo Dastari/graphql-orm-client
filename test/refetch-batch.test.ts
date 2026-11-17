@@ -1,5 +1,5 @@
 import { buildSchema } from "graphql"
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { createClient, type ClientOptions, type GraphQLResponse, type OperationRequest } from "../src/client.js"
 import { compile } from "../src/compiler/index.js"
 import { encodeNodeId } from "../src/node-id.js"
@@ -139,6 +139,17 @@ describe("batched refetchFragment", () => {
     d.client.dispose()
     expect((await queued).map((result) => result.status)).toEqual(["rejected", "rejected"])
     expect(d.lookups()).toHaveLength(0)
+  })
+
+  it("stops listening to the callers' signals once the request settles", async () => {
+    const c = await setup(2)
+    const controllers = [new AbortController(), new AbortController()]
+    const spies = controllers.map((controller) => [vi.spyOn(controller.signal, "addEventListener"), vi.spyOn(controller.signal, "removeEventListener")] as const)
+    await Promise.all(c.refs.map((ref, index) => c.client.refetchFragment(WidgetCard, ref, { signal: controllers[index]!.signal })))
+    for (const [add, remove] of spies) {
+      expect(add.mock.calls.length).toBeGreaterThan(0)
+      expect(remove.mock.calls.map((call) => call[1])).toEqual(expect.arrayContaining(add.mock.calls.map((call) => call[1])))
+    }
   })
 
   it("rejects a call whose signal aborts, and cancels the request when every call has", async () => {

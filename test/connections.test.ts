@@ -15,7 +15,8 @@ const schema = buildSchema(`
   type PageInfo { TotalCount: Int! HasNextPage: Boolean! HasPreviousPage: Boolean! EndCursor: String }
   type Edge { Node: Widget! Cursor: String! }
   type Result { Edges: [Edge!]! PageInfo: PageInfo! }
-  type Query { Open(Page: CursorInput): Result! Closed(Page: CursorInput): Result! Recent(Page: PageInput): Result! }
+  type Owner { Id: ID! Children(Page: CursorInput): Result! }
+  type Query { Open(Page: CursorInput): Result! Closed(Page: CursorInput): Result! Recent(Page: PageInput): Result! Older(Page: PageInput): Result! Owner: Owner }
   type Subscription { WidgetChanged(Keys: [WidgetKeyInput!]): Event! }
   type Event { Action: String! Widget: Widget }
 `)
@@ -34,6 +35,14 @@ const compiled = compile(schema, [
     Closed(Page: $Page) @connection(key: "closed") { Edges { Node { ...Row } } }
   }`,
   `query One($Page: CursorInput) { Open(Page: $Page) @connection(key: "open") { Edges { Node { ...Row } } } }`,
+  `query SharedOffset($Page: PageInput) {
+    Recent(Page: $Page) @connection(key: "recent") { Edges { Node { ...Row } } }
+    Older(Page: $Page) @connection(key: "older") { Edges { Node { ...Row } } }
+  }`,
+  `query Owned($Page: CursorInput, $ClosedPage: CursorInput) {
+    Owner { Id Children(Page: $Page) @connection(key: "children") { Edges { Node { ...Row } } } }
+    Closed(Page: $ClosedPage) @connection(key: "closed") { Edges { Node { ...Row } } }
+  }`,
 ])
 const row = (id: string, version = 1) => ({ __typename: "Widget", NodeId: encodeNodeId("Widget", [id]), Id: id, Name: id, RecordVersion: version })
 const cursorInvalid = [{ message: "invalid cursor", path: ["Open"], extensions: { code: "CURSOR_INVALID" } }]
@@ -43,7 +52,8 @@ type Refusal = (root: string, page: Record<string, unknown>) => readonly GraphQL
 /** A server with `Open`, `Closed` and `Recent` lists, two rows a page unless asked otherwise. */
 function setup(options: { live?: Partial<NonNullable<ClientOptions["live"]>>; connections?: ClientOptions["connections"] } = {}) {
   const clock = createTestClock(), streams = createMockStreams()
-  const lists: Record<string, string[]> = { Open: ["a", "b", "c", "d", "e", "f"], Closed: ["p", "q", "r", "s", "t", "u"], Recent: ["x1", "x2", "x3", "x4", "x5"] }
+  const lists: Record<string, string[]> = { Open: ["a", "b", "c", "d", "e", "f"], Closed: ["p", "q", "r", "s", "t", "u"], Recent: ["x1", "x2", "x3", "x4", "x5"], Older: ["y1", "y2", "y3", "y4", "y5"], Owner: ["k1", "k2", "k3", "k4"] }
+  let owner = true
   const versions = new Map<string, number>()
   let refuse: Refusal = () => null
   const variableOf: Record<string, Record<string, string>> = {
@@ -51,6 +61,8 @@ function setup(options: { live?: Partial<NonNullable<ClientOptions["live"]>>; co
     Mixed: { Open: "OpenPage", Recent: "RecentPage" },
     Shared: { Open: "Page", Closed: "Page" },
     One: { Open: "Page" },
+    SharedOffset: { Recent: "Page", Older: "Page" },
+    Owned: { Owner: "Page", Closed: "ClosedPage" },
   }
   const network = createMockNetwork({
     respond: (request) => {
@@ -61,6 +73,12 @@ function setup(options: { live?: Partial<NonNullable<ClientOptions["live"]>>; co
         const refused = refuse(root, page)
         if (refused) {
           errors.push(...refused)
+          // Owner is nullable: its error nulls it, and the rest of the response keeps its data.
+          if (root === "Owner") data.Owner = null
+          continue
+        }
+        if (root === "Owner" && !owner) {
+          data.Owner = null
           continue
         }
         const ids = lists[root]!
@@ -68,10 +86,12 @@ function setup(options: { live?: Partial<NonNullable<ClientOptions["live"]>>; co
         const offset = (page.Offset as number | undefined) ?? (after ? ids.indexOf(after) + 1 : 0)
         const limit = (page.Limit as number | undefined) ?? (page.limit as number | undefined) ?? 2
         const shown = ids.slice(offset, offset + limit)
-        data[root] = { __typename: "Result", Edges: shown.map((id) => ({ __typename: "Edge", Cursor: id, Node: row(id, versions.get(id) ?? 1) })), PageInfo: { __typename: "PageInfo", TotalCount: ids.length, HasNextPage: offset + shown.length < ids.length, HasPreviousPage: offset > 0, EndCursor: shown.at(-1) ?? null } }
+        const connection = { __typename: "Result", Edges: shown.map((id) => ({ __typename: "Edge", Cursor: id, Node: row(id, versions.get(id) ?? 1) })), PageInfo: { __typename: "PageInfo", TotalCount: ids.length, HasNextPage: offset + shown.length < ids.length, HasPreviousPage: offset > 0, EndCursor: shown.at(-1) ?? null } }
+        data[root] = root === "Owner" ? { __typename: "Owner", Id: "o", Children: connection } : connection
       }
-      // A refused root is non-null, so the whole response has no data, as graphql-orm answers.
-      return errors.length ? { data: null, errors } : { data }
+      // A refused non-null root has no data in the whole response, as graphql-orm answers.
+      if (errors.length && !("Owner" in data)) return { data: null, errors }
+      return errors.length ? { data, errors } : { data }
     },
   })
   const diagnostics: LiveDiagnostic[] = []
@@ -84,7 +104,7 @@ function setup(options: { live?: Partial<NonNullable<ClientOptions["live"]>>; co
   })
   const names = (data: any, root: string): string[] => data?.[root]?.Edges.map((edge: any) => readFragment<{ Name: string }>(compiled.fragments.Row!, edge.Node).Name)
   const pages = (name: string, variable: string) => network.requests.filter((request) => request.name === name).map((request) => request.variables[variable])
-  return { client, clock, streams, network, lists, versions, diagnostics, names, pages, refuse: (next: Refusal) => { refuse = next } }
+  return { client, clock, streams, network, lists, versions, diagnostics, names, pages, refuse: (next: Refusal) => { refuse = next }, owner: (value: boolean) => { owner = value } }
 }
 
 describe("several @connection lists in one query", () => {
@@ -130,7 +150,7 @@ describe("several @connection lists in one query", () => {
     c.client.dispose()
   })
 
-  it("rejects a key the query doesn't have, and lists that share a paging variable", async () => {
+  it("rejects a key the query doesn't have, and keyset lists that share a paging variable", async () => {
     const c = setup()
     const query = c.client.watchQuery<any>(compiled.operations.Two!, { OpenPage: { limit: 2 }, ClosedPage: { limit: 2 } })
     query.open(); await c.clock.tick()
@@ -142,6 +162,31 @@ describe("several @connection lists in one query", () => {
     await expect(shared.loadMore()).rejects.toThrow(/shares its paging variable \$Page with "closed"/)
     await expect(shared.loadMore({ connection: "closed" })).rejects.toThrow(/shares its paging variable/)
     expect(c.network.requests.length).toBe(before)
+    c.client.dispose()
+  })
+
+  it("offset lists sharing one paging variable load more together, as they always have", async () => {
+    const c = setup()
+    const query = c.client.watchQuery<any>(compiled.operations.SharedOffset!, { Page: { Limit: 2 } })
+    query.open(); await c.clock.tick()
+    await query.loadMore()
+    expect(c.network.requests.at(-1)!.variables).toEqual({ Page: { Limit: 2, Offset: 2 } })
+    expect(c.names(query.getState().data, "Recent")).toEqual(["x1", "x2", "x3", "x4"])
+    expect(c.names(query.getState().data, "Older")).toEqual(["y1", "y2", "y3", "y4"])
+    expect(query.getState().error).toBeNull()
+    c.client.dispose()
+  })
+
+  it("loadMore() and hasMore both mean the first stored list", async () => {
+    const c = setup()
+    c.owner(false)
+    const query = c.client.watchQuery<any>(compiled.operations.Owned!, { Page: { limit: 2 }, ClosedPage: { limit: 2 } })
+    query.open(); await c.clock.tick()
+    // The first declared list is under a null Owner; the first stored one is "closed".
+    expect(query.getState().hasMore).toBe(true)
+    await query.loadMore()
+    expect(c.network.requests.at(-1)!.variables).toEqual({ Page: { limit: 2 }, ClosedPage: { limit: 2, after: "q" } })
+    expect(c.names(query.getState().data, "Closed")).toEqual(["p", "q", "r", "s"])
     c.client.dispose()
   })
 
@@ -350,6 +395,47 @@ describe("a refused cursor", () => {
     expect(c.network.requests.at(-1)!.variables).toEqual({ OpenPage: { limit: 2 }, ClosedPage: { limit: 2, after: "p" } })
     expect(c.names(query.getState().data, "Closed")).toEqual(["s", "p", "q", "r"])
     c.client.dispose()
+  })
+
+  it("restart() waits for every read in flight, and still restarts its list", async () => {
+    const c = setup({ live: { maxRereadRows: 2, maxRereadPages: 1 } })
+    const query = c.client.watchQuery<any>(compiled.operations.Two!, { OpenPage: { limit: 2 }, ClosedPage: { limit: 2 } })
+    query.open(); await c.clock.tick()
+    await query.loadMore({ connection: "open" }); await query.loadMore({ connection: "open" })
+    expect(c.names(query.getState().data, "Open")).toEqual(["a", "b", "c", "d", "e", "f"])
+    const sent = c.network.requests.length
+    await Promise.all([query.loadMore({ connection: "closed" }), query.refetch(), query.restart({ connection: "open" })])
+    expect(c.network.requests.slice(sent).map((request) => request.variables)).toEqual([
+      { OpenPage: { limit: 2 }, ClosedPage: { limit: 2, after: "q" } },
+      { OpenPage: { limit: 2 }, ClosedPage: { limit: 2 } },
+      { OpenPage: { limit: 2 }, ClosedPage: { limit: 2 } },
+    ])
+    expect(c.names(query.getState().data, "Open")).toEqual(["a", "b"])
+    expect(query.getState().connections!.open!.listRefreshTruncated).toBe(false)
+    c.client.dispose()
+  })
+
+  it("under a nullable parent restarts the list instead of writing the parent's null", async () => {
+    const c = setup()
+    const query = c.client.watchQuery<any>(compiled.operations.Owned!, { Page: { limit: 2 }, ClosedPage: { limit: 2 } })
+    query.open(); await c.clock.tick()
+    let refused = 0
+    c.refuse((root, page) => (root === "Owner" && page.after === "k2" && refused++ === 0 ? [{ message: "invalid cursor", path: ["Owner", "Children"], extensions: { code: "CURSOR_INVALID" } }] : null))
+    const sent = c.network.requests.length
+    await query.loadMore({ connection: "children" })
+    expect(c.network.requests.slice(sent).map((request) => request.variables.Page)).toEqual([{ limit: 2, after: "k2" }, { limit: 4 }])
+    expect(query.getState()).toMatchObject({ error: null, connections: { children: { restarts: 1 } } })
+    expect(c.names(query.getState().data.Owner, "Children")).toEqual(["k1", "k2", "k3", "k4"])
+    c.client.dispose()
+
+    // With restarts off, the response is written as before, and its errors are in the state.
+    const d = setup({ connections: { restartOn: [] } })
+    const off = d.client.watchQuery<any>(compiled.operations.Owned!, { Page: { limit: 2 }, ClosedPage: { limit: 2 } })
+    off.open(); await d.clock.tick()
+    d.refuse((root, page) => (root === "Owner" && page.after === "k2" ? [{ message: "invalid cursor", path: ["Owner", "Children"], extensions: { code: "CURSOR_INVALID" } }] : null))
+    await off.loadMore({ connection: "children" })
+    expect(off.getState().errors.map((error) => error.extensions?.code)).toEqual(["CURSOR_INVALID"])
+    d.client.dispose()
   })
 
   it("reports the diagnostic once per list", async () => {

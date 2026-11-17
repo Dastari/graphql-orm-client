@@ -588,13 +588,15 @@ query CatalogScroll($Where: WidgetWhereInput, $Page: KeysetPageInput) {
 - **Several lists in one query.** Each `@connection` is addressed by its `key`:
   `loadMore({ connection: "closed" })` loads more of that list, and `QueryState.connections`
   has each list's `hasMore`, `loadingMore`, `listRefreshTruncated` and `restarts`. `loadMore()`
-  and the top-level `hasMore` stay the first list's; the top-level `loadingMore` is true while
+  and the top-level `hasMore` stay the first stored list's (a list under a null parent isn't
+  stored, so the next one is first); the top-level `loadingMore` is true while
   any list loads, and `listRefreshTruncated` while any list's refresh stopped at its bound.
   Loads run one at a time, since each sends the whole query: loading one list reads the
   others' first pages again, which replace their heads and keep their loaded tails. Give each
-  list its own paging variable. With one variable shared, a cursor or offset for one list
-  would reach the other, so `loadMore` rejects for either, and a refresh reads them in one
-  request (the larger loaded count) without following cursors. A key the query doesn't have,
+  list its own paging variable. With one variable shared, a cursor for one keyset list would
+  reach the other, so `loadMore` rejects for either; offset lists sharing one keep advancing
+  together, as before, since an offset reaches both. A refresh reads lists sharing a variable
+  in one request (the larger loaded count) without following cursors. A key the query doesn't have,
   or one used by two lists, rejects. A list is found through single links from the root, as
   before: not inside a list or a fragment spread.
 - **A refused cursor.** A keyset cursor is bound to the entity and filter that issued it, and
@@ -602,7 +604,8 @@ query CatalogScroll($Where: WidgetWhereInput, $Page: KeysetPageInput) {
   0.94.0. That happens when a list stays open across a change that moves its sort keys, such as
   a deploy. When `loadMore`'s request, or a refresh's request after its first, is refused with a
   code in `connections.restartOn` (default `["CURSOR_INVALID"]`; add `"INVALID_INPUT"` for roots
-  that send that) and no error in the response is about access (`UNAUTHENTICATED`, `FORBIDDEN`,
+  that send that), including a refusal that arrives with data because the list sits under a
+  nullable parent, and no error in the response is about access (`UNAUTHENTICATED`, `FORBIDDEN`,
   `ACCESS_DENIED`, `STEP_UP_REQUIRED`), the list starts again from its first page under the same
   stored list. For `loadMore`, that is a read of the query with the list's loaded range, the
   asked-for page included, as a refresh reads it; rows past what's read, and the stored end
@@ -617,7 +620,9 @@ query CatalogScroll($Where: WidgetWhereInput, $Page: KeysetPageInput) {
 - **Starting again.** `restart({ connection })` (on `watchQuery` and `useQuery`) does the same
   for an application that knows a list's cursors no longer hold for its own reasons: it reads
   the list's loaded range from its first page, drops what it couldn't read and the stored end
-  cursor, and refreshes the query's other lists as a refetch does.
+  cursor, and refreshes the query's other lists as a refetch does. It waits for any read in
+  flight, so it always reads. A `loadMore` response that arrives with data and errors that
+  aren't a refused cursor is written, and its errors go to `QueryState.errors`.
 - **Refreshing.** Regenerated queries refresh the loaded range as described under R3 below.
   Legacy artifacts replace the head and keep later pages and their end cursor.
 - **Offset input.** When the paging argument is graphql-orm's offset `PageInput` (`Limit`,
@@ -817,8 +822,8 @@ those runs; each timing in each run is itself the median of five samples.
 | One event, 1,000-row list (ms) | 0.151 | 1.2 |
 | One event, 10,000-row list (ms) | 1.255 | 8 |
 | 45,000-line schema + 250 documents (ms) | 694 | 5,000 |
-| Main standalone raw bundle (bytes) | 75,185 | 76,000 |
-| Main standalone gzip bundle (bytes) | 23,978 | 24,500 |
+| Main standalone raw bundle (bytes) | 75,687 | 76,000 |
+| Main standalone gzip bundle (bytes) | 24,127 | 24,500 |
 | React standalone raw bundle (bytes) | 6,969 | 10,000 |
 | React standalone gzip bundle (bytes) | 2,836 | 4,000 |
 
@@ -853,7 +858,7 @@ after incremental reads ([#68](https://github.com/Dastari/graphql-orm-client/iss
 rose from 65,000 to 68,000 bytes (gzip 21,000 to 22,000) for it. On 2026-11-17 it rose to 76,000 (gzip 24,500) for several
 `@connection` lists per query, restarting a list on a refused cursor and batched `refetchFragment`
 ([#83](https://github.com/Dastari/graphql-orm-client/issues/83), [#55](https://github.com/Dastari/graphql-orm-client/issues/55),
-[#82](https://github.com/Dastari/graphql-orm-client/issues/82)), which took the bundle from 67,573 bytes to 75,185.
+[#82](https://github.com/Dastari/graphql-orm-client/issues/82)), which took the bundle from 67,573 bytes to 75,687.
 
 It includes page/runtime, query snapshots and store allocations; it excludes native renderer
 memory, browser RSS, GPU memory and server cost. It does not establish a bound on a full

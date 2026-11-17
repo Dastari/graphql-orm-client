@@ -50,9 +50,15 @@ again, each through its own paging variable ([#83](https://github.com/Dastari/gr
 `hasMore` are still the first list's. The top-level `loadingMore` and `listRefreshTruncated` are now true when any list is
 loading or was cut short, which for a query with one list is what they were.
 
-Two lists sharing one paging variable never worked with `loadMore`: the cursor or offset reached both. `loadMore` now rejects
-for them with a message; give each list its own variable (`$OpenPage`, `$ClosedPage`). `WatchedQuery` has a new method,
-`restart`, so code that implements the interface itself (a hand-written test double) needs one.
+Two keyset lists sharing one paging variable sent one list's `after` cursor to both, so the other list was refused or appended
+rows from the wrong place. `loadMore` now rejects for them with a message; give each list its own variable (`$OpenPage`,
+`$ClosedPage`). Offset lists sharing a variable are unchanged: an offset reaches both, and lists of one page size load more
+together. `WatchedQuery` has a new method, `restart`, so code that implements the interface itself (a hand-written test double)
+needs one.
+
+A response to `loadMore` that arrives with data and errors now puts its errors in `QueryState.errors`; before, they were dropped.
+When those errors refuse the cursor (a list under a nullable parent, whose null would otherwise replace the list), the list starts
+again as below, and nothing from that response is written.
 
 ### Added: a list whose cursor is refused starts again from its first page
 
@@ -82,7 +88,7 @@ the `node` query as before.
 - Generation fails if an operation already has a fragment's batched name (`<queryName>Nodes`); rename one with
   `@refetchable(queryName: "...")`.
 
-The main bundle grew by about 7.5 KB (2.3 KB gzipped) for the three changes above.
+The main bundle grew by about 8 KB (2.5 KB gzipped) for the three changes above.
 
 ## 0.1.0-alpha.12 (2026-11-07)
 

@@ -83,7 +83,7 @@ export interface QueryState<T> {
   readonly error: Error | null
   /** Errors returned alongside data (a denied field, for example). */
   readonly errors: readonly GraphQLErrorLike[]
-  /** The query's first `@connection` list has another page. `connections` has each one. */
+  /** The query's first stored `@connection` list has another page. `connections` has each one. */
   readonly hasMore: boolean
   /** A next page of one of the query's `@connection` lists is being fetched; the loaded rows stay in `data`. */
   readonly loadingMore: boolean
@@ -223,8 +223,9 @@ export interface WatchedQuery<T> {
   subscribe(listener: () => void): () => void
   refetch(): Promise<void>
   /**
-   * Fetch the next page of the query's first `@connection` list, or of the one whose `key` is `connection`, and append it.
-   * Rejects for a key the query doesn't have.
+   * Fetch the next page of the query's first stored `@connection` list (the one `hasMore` describes), or of the one whose `key`
+   * is `connection`, and append it. Rejects for a key the query doesn't have, and for a keyset list whose paging variable
+   * another list shares. Errors that arrive with the page's data go to `errors`.
    */
   loadMore(options?: ConnectionOptions): Promise<void>
   /**
@@ -545,10 +546,13 @@ class QueryResource<T> implements WatchedQuery<T> {
   /** The cursor each connection last started again from: a second refusal of it fails instead. */
   private readonly restartedFrom = new Map<string, string>()
 
-  /** The key `options` selects, or an error for one the query doesn't have; undefined when it has no `@connection`. */
+  /**
+   * The key `options` selects, or an error for one the query doesn't have. Without a key, the first stored list, as `hasMore`
+   * reports; undefined when none is stored.
+   */
   private connectionKey(options: ConnectionOptions): string | Error | undefined {
     const declared = connectionsOf(this.artifact)
-    if (options.connection === undefined) return declared[0]?.key
+    if (options.connection === undefined) return this.connection()?.spec.key
     const matching = declared.filter((entry) => entry.key === options.connection)
     if (matching.length === 0) return new Error(`${this.artifact.name} has no @connection with key "${options.connection}"`)
     if (matching.length > 1) return new Error(`${this.artifact.name} has ${matching.length} @connection fields with key "${options.connection}"; give each its own key`)
@@ -566,8 +570,9 @@ class QueryResource<T> implements WatchedQuery<T> {
     const { spec, variable } = connection
     if (variable === null)
       return Promise.reject(new Error(`Pass ${this.artifact.name}'s ${spec.paging[0]} argument as a variable to load more`))
-    // A cursor or offset in a shared variable would reach the other list too, which would append the wrong rows or refuse it.
-    const sharing = connectionsOf(this.artifact).filter((entry) => entry.variable === variable && entry.key !== key)
+    // A cursor in a shared variable would reach the other list too, which would refuse it or append the wrong rows. An offset
+    // reaches both as well, and lists of one page size advance together, as they always have.
+    const sharing = spec.offset ? [] : connectionsOf(this.artifact).filter((entry) => entry.variable === variable && entry.key !== key)
     if (sharing.length)
       return Promise.reject(new Error(`${this.artifact.name}: @connection "${key}" shares its paging variable $${variable} with ${sharing.map((entry) => `"${entry.key}"`).join(", ")}; give each list its own paging variable to load more of it`))
     const pageValue = (this.variables[variable] as Record<string, unknown> | null | undefined) ?? {}
@@ -582,13 +587,14 @@ class QueryResource<T> implements WatchedQuery<T> {
     this.loadingKey = key
     this.set({ ...this.state, loadingMore: true })
     const cursor = spec.offset ? null : connection.endCursor
+    let errors: readonly GraphQLErrorLike[] = []
     this.loadingMore = this.client
-      .execute<T>(this.artifact, next, { readCause: "pagination" })
-      .then(() => undefined, (error: unknown) => this.restartAfterRefusal(key, cursor, error))
+      .execute<T>(this.artifact, next, { readCause: "pagination", ...(cursor === null ? {} : { observeResponse: this.refusal }) })
+      .then((result) => { errors = result.errors }, (error: unknown) => this.restartAfterRefusal(key, cursor, error))
       .then(
         () => {
           this.loadingKey = null
-          this.set({ ...this.state, loadingMore: false, hasMore: this.connection()?.hasMore ?? false })
+          this.set({ ...this.state, loadingMore: false, hasMore: this.connection()?.hasMore ?? false, ...(errors.length ? { errors } : {}) })
         },
         (error: unknown) => {
           this.loadingKey = null
@@ -602,13 +608,25 @@ class QueryResource<T> implements WatchedQuery<T> {
   }
 
   restart = (options: ConnectionOptions = {}): Promise<void> => {
-    const key = this.connectionKey(options)
+    const key = this.connectionKey(options) ?? connectionsOf(this.artifact)[0]?.key
     if (key instanceof Error) return Promise.reject(key)
     if (key === undefined) return Promise.resolve()
-    if (this.inflight) return this.inflight.then(() => (this.users > 0 ? this.restart(options) : undefined))
+    // Wait for every read in flight, and any started when it ends: `fetch` would join one and drop the restart.
+    const busy = this.inflight ?? this.loadingMore
+    if (busy) return busy.then(() => (this.users > 0 ? this.restart(options) : undefined))
     this.restartedFrom.delete(key)
     this.client.store.refreshRelations?.(selectorOf(this.artifact, this.variables))
     return this.fetch("manual", undefined, key)
+  }
+
+  /**
+   * A response whose errors refuse a cursor (`connections.restartOn`), as one under a nullable parent arrives with data: fail it
+   * before it is written, so the list isn't replaced by the parent's null and the refusal can restart it.
+   */
+  private readonly refusal = (response: GraphQLResponse): void => {
+    if (!response.data || !response.errors?.length) return
+    const error = new OperationError(this.artifact.name, response.errors)
+    if (this.client.cursorRefused(error) !== null) throw error
   }
 
   /**
@@ -620,7 +638,7 @@ class QueryResource<T> implements WatchedQuery<T> {
     if (code === null || cursor === null || this.users === 0 || this.client.store.isDisposed || this.restartedFrom.get(key) === cursor) throw error
     this.restartedFrom.set(key, cursor)
     try {
-      await this.client.execute<T>(this.artifact, this.variables, { readCause: "pagination", cursorRestart: false, ...this.refreshOptions(key) })
+      await this.client.execute<T>(this.artifact, this.variables, { readCause: "pagination", cursorRestart: false, observeResponse: this.refusal, ...this.refreshOptions(key) })
     } catch (again) {
       throw this.client.cursorRefused(again) === null ? again : error
     }
@@ -1812,10 +1830,13 @@ export class Client {
     const ids = [...new Set(calls.map((call) => call.id))]
     // One record needs no list: send the lookup a single call sends.
     if (ids.length === 1) {
-      this.refetchNode(queue.single, ids[0]!, sharedSignal(calls)).then(
-        (result) => calls.forEach((call) => settle(call, { result })),
-        (error: unknown) => calls.forEach((call) => settle(call, { error }))
-      )
+      const shared = sharedSignal(calls)
+      this.refetchNode(queue.single, ids[0]!, shared.signal)
+        .then(
+          (result) => calls.forEach((call) => settle(call, { result })),
+          (error: unknown) => calls.forEach((call) => settle(call, { error }))
+        )
+        .finally(shared.release)
       return
     }
     for (let start = 0; start < ids.length; start += this.maxNodes) {
@@ -1843,8 +1864,8 @@ export class Client {
   /** Read several records through `nodes(NodeIds)`, which answers in the order asked, with null for each it can't give. */
   private async refetchNodes(query: OperationArtifact, ids: readonly string[], calls: readonly RefetchCall[]): Promise<void> {
     let results: Map<string, { found: boolean; errors: readonly GraphQLErrorLike[] }>
+    const { signal, release } = sharedSignal(calls)
     try {
-      const signal = sharedSignal(calls)
       const { snapshot, errors } = await this.execute(query as OperationArtifact<{ nodes: readonly unknown[] | null }>, { NodeIds: ids }, signal ? { signal } : {})
       const nodes = snapshot.data.nodes
       const at = (error: GraphQLErrorLike) => (error.path?.[0] === "nodes" && typeof error.path[1] === "number" ? error.path[1] : null)
@@ -1864,6 +1885,8 @@ export class Client {
     } catch (error) {
       for (const call of calls) settle(call, { error })
       return
+    } finally {
+      release()
     }
     for (const call of calls) settle(call, { result: results.get(call.id)! })
   }
@@ -2091,17 +2114,21 @@ function settle(call: RefetchCall, outcome: { result: { found: boolean; errors: 
   else call.reject(outcome.error)
 }
 
-/** A signal that aborts once every call's signal has; none when a call has no signal. */
-function sharedSignal(calls: readonly RefetchCall[]): AbortSignal | undefined {
-  if (calls.some((call) => !call.signal)) return undefined
+/**
+ * A signal that aborts once every call's signal has; none when a call has no signal. `release` stops listening to the calls'
+ * signals, once the request has settled.
+ */
+function sharedSignal(calls: readonly RefetchCall[]): { signal?: AbortSignal; release(): void } {
+  if (calls.some((call) => !call.signal)) return { release() {} }
   const controller = new AbortController()
   let open = calls.length
+  const abort = () => { if (--open === 0) controller.abort() }
   for (const call of calls) {
     if (call.signal!.aborted) open--
-    else call.signal!.addEventListener("abort", () => { if (--open === 0) controller.abort() }, { once: true })
+    else call.signal!.addEventListener("abort", abort, { once: true })
   }
   if (open === 0) controller.abort()
-  return controller.signal
+  return { signal: controller.signal, release: () => { for (const call of calls) call.signal!.removeEventListener("abort", abort) } }
 }
 
 function cancelled(): DOMException {
