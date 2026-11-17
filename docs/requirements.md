@@ -364,6 +364,31 @@ disposal or a newer read. Open queries in `error` read again when the browser co
 *Acceptance:* a read that never answers ends in `error` at the deadline. With retry on, a read that fails twice and then succeeds
 ends `ready` with no call from the application, and a write is never sent twice. Tests cover disposal during a retry. *Built.*
 
+**R40. Several lists in one query** ([#83](https://github.com/Dastari/graphql-orm-client/issues/83)). A route query with two paginated
+lists loads more of either, addressed by its `@connection` key, with `hasMore` per list, and a refresh keeps every loaded range.
+The single-list API stays as it was.
+*Acceptance:* a query with two `@connection` lists loads more of either independently, and a live refresh keeps both loaded
+ranges; tests cover ordering and reconnect replay for the second list.
+*Built:* `loadMore({ connection })`, `restart({ connection })` and `QueryState.connections`; see [Pagination](design.md#pagination).
+
+**R41. A list whose cursor is refused** ([#55](https://github.com/Dastari/graphql-orm-client/issues/55)). A keyset cursor is bound to
+the entity and filter that issued it, so a list left open across a change that moves its sort keys gets its cursor refused, and
+nothing short of discarding the list recovered it. On a refused cursor with no access error, the list starts again from its first
+page under the same stored list, keeping record identities and reading the loaded rows again, once per cursor, and says so as a
+diagnostic rather than an error. An explicit restart is available for other reasons.
+*Acceptance:* a refused cursor on a later page or a refresh's later request restarts once, reads the loaded range again, and
+sends no repeated refused request; a server refusing every cursor fails with its error. A real-router case where the sort key
+moves between pages is proposed for conformance.
+*Built:* `connections.restartOn` (default `CURSOR_INVALID`), `ConnectionState.restarts`, the `cursor-restarted` diagnostic and
+`restart()`, tested against the mock network.
+
+**R42. Refetching many records at once** ([#82](https://github.com/Dastari/graphql-orm-client/issues/82)). A view that refetches many
+`@refetchable` records at once sent one request each. Calls for one fragment in one tick share one `nodes(NodeIds)` request,
+chunked within the router's bound, and each caller still gets its own result.
+*Acceptance:* 100 calls in one tick send one request; a missing id among them removes that record only; a failed request leaves
+every stored record as it was; tests cover version ordering and disposal during the request.
+*Built:* `fragment.refetchNodes` where the schema has `nodes`, and `refetchBatch` (`maxNodes`, default 100, or `false`).
+
 ## 4. Proving it
 
 **R20. A test kit.** `graphql-orm-client/test`: a mock transport keyed by operation name that validates

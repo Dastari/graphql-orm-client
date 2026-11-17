@@ -32,8 +32,10 @@ export type LiveState = "live" | "unconfirmed" | "connecting" | "polling" | "ref
  * - `unauthenticated`: the server closed the socket for authentication (graphql-transport-ws close code 4401 or 4403).
  *   `code` is `"4401"` or `"4403"`. Every type holding records reports it, nothing subscribes again until
  *   `client.reconnectLive()`, and the records poll meanwhile, as for any uncovered type.
+ * - `cursor-restarted`: only in a `LiveDiagnostic`, never in health. The server refused a `@connection` list's cursor, and the
+ *   list started again from its first page. `fragment` names the operation. The list is current; this is not an error.
  */
-export type LiveReason = "list-refresh-truncated" | "list-streams-disabled" | "list-key-required" | "no-live-layer" | "no-stream" | "selection-refused" | "refused" | "identity-mismatch" | "over-cap" | "socket-down" | "stream-ended" | "schema-reload" | "unauthenticated"
+export type LiveReason = "cursor-restarted" | "list-refresh-truncated" | "list-streams-disabled" | "list-key-required" | "no-live-layer" | "no-stream" | "selection-refused" | "refused" | "identity-mismatch" | "over-cap" | "socket-down" | "stream-ended" | "schema-reload" | "unauthenticated"
 
 export type LiveSocketState = "connected" | "connecting" | "closed" | "unknown"
 
@@ -85,7 +87,10 @@ export interface LiveHealth {
   readonly types: Readonly<Record<string, LiveTypeHealth>>
 }
 
-/** A `@live` fragment an application shows that can't stay live, reported once per fragment and reason. */
+/**
+ * A `@live` fragment an application shows that can't stay live, reported once per fragment and reason. Also, once per list, a
+ * `@connection` list that started again from its first page after a refused cursor (`reason: "cursor-restarted"`).
+ */
 export interface LiveDiagnostic {
   readonly fragment: string
   readonly typename: string

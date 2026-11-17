@@ -346,6 +346,54 @@ records read again ([#67](https://github.com/Dastari/graphql-orm-client/issues/6
 
 ([#72](https://github.com/Dastari/graphql-orm-client/issues/72))
 
+### Added: every `@connection` in a query, by its key
+
+A query with two paginated lists can load more of either: `loadMore({ connection: "closed" })`, and `QueryState.connections`
+has each list's `hasMore`, `loadingMore`, `listRefreshTruncated` and `restarts`, by key. A refresh reads every list's loaded range
+again, each through its own paging variable ([#83](https://github.com/Dastari/graphql-orm-client/issues/83)). `loadMore()` and
+`hasMore` are still the first list's. The top-level `loadingMore` and `listRefreshTruncated` are now true when any list is
+loading or was cut short, which for a query with one list is what they were.
+
+Two keyset lists sharing one paging variable sent one list's `after` cursor to both, so the other list was refused or appended
+rows from the wrong place. `loadMore` now rejects for them with a message; give each list its own variable (`$OpenPage`,
+`$ClosedPage`). Offset lists sharing a variable are unchanged: an offset reaches both, and lists of one page size load more
+together. `WatchedQuery` has a new method, `restart`, so code that implements the interface itself (a hand-written test double)
+needs one.
+
+A response to `loadMore` that arrives with data and errors now puts its errors in `QueryState.errors`; before, they were dropped.
+When those errors refuse the cursor (a list under a nullable parent, whose null would otherwise replace the list), the list starts
+again as below, and nothing from that response is written.
+
+### Added: a list whose cursor is refused starts again from its first page
+
+When `loadMore`, or a refresh past its first request, gets `CURSOR_INVALID` back (graphql-orm 0.94.0, after a deploy moved the
+list's sort keys, say) and no access error, the list reads its loaded rows again from its first page under the same stored list,
+instead of failing every later `loadMore` with the same cursor ([#55](https://github.com/Dastari/graphql-orm-client/issues/55)).
+Records keep their identities. It happens once per cursor, so a server that refuses every cursor still fails with its error.
+`error` stays null, `connections[key].restarts` counts it, and `live.onDiagnostic` reports it once per list with the new reason
+`cursor-restarted` (only in diagnostics; health never has it). `restart({ connection })` does the same on request.
+
+This changes what an application sees after a refused cursor: a fresh list where it had an error. To keep the error, pass
+`connections: { restartOn: [] }` to `createClient`. To restart on `INVALID_INPUT` too, pass
+`connections: { restartOn: ["CURSOR_INVALID", "INVALID_INPUT"] }`. A workaround that changed the list's variables to get a new
+stored list can go. An exhaustive `switch` on `LiveReason` needs a case for `cursor-restarted`.
+
+### Added: `refetchFragment` calls in one tick share a `nodes(NodeIds)` request
+
+Regenerate. Where the schema has the router's `nodes(NodeIds)`, a `@refetchable` fragment also gets `<queryName>Nodes`
+(`fragment.refetchNodes`), and `refetchFragment` calls for that fragment made in the same tick go out as one request, in chunks of
+100 ids ([#82](https://github.com/Dastari/graphql-orm-client/issues/82)). Each call still resolves with its own `found` and errors;
+a missing entry removes only its record, and a failed request rejects each call and changes nothing. A tick with one call sends
+the `node` query as before.
+
+- Set `refetchBatch: { maxNodes }` to the router's bound if it isn't the default 100.
+- Behind a persisted-operation allow-list, add the generated `...Nodes` operations, or pass `refetchBatch: false` for one `node`
+  request per call, as before.
+- Generation fails if an operation already has a fragment's batched name (`<queryName>Nodes`); rename one with
+  `@refetchable(queryName: "...")`.
+
+The main bundle grew by about 8 KB (2.5 KB gzipped) for the three changes above.
+
 ## 0.1.0-alpha.12 (2026-11-07)
 
 Install from the GitHub release archive:

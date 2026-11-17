@@ -3,6 +3,7 @@ import {
   Kind,
   extendSchema,
   getNamedType,
+  getNullableType,
   isAbstractType,
   isCompositeType,
   isInterfaceType,
@@ -625,7 +626,9 @@ function compileDocuments(
 /**
  * A fragment marked `@refetchable` gets a query that reads it again through the router's
  * `node(NodeId)` lookup: `query <Fragment>Refetch($NodeId: ID!) { node(NodeId: $NodeId) { ...F } }`.
- * The fragment's type must implement `Node`, and the fragment can't use operation variables.
+ * Where the schema also has `nodes(NodeIds)`, it gets `<Fragment>RefetchNodes`, which reads several
+ * records in one request. The fragment's type must implement `Node`, and the fragment can't use
+ * operation variables.
  */
 function compileRefetch(
   schema: GraphQLSchema,
@@ -663,9 +666,20 @@ function compileRefetch(
     }
     queryNames.add(queryName)
     const text = `query ${queryName}($NodeId: ID!) { node(NodeId: $NodeId) { ...${name} } }`
+    // `nodes(NodeIds: [ID!]!): [Node]!`, hosted by graphql-orm-router from 0.8.0, reads several records in one request.
+    const nodesField = schema.getQueryType()?.getFields()["nodes"]
+    const nodeIdsArg = nodesField?.args.find((arg) => arg.name === "NodeIds")
+    const nodesName = `${queryName}Nodes`
+    const batched = nodesField && nodeIdsArg && isListType(getNullableType(nodeIdsArg.type)) && isListType(getNullableType(nodesField.type))
+    if (batched && (operationNames.has(nodesName) || queryNames.has(nodesName))) {
+      problems.push(`Fragment ${name}'s batched refetch query ${nodesName} has the name of another operation; rename it with @refetchable(queryName: "...")`)
+      continue
+    }
+    if (batched) queryNames.add(nodesName)
+    const nodesText = batched ? `query ${nodesName}($NodeIds: ${String(nodeIdsArg.type)}) { nodes(NodeIds: $NodeIds) { ...${name} } }` : ""
     const document: DocumentNode = {
       kind: Kind.DOCUMENT,
-      definitions: [...parse(text).definitions, ...fragmentNodes.values()],
+      definitions: [...parse(text).definitions, ...(batched ? parse(nodesText).definitions : []), ...fragmentNodes.values()],
     }
     let compiled: CompileResult
     try {
@@ -675,7 +689,7 @@ function compileRefetch(
       problems.push(`Fragment ${name} can't be @refetchable (a refetchable fragment can't use operation variables): ${detail}`)
       continue
     }
-    result[name] = { ...fragments[name]!, refetch: compiled.operations[queryName]! }
+    result[name] = { ...fragments[name]!, refetch: compiled.operations[queryName]!, ...(batched ? { refetchNodes: compiled.operations[nodesName]! } : {}) }
   }
   if (problems.length) throw new CompileError(problems)
   return result

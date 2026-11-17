@@ -149,6 +149,11 @@ export interface FragmentArtifact<TData = unknown, TName extends string = string
   readonly live: boolean
   /** For a `@refetchable` fragment: the query that reads it again by `NodeId`. */
   readonly refetch?: OperationArtifact
+  /**
+   * For a `@refetchable` fragment, where the schema has the router's `nodes(NodeIds)` lookup: the query that reads several of its
+   * records in one request. `refetchFragment` calls made in one tick share it. Absent from earlier artifacts, which read one record a request.
+   */
+  readonly refetchNodes?: OperationArtifact
 }
 
 export interface OperationArtifact<TData = unknown, TVariables = Record<string, unknown>> {
