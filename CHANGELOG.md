@@ -42,6 +42,21 @@ and freed with them; handles for the same variables still share it
 `docs/example.md` builds two related graphql-orm entities, their service, and a page that lists, adds and closes rows and stays
 current, checked against graphql-orm 0.94.0.
 
+### Changed: conformance runs against graphql-orm 0.170.0 and router 0.15.5
+
+The real-server suite now runs on `graphql-orm-v0.90.1`, `v0.94.0`, `v0.126.0` (router 0.11.0) and `v0.170.0` (router 0.15.5)
+([#56](https://github.com/Dastari/graphql-orm-client/issues/56), [#78](https://github.com/Dastari/graphql-orm-client/issues/78)).
+The package's behaviour doesn't change. What the runs found, recorded in `docs/graphql-orm-contract.md`:
+
+- From router 0.11.0, `schema pull` and the doctor need `"introspection": true` in the router's configuration; without it they
+  exit 5.
+- From router 0.8.3 a schema reload no longer sends `complete` after `error`, so Node clients need no `allowSynchronousEvents: false`.
+- From router 0.9.0 a router that drops frames ends the streams with `SUBSCRIPTION_CONTINUITY_LOST`, and they restart and read.
+  `live.burstRead` stays on by default, still needed for routers before 0.9.0.
+- `node` for a missing row is null once an owner field is selected, so `refetchFragment` of a row deleted elsewhere removes it.
+
+Nothing to change in applications.
+
 ### Added: graphql 17 as a peer
 
 The `graphql` peer range is now `^16.9.0 || ^17.0.0`, so an application on graphql 17 no longer gets a peer warning or a second

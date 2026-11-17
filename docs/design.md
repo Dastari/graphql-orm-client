@@ -173,7 +173,9 @@ are unknown, never a match. Credentials use `--token-env NAME` or repeated
 
 Exit codes: 0 success, 1 drift or stale output, 2 bad usage (as in doctor), 3 unreachable,
 4 authentication refused (HTTP 401/403 or GraphQL 401/403/4401), 5 introspection unavailable or disabled.
-Server error text is suppressed by schema pull to avoid echoing credentials.
+Server error text is suppressed by schema pull to avoid echoing credentials. From graphql-orm-router 0.11.0 introspection is off
+unless the router's configuration sets `"introspection": true`; then it also needs a valid bearer when the router authenticates.
+`schema pull` and the doctor exit 5 against a router that leaves it off.
 
 Once the sidecar exists, generated modules include the snapshot hash. `generate --check` verifies
 both snapshot integrity and generated provenance, even for schema changes that leave artifact types
@@ -395,11 +397,13 @@ type: `restarting`, `restartAttempts`, and `lastEnd` with its `reason`, `code` a
   fresh connection. `graphqlWsSubscribe` and `graphqlWsTransport` close the socket through `ws.terminate()`,
   a task after the last operation has ended after one of these codes. A custom `live.subscribe` has to get
   a fresh connection too, or its restarts go on answering `unavailable`. In a browser, graphql-ws's default
-  `lazy` socket closes by itself once nothing is open, and terminating covers `lazy: false`. On Node, where
-  `ws` delivers several frames in one tick by default, the router's `complete` after `error` makes graphql-ws
-  release the operation twice, its lock count goes negative, and a later socket failure can leave a stream
-  ending as soon as it starts. To run this on Node, pass `{ allowSynchronousEvents: false }` to `ws`, as a
-  `webSocketImpl` subclass (router 0.8.1, graphql-ws 6.4.1, ws 8).
+  `lazy` socket closes by itself once nothing is open, and terminating covers `lazy: false`. Router 0.8.1 sends
+  `complete` after the reload `error`. On Node, where `ws` delivers several frames in one tick by default, that
+  makes graphql-ws release the operation twice, its lock count goes negative, and a later socket failure can leave
+  a stream ending as soon as it starts. Against router 0.8.1 or 0.8.2 on Node, pass `{ allowSynchronousEvents: false }`
+  to `ws`, as a `webSocketImpl` subclass (graphql-ws 6.4.1, ws 8). Router 0.8.3 sends `error` alone (graphql-orm#339):
+  run on 0.11.0 and 0.15.5, recovery passes 8/8 with `ws` defaults and 8/8 without synchronous events, so newer routers
+  need no setting.
 - **`live.restart: false`** is the 0.1.0-alpha.6 behaviour, for migration: only lost events restart a
   stream, and any other end waits for the next change to the held records, with nothing read. Data can
   stay stale indefinitely with it. `lastEnd` is still reported.
@@ -681,7 +685,9 @@ fragment WidgetCard on Widget @refetchable {
   and `found`.
 - **Missing or denied.** A null `node` without errors means the record is missing or no longer
   readable: the store removes it, as for a `DELETED` event. A null with errors, or a failed
-  request, leaves the stored record as it was.
+  request, leaves the stored record as it was. The router answers `node` for a missing row with its own
+  `{ __typename, NodeId }` when nothing else is selected, and with null once an owner field is (graphql-orm#490;
+  run on routers 0.8.1, 0.11.0 and 0.15.5). A fragment that selects only `NodeId` would therefore always be found.
 - **Not yet.** Batching several refetches into one `nodes(NodeIds)` request.
 
 ## Imperative reads
@@ -1335,14 +1341,26 @@ Reading a relation can queue a request, so a read during render can too. That qu
 
 ## Burst repair reads
 
-Router 0.8.1 at graphql-orm 0.90.1 and 0.93.0 can drop frames silently (#359).
+Router 0.8.1 at graphql-orm 0.90.1 and 0.93.0 can drop frames silently (graphql-orm#359).
 `live.burstRead` is enabled by default: `{ events: 32, settleMs: 500, maxWaitMs: 10000 }`.
 The threshold matches the router's default broadcast capacity: fewer than 32 events cannot
 fill that buffer. Events count while less than 500 ms apart. One manager-wide window waits
 until every participating type is quiet, or 10000 ms passes, then reads the union of record
 and list holders once per query. Sustained streams start a fresh window after each deadline.
 This repairs dropped final frames when enough preceding frames arrive; it cannot detect an
-entirely lost or below-threshold burst. Server continuity signalling is still needed.
+entirely lost or below-threshold burst.
+
+From router 0.9.0 the router signals the loss itself: it ends every open subscription with
+`SUBSCRIPTION_CONTINUITY_LOST`, which the client already treats as `lost` (restart, then read).
+Run on 2026-11-17: a test-owned stream sending 1000 or 5000 frames as fast as it could lost about 70% of them
+silently through router 0.8.1 and ended with that code every time through routers 0.11.0 and 0.15.5. Generated
+`Changed` events from eight writers at about 80 a second, to a Node client holding the row, six runs per router: through
+0.8.1 frames were lost once with no signal and the burst read repaired it; through 0.11.0 and 0.15.5 they were lost three
+times in twelve, each time signalled, and the restart read reached the final row with no burst read. A generated frame
+carries the row as it is when the frame is sent, so any frame sent after the last write carries the final row.
+Against routers from 0.9.0 a drop is reported and recovered without the burst read, which then adds one read per
+query per burst for nothing the router hides. It is still needed for routers before 0.9.0. Whether it stays on by
+default is open; `burstRead: false` turns it off.
 
 Reads use `QueryResource.readAgain`: pending R3 or thin invalidations absorb the burst mark;
 an automatic read already sent after the last burst event absorbs the mark, including

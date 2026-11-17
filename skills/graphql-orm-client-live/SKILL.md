@@ -35,8 +35,9 @@ same order and with loaded pages kept. A count or generated aggregate of a live 
     and sets `QueryState.listRefreshTruncated`: show that on screen, because those rows may be stale.
 - **Rate limit:** automatic reads are limited per query by `live.minRereadMs` (2000): one at the start of a burst and one at the end, a read
   already running is followed by one more, and they wait while the page is hidden.
-- **After a burst:** the router can drop frames under a burst with no signal (graphql-orm#359), so after at least 32 events on a type settle,
+- **After a burst:** graphql-orm-router before 0.9.0 can drop frames under a burst with no signal (graphql-orm#359), so after at least 32 events on a type settle,
   the queries holding it read once more. That's one extra read per burst per query, coalesced across types. `live.burstRead` adjusts or turns it off.
+  From router 0.9.0 a drop ends the streams with `SUBSCRIPTION_CONTINUITY_LOST`, and they restart and read on their own.
 - **First load:** a query reads once more after its records first gain a stream (`live.settleMs`, 250 ms), because nothing acknowledges a
   subscribe. This narrows the gap between read and subscribe, and can't close it. `settleMs: false` removes the extra read.
 - **Ended streams** restart by themselves and re-read, whatever ended them, backing off to about once a minute. A reconnected socket
@@ -84,7 +85,8 @@ pnpm exec graphql-orm-client doctor --url https://router.example/graphql --token
 ```
 
 It checks every document against the served schema and opens each live stream for up to `--stream-ms` (3000), for that token's identity. It runs
-introspection and subscriptions only. `--json` prints the report as JSON.
+introspection and subscriptions only. `--json` prints the report as JSON. graphql-orm-router 0.11.0 and later refuse introspection
+unless their configuration sets `"introspection": true`; the doctor then exits 5, `introspection unavailable or disabled`.
 
 | Verdict | Meaning | Exit |
 | --- | --- | --- |
