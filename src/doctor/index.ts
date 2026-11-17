@@ -12,18 +12,23 @@ import type { CompileResult } from "../compiler/compile.js"
  * - `not-refused`: no error and no event in the time allowed. Nothing confirms a subscribe, so this is all
  *   that can be said of a quiet stream.
  * - `refused`: the server answered with GraphQL errors.
- * - `missing`: the type has `@live` fragments and no `Changed` subscription.
+ * - `polling`: the type has no `Changed` subscription, and every live fragment on it polls by design: it declares
+ *   `@poll(reason)`, or it is live only through the `live` setting. Passes, also under `strict`.
+ * - `missing`: the type has a `@live` fragment with no `Changed` subscription and no `@poll(reason)`, or the served
+ *   schema lacks the stream the project was generated with.
  * - `invalid`: the stream's document doesn't validate against the served schema.
  * - `unknown`: it couldn't be tested. Never counted as passing.
  */
-export type StreamVerdict = "fallback-admitted" | "fallback-not-refused" | "admitted" | "not-refused" | "refused" | "missing" | "invalid" | "unknown"
+export type StreamVerdict = "fallback-admitted" | "fallback-not-refused" | "admitted" | "not-refused" | "refused" | "polling" | "missing" | "invalid" | "unknown"
 
 export interface StreamReport {
   readonly typename: string
   /** The subscription's name; null for a type with no stream. */
   readonly operation: string | null
   readonly verdict: StreamVerdict
+  /** The server's error code, when it is a plain name (letters, digits, `_`, `.`, `:` or `-`, up to 64). */
   readonly code: string | null
+  /** A fixed description of what happened; the server's own text only with `serverMessages`. */
   readonly detail: string
   /** The `@live` fragments on the type, which is what stops being live. */
   readonly fragments: readonly string[]
@@ -63,6 +68,12 @@ export interface DoctorOptions {
   readonly concurrency?: number
   /** Count `not-refused` as a failure. */
   readonly strict?: boolean
+  /**
+   * Put the server's error messages and socket close reasons in the report. Off by default: an endpoint can put
+   * anything in an error message, and the report goes to terminals and CI logs. Without it the report has each
+   * error's code and a fixed description.
+   */
+  readonly serverMessages?: boolean
   readonly fetch?: typeof globalThis.fetch
   readonly WebSocket?: new (url: string, protocols: string) => DoctorSocket
 }
@@ -110,9 +121,21 @@ export async function readServedSchema(options: Pick<DoctorOptions, "url" | "hea
   const body = (await response.json().catch(() => null)) as { data?: IntrospectionQuery; errors?: { message: string }[] } | null
   if ([401, 403, 4401].includes(response.status) || body?.errors?.some((error) => ["401", "403", "4401", "UNAUTHENTICATED", "UNAUTHORIZED", "FORBIDDEN"].includes(String((error as { extensions?: { code?: unknown } }).extensions?.code))))
     throw Object.assign(new Error("Introspection failed: authentication refused"), { schemaCode: "authentication refused", exitCode: 4 })
-  if (body?.data?.__schema) return buildClientSchema(body.data)
-  const reason = body?.errors?.map((error) => error.message).join("; ") ?? `the endpoint answered ${response.status}`
-  throw Object.assign(new Error(`Introspection failed: ${reason}`), { schemaCode: "introspection unavailable or disabled", exitCode: 5 })
+  if (body?.data?.__schema) {
+    try {
+      return buildClientSchema(body.data)
+    } catch (error) {
+      // graphql-js quotes the names it rejects, and they are the server's text, so they're kept apart too.
+      throw Object.assign(new Error("Introspection failed: the served introspection result isn't a usable schema"), {
+        serverMessage: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
+  // The message is fixed; what the server said is kept apart, for a caller that has been asked to show it.
+  const serverMessage = body?.errors?.map((error) => error.message).join("; ")
+  throw Object.assign(new Error(`Introspection failed: introspection unavailable or disabled (HTTP ${response.status})`), {
+    schemaCode: "introspection unavailable or disabled", exitCode: 5, serverMessage,
+  })
 }
 
 function fragmentsByType(compiled: CompileResult): Map<string, string[]> {
@@ -141,12 +164,26 @@ type Outcome = Pick<StreamReport, "verdict" | "code" | "detail">
 type Frame = { id?: string; type?: string; payload?: unknown }
 type ErrorList = readonly { message?: unknown; extensions?: { code?: unknown } }[]
 
-function outcomeOfErrors(errors: ErrorList): Outcome {
+/** What each inconclusive code means, so the report needn't repeat the server's words. */
+const INCONCLUSIVE_DESCRIPTIONS: Readonly<Record<string, string>> = {
+  SUBSCRIPTION_SCHEMA_RELOAD: "the router was reloading its schema",
+  SERVICE_UNAVAILABLE: "the service was unavailable",
+  SUBGRAPH_UNAVAILABLE: "a subgraph was unavailable",
+  SUBSCRIPTION_LIMIT_EXCEEDED: "the connection was at its subscription limit",
+}
+
+const PLAIN_CODE = /^[A-Za-z0-9_.:-]{1,64}$/
+
+function outcomeOfErrors(errors: ErrorList, serverMessages: boolean): Outcome {
   const code = errors.find((error) => error.extensions?.code !== undefined)?.extensions?.code
   const text = errors.map((error) => String(error.message ?? "")).join("; ")
   const named = code === undefined ? null : String(code)
-  if (named !== null && INCONCLUSIVE_CODES.has(named)) return { verdict: "unknown", code: named, detail: text }
-  return { verdict: "refused", code: named, detail: text }
+  // A code is printed, so it gets the same care as a message: only a plain name, unless messages were asked for.
+  const shown = named !== null && (serverMessages || PLAIN_CODE.test(named)) ? named : null
+  const withheld = text ? "; its message is withheld" : ""
+  if (named !== null && INCONCLUSIVE_CODES.has(named))
+    return { verdict: "unknown", code: named, detail: serverMessages ? text : `${INCONCLUSIVE_DESCRIPTIONS[named]}, which says nothing about admission${withheld}` }
+  return { verdict: "refused", code: shown, detail: serverMessages ? text : `the server refused the stream${withheld}` }
 }
 
 interface Probe {
@@ -211,7 +248,8 @@ function probeStreams(probes: readonly Probe[], options: DoctorOptions): Promise
       socket.send(JSON.stringify({ type: "connection_init", payload }))
     })
     socket.addEventListener("error", () => finish({ verdict: "unknown", code: null, detail: "the socket failed" }))
-    socket.addEventListener("close", (event) => finish({ verdict: "unknown", code: null, detail: `the socket closed with ${event.code}${event.reason ? ` (${event.reason})` : ""}` }))
+    // The close reason is the server's text, so it is shown only when asked for.
+    socket.addEventListener("close", (event) => finish({ verdict: "unknown", code: null, detail: `the socket closed with ${event.code}${options.serverMessages && event.reason ? ` (${event.reason})` : ""}` }))
     socket.addEventListener("message", (event) => {
       let frame: Frame
       try {
@@ -226,10 +264,10 @@ function probeStreams(probes: readonly Probe[], options: DoctorOptions): Promise
       if (frame.type === "ping") return socket.send(JSON.stringify({ type: "pong" }))
       const key = frame.id
       if (key === undefined) return
-      if (frame.type === "error") return conclude(key, outcomeOfErrors((frame.payload ?? []) as ErrorList), false)
+      if (frame.type === "error") return conclude(key, outcomeOfErrors((frame.payload ?? []) as ErrorList, options.serverMessages === true), false)
       if (frame.type === "complete") {
         const answered = open.get(key)?.answered
-        return conclude(key, answered ? outcomeOfErrors(answered) : { verdict: "unknown", code: null, detail: "the stream ended with no error and no event" }, false)
+        return conclude(key, answered ? outcomeOfErrors(answered, options.serverMessages === true) : { verdict: "unknown", code: null, detail: "the stream ended with no error and no event" }, false)
       }
       if (frame.type === "next") {
         const payload = (frame.payload ?? {}) as { data?: unknown; errors?: ErrorList }
@@ -245,6 +283,26 @@ function lowerCased(headers: Readonly<Record<string, string>>): Record<string, s
   return Object.fromEntries(Object.entries(headers).map(([name, value]) => [name.toLowerCase(), value]))
 }
 
+/**
+ * A type the snapshot has no usable stream for. Its holders poll, which is the design when each live fragment on it
+ * declares why (`@poll(reason)`) or is live only through the `live` setting; an explicit `@live` with neither is missing.
+ */
+function withoutStream(typename: string, names: readonly string[], compiled: CompileResult): StreamReport {
+  const implicit = new Set(compiled.implicitLive ?? [])
+  const reasons = new Set<string>()
+  const undeclared: string[] = []
+  for (const name of names) {
+    const reason = compiled.fragments[name]?.pollReason
+    if (reason) reasons.add(JSON.stringify(reason))
+    else if (implicit.has(name)) reasons.add("implicit (live default)")
+    else undeclared.push(name)
+  }
+  const base = { typename, operation: null, code: null, fragments: names }
+  if (names.length === 0 || undeclared.length)
+    return { ...base, verdict: "missing", detail: `no usable Changed subscription in the schema snapshot, and ${undeclared.length ? undeclared.join(", ") : "no fragment"} declares no @poll reason; holders must poll` }
+  return { ...base, verdict: "polling", detail: `no usable Changed subscription in the schema snapshot; holders poll by design: ${[...reasons].join("; ")}` }
+}
+
 /** Check the documents against the served schema and open each stream. Never throws for a server's answer. */
 export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
   const { compiled } = options
@@ -255,7 +313,9 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
   try {
     schema = await readServedSchema(options)
   } catch (error) {
-    schemaProblem = error instanceof Error ? error.message : String(error)
+    const serverMessage = (error as { serverMessage?: unknown }).serverMessage
+    schemaProblem = options.serverMessages && typeof serverMessage === "string" ? `Introspection failed: ${serverMessage}`
+      : error instanceof Error ? error.message : String(error)
   }
 
   const documents: DocumentReport[] = []
@@ -266,14 +326,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
     }
   }
 
-  const reports: StreamReport[] = compiled.liveUnavailable.map((typename) => ({
-    typename,
-    operation: null,
-    verdict: "missing",
-    code: null,
-    detail: "no usable Changed subscription in the schema snapshot; holders must poll",
-    fragments: fragments.get(typename) ?? [],
-  }))
+  const reports: StreamReport[] = compiled.liveUnavailable.map((typename) => withoutStream(typename, fragments.get(typename) ?? [], compiled))
   const probes: Probe[] = []
   const pending: { artifact: LiveArtifact; key: string }[] = []
   for (const artifact of Object.values(compiled.live)) {

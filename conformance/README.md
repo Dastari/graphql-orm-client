@@ -74,7 +74,7 @@ Recovery repeats reload, router kill and policy refusal followed by acceptance e
 times with both ws event scheduling modes. Browser reload and kill recovery each
 repeat eight times. Browser HTTP reads use a bridge to the same router so that CORS
 is independent of the WebSocket behaviour under test. Doctor invokes the built CLI
-against real router introspection and streams. `refused` uses `liveSelection: "as-written"` with a computed field, so no keys-only stream exists to fall back to. `fallback-not-refused` uses a computed field, so the server really refuses full and admits thin. Missing uses the real PageInfo type, which has no Changed stream. Invalid and
+against real router introspection and streams. `refused` uses `liveSelection: "as-written"` with a computed field, so no keys-only stream exists to fall back to. `fallback-not-refused` uses a computed field, so the server really refuses full and admits thin. `polling` and `missing` use the real PageInfo type, which has no Changed stream: `polling` declares `@poll(reason)`, and `missing` declares none, with `strict.liveWithoutStream` lowered to `warn` so it generates. Invalid and
 required-key unknown deliberately alter the local schema snapshot; they do not
 simulate router responses. The required-key unknown path is a conservative doctor
 classification, not evidence that generated Changed streams require keys. Admission uses a real ORM update, while empty Keys remains quiet.

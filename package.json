@@ -73,10 +73,14 @@
   },
   "peerDependencies": {
     "graphql": "^16.9.0 || ^17.0.0",
-    "react": ">=19 <20"
+    "react": ">=19 <20",
+    "typescript": ">=5.0.0"
   },
   "peerDependenciesMeta": {
     "react": {
+      "optional": true
+    },
+    "typescript": {
       "optional": true
     }
   },

@@ -180,7 +180,13 @@ render records one component at a time.
 are unknown, never a match. Credentials use `--token-env NAME` or repeated
 `--header-env name=NAME`; literal `--token`, `--header` and `--password` are refused.
 
-Exit codes: 0 success, 1 drift or stale output, 2 bad usage (as in doctor), 3 unreachable,
+Both `schema pull` and `doctor` refuse, with exit 2, to send a credential to an `http:` or `ws:` URL whose host isn't
+this machine, because anyone on the path can read it. Only exactly `localhost`, a literal 127.0.0.0/8 address and
+`[::1]` count as this machine: `localhost.` and `*.localhost` names can be sent to a DNS server.
+`--allow-insecure-credentials` sends it anyway, with a warning, for a network you trust such as a container network
+in CI. A refusal, not a warning, because a warning printed in CI goes unread and the credential has gone by then.
+
+Exit codes: 0 success, 1 drift or stale output, 2 bad usage or a refused credential (as in doctor), 3 unreachable,
 4 authentication refused (HTTP 401/403 or GraphQL 401/403/4401), 5 introspection unavailable or disabled.
 Server error text is suppressed by schema pull to avoid echoing credentials. From graphql-orm-router 0.11.0 introspection is off
 unless the router's configuration sets `"introspection": true`; then it also needs a valid bearer when the router authenticates.
@@ -216,6 +222,21 @@ artifact per root:
   field is optional when it is nullable or has a default. A non-null one with a default is optional
   but not nullable (`readonly Limit?: number`): leaving it out applies the server's default, and an
   explicit `null` is invalid ([#65](https://github.com/Dastari/graphql-orm-client/issues/65)).
+
+`generate` takes every `graphql(` followed by a quote as a candidate. When the `typescript` package can be loaded
+(an optional peer dependency, found from this package or the current directory), it parses each file that has one,
+with JSX for `.tsx` and `.jsx`, and skips a candidate in a comment or inside the text of another string, template,
+regular expression or JSX text; one inside a template's `${...}` is code and counts. It never drops a candidate it
+can't place: that one is kept with a warning naming the file and line, and a file TypeScript can't parse keeps every
+candidate, with a warning. Without TypeScript every candidate is kept, comments and strings included. A dropped
+document would silently remove an operation, which is worse than compiling a commented-out one.
+
+`generate --watch` generates, then generates again after a document, the schema snapshot or the config changes
+(a directory moved into or out of `documents` counts),
+debounced by 100 ms. A failed run prints its error and the watch carries on, and a run that produces the same module
+leaves the file alone, so a dev server doesn't reload. It uses `node:fs` `watch` on directories, recursively for
+`documents`. The watched paths come from the config at the start, so a change to `schema`, `documents` or
+`extensions` needs a restart. It doesn't combine with `--check`.
 
 The compiler validates the documents against the router's schema snapshot. A fragment on a
 type without a `NodeId` or a complete key is allowed; its data is stored inside the parent
@@ -534,6 +555,16 @@ is retried using thin: the verdict is `fallback-admitted` or `fallback-not-refus
 passes normally; `--strict` also fails `fallback-not-refused`, preserving the uncertainty rule. `SUBSCRIPTION_SCHEMA_RELOAD`,
 `SERVICE_UNAVAILABLE` and `SUBSCRIPTION_LIMIT_EXCEEDED` report `unknown`, not `refused`. One function (`assertReadOnly`)
 guards everything it sends. Credentials come only from named environment variables and aren't in its output.
+
+A type with no usable stream in the snapshot is `polling` when every live fragment on it polls by design: it
+declares `@poll(reason)`, or it is live only through the `live` setting ("implicit (live default)"). That passes, also
+under `--strict`, so turning on `live: "default"` doesn't fail a correct project's doctor. It is `missing` when an
+explicit `@live` fragment on it declares no poll (possible only with `strict.liveWithoutStream` lowered), and a stream
+the served schema no longer has is `missing` too.
+
+The report holds each error's code and a fixed description, not what the server said: an endpoint can put anything in
+an error message, and the report ends up in terminals and CI logs. A code is shown only when it is a plain name.
+`--server-messages` (`serverMessages` in `runDoctor`) puts the server's error text and socket close reasons back.
 
 ### Refused streams
 

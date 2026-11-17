@@ -2,24 +2,40 @@
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
 import { createHash } from "node:crypto"
 import { fileURLToPath } from "node:url"
-import { dirname, extname, join, relative, resolve } from "node:path"
+import { basename, dirname, extname, join, relative, resolve } from "node:path"
 
-const usage = `graphql-orm-client generate [--config graphql-orm-client.config.json] [--check]
+const usage = `graphql-orm-client generate [--config graphql-orm-client.config.json] [--check | --watch]
 graphql-orm-client schema pull --url <router> [--token-env NAME] [--header-env name=NAME] [--check] [--config path]
+                               [--allow-insecure-credentials]
 graphql-orm-client doctor --url <router> [--ws-url <url>] [--token-env NAME] [--header-env name=NAME]
-                          [--stream-ms 3000] [--strict] [--json] [--config graphql-orm-client.config.json]
+                          [--stream-ms 3000] [--strict] [--json] [--server-messages] [--allow-insecure-credentials]
+                          [--config graphql-orm-client.config.json]
 graphql-orm-client skills list
 graphql-orm-client skills install --target agents|codex|claude [--update]`
 
+/** A failure with an exit code. Thrown, so a watch can report one and carry on; the dispatch below exits with it. */
+class CliError extends Error {
+  constructor(message, code = 1) {
+    super(message)
+    this.exitCode = code
+  }
+}
+
 const [command, ...rest] = process.argv.slice(2)
 
-if (command === "generate") await generateCommand(rest)
-else if (command === "schema" && rest[0] === "pull") await schemaPullCommand(rest.slice(1))
-else if (command === "doctor") await doctorCommand(rest)
-else if (command === "skills") skillsCommand(rest)
-else {
-  console.log(usage)
-  process.exit(command ? 1 : 0)
+try {
+  if (command === "generate") await generateCommand(rest)
+  else if (command === "schema" && rest[0] === "pull") await schemaPullCommand(rest.slice(1))
+  else if (command === "doctor") await doctorCommand(rest)
+  else if (command === "skills") skillsCommand(rest)
+  else {
+    console.log(usage)
+    process.exit(command ? 1 : 0)
+  }
+} catch (error) {
+  if (!(error instanceof CliError)) throw error
+  console.error(error.message)
+  process.exit(error.exitCode)
 }
 
 /**
@@ -31,6 +47,15 @@ else {
  *   keys, versions, identityFields, lifetimes, persistence, scalars, importFrom, functionName   see GenerateOptions
  */
 async function generateCommand(args) {
+  if (args.includes("--watch")) {
+    if (args.includes("--check")) fail("--watch and --check don't go together: --check is for CI", 2)
+    return watchCommand(args)
+  }
+  console.log(await generateOnce(args))
+}
+
+/** Generate once and say what happened; throws a CliError for a failure. */
+async function generateOnce(args, { unchangedIsCurrent = false } = {}) {
   const { config, base, schema, sources, files, out } = await loadProject(args)
   const snapshotPath = resolve(base, config.schema)
   const tracked = existsSync(snapshotPath + ".sha256")
@@ -43,21 +68,68 @@ async function generateCommand(args) {
     fail(error.message)
   }
   if (tracked) generated = "// Schema snapshot sha256: " + hash + "\n" + generated
+  const current = existsSync(out) ? readFileSync(out, "utf8") : ""
   if (args.includes("--check")) {
-    const current = existsSync(out) ? readFileSync(out, "utf8") : ""
     if (current !== generated) fail(`${relative(base, out)} is out of date; run graphql-orm-client generate`)
-    console.log(`${relative(base, out)} is current (${sources.length} documents)`)
-    return
+    return `${relative(base, out)} is current (${sources.length} documents)`
   }
+  // A watch leaves an unchanged module alone, so a dev server doesn't reload for nothing.
+  if (unchangedIsCurrent && current === generated) return `${relative(base, out)} is current (${sources.length} documents)`
   mkdirSync(dirname(out), { recursive: true })
   writeFileSync(out, generated)
-  console.log(`Wrote ${relative(base, out)} (${sources.length} documents from ${files.length} files)`)
+  return `Wrote ${relative(base, out)} (${sources.length} documents from ${files.length} files)`
+}
+
+/**
+ * `generate --watch`: generate, then again after a document, the schema snapshot or the config changes. A failed run
+ * prints its error and the watch carries on. The watched paths come from the config at the start, so a change to
+ * `schema`, `documents` or `extensions` needs a restart.
+ */
+async function watchCommand(args) {
+  const configPath = configPathOf(args)
+  if (!existsSync(configPath)) fail(`No config at ${configPath}`)
+  let config
+  try { config = JSON.parse(readFileSync(configPath, "utf8")) }
+  catch (error) { fail(`${configPath}: ${error.message}`) }
+  if (!config.schema || !config.out) fail("The config needs `schema` and `out`")
+  const base = dirname(configPath)
+  const out = resolve(base, config.out)
+  const extensions = config.extensions ?? [".ts", ".tsx"]
+  const one = (path) => ({ directory: dirname(path), recursive: false, accept: (file) => file === basename(path) })
+  const targets = [one(configPath), one(resolve(base, config.schema))]
+  for (const entry of config.documents ?? ["src"]) {
+    const path = resolve(base, entry)
+    if (!existsSync(path)) console.error(`Not watching ${entry}: it doesn't exist`)
+    else if (statSync(path).isFile()) targets.push(one(path))
+    else targets.push({
+      directory: path,
+      recursive: true,
+      accept: (file) => {
+        const full = resolve(path, file)
+        if (full === out || file.split(/[\\/]/).some((part) => part === "node_modules" || part.startsWith("."))) return false
+        if (extensions.includes(extname(file))) return true
+        // A directory moved in or out is one event for its name, whatever documents it holds.
+        return !existsSync(full) || statSync(full).isDirectory()
+      },
+    })
+  }
+  const { watchFiles } = await import("../dist/compiler/watch.js")
+  watchFiles({
+    targets: targets.filter((target) => existsSync(target.directory)),
+    run: async () => console.log(await generateOnce(args, { unchangedIsCurrent: true })),
+    onError: (error) => console.error(error instanceof CliError ? error.message : error?.stack ?? String(error)),
+  })
+  console.log(`Watching ${relative(process.cwd(), configPath) || configPath}, its schema and its documents. Ctrl-C stops.`)
+}
+
+function configPathOf(args) {
+  const configIndex = args.indexOf("--config")
+  return resolve(configIndex >= 0 ? args[configIndex + 1] : "graphql-orm-client.config.json")
 }
 
 /** The config, its schema snapshot and the documents it names, for generate and doctor. */
 async function loadProject(args) {
-  const configIndex = args.indexOf("--config")
-  const configPath = resolve(configIndex >= 0 ? args[configIndex + 1] : "graphql-orm-client.config.json")
+  const configPath = configPathOf(args)
   if (!existsSync(configPath)) fail(`No config at ${configPath}`)
   const config = JSON.parse(readFileSync(configPath, "utf8"))
   const base = dirname(configPath)
@@ -70,7 +142,8 @@ async function loadProject(args) {
   const documentPaths = {}
   const sources = files.flatMap((file) => {
     try {
-      const documents = extractDocuments(readFileSync(file, "utf8"), config.functionName ?? "graphql")
+      const fileName = relative(base, file).split("\\").join("/")
+      const documents = extractDocuments(readFileSync(file, "utf8"), config.functionName ?? "graphql", { fileName })
       for (const text of documents) (documentPaths[text] ??= []).push(relative(base, file).split("\\").join("/"))
       return documents
     } catch (error) {
@@ -109,7 +182,9 @@ async function doctorCommand(args) {
   } catch (error) {
     fail(`The documents don't compile against the schema snapshot:\n${error.message}`)
   }
-  const report = await runDoctor({ url, wsUrl: value("--ws-url"), headers, compiled, streamMs, strict: args.includes("--strict") })
+  const report = await runDoctor({
+    url, wsUrl: value("--ws-url"), headers, compiled, streamMs, strict: args.includes("--strict"), serverMessages: args.includes("--server-messages"),
+  })
   console.log(args.includes("--json") ? JSON.stringify(report, null, 2) : formatDoctorReport(report))
   process.exit(report.passed ? 0 : 1)
 }
@@ -139,12 +214,31 @@ function endpointOptions(args) {
     if (!process.env[name]) fail(`The environment variable ${name} is empty`, 2)
     headers[entry.slice(0, at)] = process.env[name]
   }
-  try {
-    const endpoint = new URL(url)
-    if (!["http:", "https:"].includes(endpoint.protocol) || endpoint.username || endpoint.password)
-      fail("Use an HTTP endpoint without embedded credentials", 2)
-  } catch { fail("Invalid --url endpoint", 2) }
+  const endpoints = [["--url", url, ["http:", "https:"]]]
+  if (value("--ws-url") !== undefined) endpoints.push(["--ws-url", value("--ws-url"), ["ws:", "wss:"]])
+  for (const [flag, text, protocols] of endpoints) {
+    const endpoint = URL.canParse(text) ? new URL(text) : null
+    if (!endpoint) fail(`Invalid ${flag} endpoint`, 2)
+    if (!protocols.includes(endpoint.protocol) || endpoint.username || endpoint.password)
+      fail(`${flag} takes a ${protocols.join(" or ")} endpoint without embedded credentials`, 2)
+    // A credential sent over http: or ws: can be read on the way. This machine is the exception.
+    if (Object.keys(headers).length && ["http:", "ws:"].includes(endpoint.protocol) && !isLoopback(endpoint.hostname)) {
+      const message = `a credential would be sent in clear text to ${endpoint.origin}`
+      if (!args.includes("--allow-insecure-credentials"))
+        fail(`Refused: ${message}. Use https: or wss:, or pass --allow-insecure-credentials for a network you trust.`, 2)
+      console.error(`Warning: ${message}, as --allow-insecure-credentials allows.`)
+    }
+  }
   return { value, url, headers }
+}
+
+/**
+ * Exactly `localhost`, a literal 127.0.0.0/8 address or `[::1]`. `URL` has already lowercased the name and written
+ * IPv4 and IPv6 literals in their shortest form, so `127.1` and `[0:0:0:0:0:0:0:1]` arrive as `127.0.0.1` and `[::1]`.
+ * Other names, `localhost.` and `*.localhost` among them, can be sent to a DNS server, so they don't count.
+ */
+function isLoopback(hostname) {
+  return hostname === "localhost" || hostname === "[::1]" || /^127(\.\d{1,3}){3}$/.test(hostname)
 }
 
 async function schemaPullCommand(args) {
@@ -166,6 +260,7 @@ async function schemaPullCommand(args) {
     if (Object.values(headers).some((secret) => snapshot.includes(secret) || (secret.startsWith("Bearer ") && snapshot.includes(secret.slice(7)))))
       fail("Schema contains a credential value; snapshot not written")
   } catch (error) {
+    if (error instanceof CliError) throw error
     fail("Schema: unknown. " + (error.schemaCode ?? "Introspection failed"), error.exitCode ?? 1)
   }
   const hash = digest(snapshot) + "\n"
@@ -219,6 +314,5 @@ function skillsCommand([action, ...args]) {
 }
 
 function fail(message, code = 1) {
-  console.error(message)
-  process.exit(code)
+  throw new CliError(message, code)
 }

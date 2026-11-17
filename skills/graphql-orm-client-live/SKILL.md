@@ -95,8 +95,10 @@ pnpm exec graphql-orm-client doctor --url https://router.example/graphql --token
 ```
 
 It checks every document against the served schema and opens each live stream for up to `--stream-ms` (3000), for that token's identity. It runs
-introspection and subscriptions only. `--json` prints the report as JSON. graphql-orm-router 0.11.0 and later refuse introspection
-unless their configuration sets `"introspection": true`; the doctor then exits 5, `introspection unavailable or disabled`.
+introspection and subscriptions only. `--json` prints the report as JSON. It prints each error's code and a fixed description; `--server-messages`
+adds what the server said. It won't send the token to an `http:` or `ws:` URL on another machine unless you pass `--allow-insecure-credentials`.
+graphql-orm-router 0.11.0 and later refuse introspection unless their configuration sets `"introspection": true`; the doctor then exits 5,
+`introspection unavailable or disabled`.
 
 | Verdict | Meaning | Exit |
 | --- | --- | --- |
@@ -104,7 +106,8 @@ unless their configuration sets `"introspection": true`; the doctor then exits 5
 | `not-refused` | No error and no event | 0; 1 with `--strict` |
 | `fallback-admitted`, `fallback-not-refused` | The full selection was refused, and keys only works. Every event then means a re-read | 0; the second is 1 with `--strict` |
 | `refused <code>` | The server said no | 1 |
-| `missing` | The type has live fragments and no `Changed` subscription | 1 |
+| `polling` | No `Changed` subscription, and every live fragment on the type polls by design: `@poll(reason)`, or live only through `live: "default"` | 0 |
+| `missing` | A `@live` fragment with no `Changed` subscription and no `@poll(reason)`, or a stream the served schema lacks | 1 |
 | `invalid` | The document no longer validates against the served schema | 1 |
 | `unknown` | It couldn't be tested | 1 |
 

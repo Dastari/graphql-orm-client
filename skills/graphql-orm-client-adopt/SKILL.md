@@ -16,6 +16,8 @@ The client only works against graphql-orm services and their router.
    Set `schema` in the project config first. Commit the SDL and its `.sha256` sidecar.
    Use `schema pull --check` in CI for server drift; it never writes and an unreachable server fails.
    Credentials come from `--token-env NAME` or `--header-env name=NAME`, never literal flags.
+   A credential isn't sent to an `http:` URL on another machine: use `https:`, or pass
+   `--allow-insecure-credentials` for a trusted network such as a CI container network.
    It reads the schema by introspection, which graphql-orm-router 0.11.0 and later refuse unless their configuration sets
    `"introspection": true` (exit 5).
    Once the hash exists, `generate --check` also verifies snapshot integrity and provenance.
@@ -24,7 +26,8 @@ The client only works against graphql-orm services and their router.
    `scalars`; `keys` for composite or non-`Id` keys on types without `NodeId`; `versions` only for a version field other than graphql-orm's `RecordVersion`, or `null` to stop selecting it). A `versions`
    field must be `Int` or `Float`, or generation fails; for a decimal integer sent as a string write
    `{ "field": "Revision", "compare": "decimal" }`.
-   Run `graphql-orm-client generate`, and run `generate --check` in CI. Write every document with
+   Run `graphql-orm-client generate` (`generate --watch` keeps it running and regenerates on each change), and run
+   `generate --check` in CI. With `typescript` installed, a `graphql()` call inside a comment or another string isn't a document; without it, every call is. Write every document with
    the generated `graphql()`, one operation or fragment per call, so each carries its own types
    and an invalid field fails the build.
 3. **Client.** Create one client per signed-in identity with `createClient`. When the identity
