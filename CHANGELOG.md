@@ -42,6 +42,41 @@ and freed with them; handles for the same variables still share it
 `docs/example.md` builds two related graphql-orm entities, their service, and a page that lists, adds and closes rows and stays
 current, checked against graphql-orm 0.94.0.
 
+### Changed: conformance runs against graphql-orm 0.170.0 and router 0.15.5
+
+The real-server suite now runs on `graphql-orm-v0.90.1`, `v0.94.0`, `v0.126.0` (router 0.11.0) and `v0.170.0` (router 0.15.5)
+([#56](https://github.com/Dastari/graphql-orm-client/issues/56), [#78](https://github.com/Dastari/graphql-orm-client/issues/78)).
+The package's behaviour doesn't change. What the runs found, recorded in `docs/graphql-orm-contract.md`:
+
+- From router 0.11.0, `schema pull` and the doctor need `"introspection": true` in the router's configuration; without it they
+  exit 5.
+- From router 0.8.3 a schema reload no longer sends `complete` after `error`, so Node clients need no `allowSynchronousEvents: false`.
+- From router 0.9.0 a router that drops frames ends the streams with `SUBSCRIPTION_CONTINUITY_LOST`, and they restart and read.
+  `live.burstRead` stays on by default, still needed for routers before 0.9.0.
+- `node` for a missing row is null once an owner field is selected, so `refetchFragment` of a row deleted elsewhere removes it.
+
+Nothing to change in applications.
+
+### Added: graphql 17 as a peer
+
+The `graphql` peer range is now `^16.9.0 || ^17.0.0`, so an application on graphql 17 no longer gets a peer warning or a second
+copy of `graphql` ([#80](https://github.com/Dastari/graphql-orm-client/issues/80)). CI runs `pnpm check` and `pnpm build` with
+both.
+
+What you get from `generate` and `schema pull` is the same text with either version. graphql 17 prints an object value as
+`{ a: 1 }` where 16 prints `{a: 1}`, and prints a schema default as written where 16 prints it coerced, with the input fields' own
+defaults filled in. Left alone, that would have changed operation text and hashes, the persistence `schemaHash`, and the schema
+snapshot and its `.sha256` whenever a project changed graphql version, so `generate --check` and `schema pull --check` would fail
+for a team on mixed versions. The compiler and `schema pull` now print both as graphql 16 does. Nothing changes for a project on 16.
+
+Moving an application to graphql 17:
+
+1. Install graphql 17 and remove any override that held it at 16.
+2. Run `graphql-orm-client generate --check` and `graphql-orm-client schema pull --check`; both should pass with no changes.
+3. graphql 17 validates more of a schema than 16 did, for example argument and input field defaults. A router snapshot 16
+   accepted can fail `generate` on 17; the message names the default to fix, and the fix belongs in the service's schema.
+4. Validation messages from `generate` and `doctor` come from graphql and read differently on 17. Don't match on their text.
+
 ### Fixed: a keyless type with a `Changed` stream was skipped without a word
 
 A type can have a usable `Changed` stream and still have no key, usually because the project set `keys: { Type: null }`. Its fragments

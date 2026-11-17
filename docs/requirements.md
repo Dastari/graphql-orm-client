@@ -139,7 +139,7 @@ their own.
 
  Mutations have `policy: "no-store"` (0.1.0-alpha.6). What remains: a way to
 declare this in the document so it can't be forgotten at a call site, the same for query results, and
-keeping such values out of persistence (R17) and any inspector.
+keeping such values out of persistence (R17) and any inspector (R31).
 *Acceptance:* an operation declared sensitive leaves its values nowhere in the store, with no call-site
 option, and a test proves it.
 
@@ -207,8 +207,8 @@ excludes R9, and is deleted by an explicit `clear()` on sign-out, which also sto
 a stale keyset cursor can be accepted at the wrong place.
 
 **R18. Route loading.** `loadQuery`, or similar, starts a route's query before mount, so a router's
-loader can avoid a waterfall. Suspense is optional. Decide on fragment arguments
-(`@argumentDefinitions`) and support for `@skip`/`@include`. Server rendering stays a non-goal, but
+loader can avoid a waterfall. Suspense is optional (R29). Fragment arguments (R28) and `@skip`/`@include` (R27)
+are recorded separately. Server rendering stays a non-goal, but
 document how the client behaves inside a framework that renders a shell on the server.
 *Built:* `client.loadQuery` and `useLoadedQuery` share a retained read across loader and mount,
 with abort, unused-load timeout and StrictMode replay cleanup. Non-Suspense. Conditional selections
@@ -227,7 +227,56 @@ and the router's codes to an `ErrorKind`, with `unknown` for anything else. Miss
 `Success: false` carries only free text (`Error: "Entity not found"`); requested as
 [graphql-orm#385](https://github.com/Dastari/graphql-orm/issues/385).
 
-**R27. Generated input types follow input coercion. Built.** A non-null input object field with a default may be left out, so its
+**R27. Conditional selections. Proposed, not built** ([#100](https://github.com/Dastari/graphql-orm-client/issues/100), from
+[#84](https://github.com/Dastari/graphql-orm-client/issues/84)). `@skip` and `@include` on fields, spreads and inline fragments are evaluated with the
+operation's variables in readers and normalisation, so a skipped field is neither missing nor a cause of a re-read.
+Generated types make conditional selections optional. A live projection never selects a field unconditionally that a
+holder selects conditionally. `conditionalDirectives: "legacy"` goes away afterwards, with migration steps.
+*Acceptance:* a query with `@include(if: $detail)` on a field and `@skip` on a spread reads complete for both values,
+has optional generated types for both, and re-reads on a change of the variable without treating the record as
+missing. No stream selects a field that a holder includes only conditionally.
+
+**R28. Fragment arguments. Proposed, not built** ([#101](https://github.com/Dastari/graphql-orm-client/issues/101), from
+[#84](https://github.com/Dastari/graphql-orm-client/issues/84)). A fragment declares local arguments with types and defaults (`@argumentDefinitions`), and a
+spread passes values (`@arguments`). Each argument set has its own fragment reference identity and reader scope.
+Fields with arguments stay out of streams, as R2 already requires.
+*Acceptance:* one query spreads a fragment twice with different values under two aliases, and each reader gets its own
+values, with exact generated types. A spread missing a required argument fails `generate`, naming the fragment and the
+argument.
+
+**R29. Suspense. Proposed, not built** ([#102](https://github.com/Dastari/graphql-orm-client/issues/102), from [#84](https://github.com/Dastari/graphql-orm-client/issues/84)). A React read of a
+`loadQuery` handle that suspends until it has data and sends errors to an error boundary. The loader still starts the
+request, so suspending adds no waterfall. Disposing the client releases a suspended read and never resolves it into
+another identity's tree. Server rendering stays a non-goal.
+*Acceptance:* a route loaded in its loader and read with the suspending hook shows its fallback, then its data, with one
+request under StrictMode; an error reaches an error boundary; disposing the client while suspended leaves nothing
+retained and nothing rendered under the next identity.
+
+**R30. Per-type freshness. Proposed, not built** ([#103](https://github.com/Dastari/graphql-orm-client/issues/103), from [#85](https://github.com/Dastari/graphql-orm-client/issues/85)). A per-type
+`staleMs`: how long a record counts as fresh after a server write. A `store-or-network` read answers from the store
+only when every record it reaches is complete and fresh. A type with no setting behaves as today, and lifetime fields
+(R17) still decide expiry. Whether a stream's coverage keeps a record fresh is decided while building, since live
+delivery is never the only path to correct data.
+*Acceptance:* with one minute for a type, on the test clock, a `store-or-network` read within a minute of the last write
+sends no request and one after a minute sends one; a type with no setting is unchanged; an event's write restarts the
+age.
+
+**R31. A store inspector. Proposed, not built** ([#104](https://github.com/Dastari/graphql-orm-client/issues/104), from [#85](https://github.com/Dastari/graphql-orm-client/issues/85)). A
+development-only inspector, in its own entry point, shows the records in a client's store, the queries holding each,
+the streams covering it, and why a query re-read. It never receives an R9 (`@sensitive`) result or a `no-store`
+mutation result, from the store or the network layer, and it drops everything when its client is disposed.
+*Acceptance:* in a test it lists a record with its holders and covering stream and records a re-read's cause; nothing
+it was given contains a value from an `@sensitive` query or a `no-store` mutation; it holds nothing after dispose; the
+main bundle is unchanged.
+
+**R32. Both current graphql versions.** An application can use graphql 16 or 17 as the single copy of `graphql`, and
+the generated output, operation hashes and schema snapshot are the same text with either
+([#80](https://github.com/Dastari/graphql-orm-client/issues/80)).
+*Acceptance:* `pnpm check` and `pnpm build` pass with graphql 16 and 17 in CI, the peer range admits both, and anything the
+compiler uses that changed between them is handled.
+*Built:* peer `^16.9.0 || ^17.0.0`, a CI job on 17, and printing of object values and schema defaults that matches graphql 16.
+
+**R33. Generated input types follow input coercion. Built.** A non-null input object field with a default may be left out, so its
 generated type is optional and not nullable (`readonly Limit?: number`), as a defaulted variable already was. Callers no longer repeat
 server defaults ([#65](https://github.com/Dastari/graphql-orm-client/issues/65)). *Acceptance:* nested inputs and lists of inputs
 generate optional, non-nullable fields for `Int! = 0`, `Boolean! = false`, `[String!]! = []` and similar.
@@ -248,6 +297,13 @@ from `graphql-orm-v0.90.1` (router 0.8.1), with a version matrix in CI. It asser
 key modes, continuity frames, node lookup, managed version ordering and pagination, and repeats
 Node and browser recovery, on Chromium, Firefox and WebKit. See [the coverage and fixture limits](../conformance/README.md).
 A conformance failure remains a failure; this does not claim the proposed R2/R3 behaviour is built.
+The matrix keeps a current graphql-orm and router in it, and the suite follows router changes that alter what it can read, such as
+introspection turned off by default ([#56](https://github.com/Dastari/graphql-orm-client/issues/56)), and re-checks what the client
+does because of server bugs once they are fixed ([#78](https://github.com/Dastari/graphql-orm-client/issues/78)).
+*Acceptance:* CI runs the current graphql-orm release and its router; the contract's status line and rows say what was read or run
+at which version; burst loss, `complete` after `error`, and `node` for an unknown id each have a recorded result.
+*Built:* CI runs `graphql-orm-v0.90.1`, `v0.94.0`, `v0.126.0` (router 0.11.0) and `v0.170.0` (router 0.15.5); results are in
+[the contract](graphql-orm-contract.md).
 
 **R22. Budgets.** Checked in CI: 10,000 rows in the store, a burst of 100 events a second, the
 compile time of 250 documents against a 45,000-line schema, the bundle size of the main and react
