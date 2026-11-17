@@ -41,7 +41,7 @@ try {
 /**
  * Config (JSON):
  *   schema       path to the router SDL snapshot
- *   documents    directories or files to scan for graphql(...) calls (default ["src"])
+ *   documents    directories or files to scan for graphql(...) calls, not globs (default ["src"])
  *   out          the generated module
  *   extensions   file extensions to scan (default [".ts", ".tsx"])
  *   keys, versions, identityFields, lifetimes, persistence, scalars, importFrom, functionName   see GenerateOptions
@@ -138,7 +138,7 @@ async function loadProject(args) {
   const { extractDocuments } = await import("../dist/compiler/index.js")
   const out = resolve(base, config.out)
   const extensions = config.extensions ?? [".ts", ".tsx"]
-  const files = (config.documents ?? ["src"]).flatMap((entry) => walk(resolve(base, entry), extensions, out))
+  const files = documentEntries(config, base).flatMap((entry) => walk(resolve(base, entry), extensions, out))
   const documentPaths = {}
   const sources = files.flatMap((file) => {
     try {
@@ -276,6 +276,22 @@ async function schemaPullCommand(args) {
   writeFileSync(path, snapshot)
   writeFileSync(path + ".sha256", hash)
   console.log("Wrote " + config.schema + " and " + config.schema + ".sha256")
+}
+
+/**
+ * `documents` takes directories or files. An entry that doesn't exist used to be skipped without a word, so a glob gave an empty
+ * module. A glob, or a list with no entry that exists, fails; one missing entry among others that exist is a warning.
+ */
+function documentEntries(config, base) {
+  const entries = config.documents ?? ["src"]
+  const missing = entries.filter((entry) => !existsSync(resolve(base, entry)))
+  const glob = missing.find((entry) => /[*?[\]{}]/.test(entry))
+  if (glob !== undefined)
+    fail(`documents: ${JSON.stringify(glob)} doesn't exist. documents takes directories or files, not globs, such as ["src"]`)
+  if (entries.length > 0 && missing.length === entries.length)
+    fail(`documents: none of ${entries.map((entry) => JSON.stringify(entry)).join(", ")} exists next to ${relative(process.cwd(), base) || "."}`)
+  for (const entry of missing) console.error(`Warning: documents entry ${JSON.stringify(entry)} doesn't exist; skipping it`)
+  return entries
 }
 
 function walk(path, extensions, exclude) {

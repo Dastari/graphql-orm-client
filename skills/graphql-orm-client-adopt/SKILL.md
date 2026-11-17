@@ -22,7 +22,7 @@ The client only works against graphql-orm services and their router.
    `"introspection": true` (exit 5).
    Once the hash exists, `generate --check` also verifies snapshot integrity and provenance.
    After pulling a changed schema, run `generate`. Existing projects without a sidecar keep working.
-2. **Generate.** Add `graphql-orm-client.config.json` (`schema`, `documents`, `out`,
+2. **Generate.** Add `graphql-orm-client.config.json` (`schema`, `documents` as directories or files, not globs, `out`,
    `scalars`; `keys` for composite or non-`Id` keys on types without `NodeId`; `versions` only for a version field other than graphql-orm's `RecordVersion`, or `null` to stop selecting it). A `versions`
    field must be `Int` or `Float`, or generation fails; for a decimal integer sent as a string write
    `{ "field": "Revision", "compare": "decimal" }`.
