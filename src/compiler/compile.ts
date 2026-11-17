@@ -96,6 +96,12 @@ export interface CompileResult {
   readonly live: Readonly<Record<string, LiveArtifact>>
   /** Types with live fragments but no usable `Changed` subscription; they need polling. */
   readonly liveUnavailable: readonly string[]
+  /**
+   * Live fragments with no `@live` directive, which are live through the `live` setting. The doctor reports a type
+   * whose streamless fragments are all implicit, or declare `@poll(reason)`, as polling by design. Absent in a result
+   * built before this field existed, which the doctor reads as no implicit fragments.
+   */
+  readonly implicitLive?: readonly string[]
 }
 
 export class CompileError extends Error {
@@ -464,7 +470,8 @@ function compileDocuments(
   }
   shareBatches(schema, operations, fragments, options)
   const refetchable = compileRefetch(schema, fragments, fragmentNodes, operationNames, options)
-  return { operations, fragments: { ...fragments, ...refetchable }, live, liveUnavailable }
+  const implicitLive = [...fragmentNodes].filter(([name, node]) => fragments[name]?.live && !node.directives?.some((d) => d.name.value === "live")).map(([name]) => name).sort()
+  return { operations, fragments: { ...fragments, ...refetchable }, live, liveUnavailable, implicitLive }
 }
 
 /**

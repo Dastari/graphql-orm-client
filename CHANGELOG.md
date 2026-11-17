@@ -42,6 +42,43 @@ and freed with them; handles for the same variables still share it
 `docs/example.md` builds two related graphql-orm entities, their service, and a page that lists, adds and closes rows and stays
 current, checked against graphql-orm 0.94.0.
 
+### Fixed: the doctor failed a type that polls by design
+
+A type with no `Changed` stream whose live fragments all poll by design, because each declares `@poll(reason)` or is live
+only through `live: "default"`, now reports `polling` and passes, with the reason or "implicit (live default)". It used to
+report `missing` and fail the run, so turning on the live default failed a correct project's doctor
+([#57](https://github.com/Dastari/graphql-orm-client/issues/57)). `missing` remains for an explicit `@live` with no declared
+poll and for a stream the served schema lacks. `CompileResult.implicitLive` lists the fragments live through the setting.
+
+If a script reads `--json` and switches on `verdict`, add `polling`.
+
+### Changed: the doctor withholds server error text, and the CLI won't send a credential in clear text
+
+- `doctor` reports each error's code and a fixed description, such as "the server refused the stream; its message is
+  withheld", instead of the server's message, and a socket's close code without its reason. An introspection failure says
+  "introspection unavailable or disabled (HTTP <status>)". A code that isn't a plain name is left out.
+  `--server-messages` restores the previous text.
+- `doctor` and `schema pull` refuse, with exit 2, to send a credential (`--token-env`, `--header-env`) to an `http:` or `ws:`
+  URL whose host isn't this machine. `localhost`, `.localhost` names, 127.0.0.0/8 and `[::1]` are allowed.
+  `--allow-insecure-credentials` sends it with a warning. `doctor --ws-url` now has to be a `ws:` or `wss:` URL without
+  embedded credentials.
+
+([#76](https://github.com/Dastari/graphql-orm-client/issues/76))
+
+Migration: a CI job that runs either command with a credential against `http://<host>` on another machine, such as a
+container network, now fails. Use `https:`, or add `--allow-insecure-credentials`. To see server messages in the doctor's
+report again, add `--server-messages`.
+
+### Added: `generate --watch`, and extraction that skips comments and strings
+
+`graphql-orm-client generate --watch` generates, then regenerates after a document, the schema snapshot or the config
+changes. A failed run prints its error and the watch continues. It uses `node:fs` and adds no dependency.
+
+Fixed with it: generation found `graphql(` followed by a quote anywhere in a file, so a commented-out call was compiled and
+could fail generation or add an operation nothing used. Only calls in code count now; one in a comment, or inside the text
+of another string or template, is skipped ([#81](https://github.com/Dastari/graphql-orm-client/issues/81)). Run `generate`:
+if the module changes, it had an operation or fragment that was only in a comment or a string.
+
 ## 0.1.0-alpha.12 (2026-11-07)
 
 Install from the GitHub release archive:

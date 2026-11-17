@@ -111,11 +111,23 @@ run, never a mutation. Admission can't be known at build time, and it is the com
 silently stale data.
 *Acceptance:* it names a refused stream and a document that no longer validates, with a non-zero exit.
 *Built in 0.1.0-alpha.9.* It runs introspection and subscriptions only, with no reads of application data.
+A type whose live fragments poll by design (a declared `@poll(reason)`, or live only through the `live` setting)
+reports `polling` and passes; `missing` is for an undeclared one
+([#57](https://github.com/Dastari/graphql-orm-client/issues/57)). The report holds error codes and fixed descriptions,
+and the server's text only when asked, and a credential isn't sent in clear text to another machine without an
+explicit flag ([#76](https://github.com/Dastari/graphql-orm-client/issues/76)).
+*Acceptance:* under `live: "default"`, a project whose only streamless type is implicitly live passes; an endpoint's
+error message isn't printed by default; a token with a non-loopback `http:` URL is refused in `doctor` and `schema pull`.
 
 **R23. Schema pull with drift detection.** `graphql-orm-client schema pull` writes the snapshot and
 its hash. `generate --check` fails when generated output doesn't match. Consumers currently write
 their own.
 *Built:* sorted SDL snapshots, SHA-256 sidecars, read-only drift checks and opt-in generation integrity checks.
+`generate --watch` regenerates after a document, snapshot or config change and reports errors without exiting, and
+generation ignores a `graphql()` call inside a comment or another string
+([#81](https://github.com/Dastari/graphql-orm-client/issues/81)).
+*Acceptance:* a watch regenerates after each change and survives an invalid document; a commented-out call isn't
+extracted.
 
 ## 3. What real applications need beyond records
 

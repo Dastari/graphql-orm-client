@@ -19,6 +19,45 @@ describe("extractDocuments", () => {
     expect(extractDocuments(code)).toEqual(['query A { Widget(Id: "x") { Name } }', "fragment B on Widget { Name }"])
     expect(() => extractDocuments("graphql(`query ${name} { x }`)")).toThrow(/interpolate/)
   })
+
+  it("skips calls inside line and block comments", () => {
+    const code = [
+      "// const Old = graphql(`query Old { x }`)",
+      "/* const Older = graphql(`query Older { ${interpolated} }`)",
+      "   graphql(\"query Oldest { x }\") */",
+      "/** Example: graphql(`fragment Doc on Widget { Name }`) */",
+      "const A = graphql(`query A { x }`) // graphql(`query Trailing { x }`)",
+      "const B = /* inline */ graphql(`query B { x }`)",
+    ].join("\n")
+    expect(extractDocuments(code)).toEqual(["query A { x }", "query B { x }"])
+  })
+
+  it("skips calls inside other strings and template text, and finds them inside interpolations", () => {
+    const code = [
+      "const help = \"call graphql(`query InDouble { x }`) to start\"",
+      "const quoted = 'graphql(\"query InSingle { x }\")'",
+      "const text = `use graphql(\"query InTemplate { x }\") here`",
+      "const url = \"http://example.test/graphql\"; const A = graphql(`query A { x }`)",
+      "const escaped = \"a \\\" graphql(`query AfterEscape { x }`)\"",
+      "const nested = `${wrap(graphql(`query Nested { x }`))} and ${'}'}`",
+      "const after = graphql('query After { x }')",
+    ].join("\n")
+    expect(extractDocuments(code)).toEqual(["query A { x }", "query Nested { x }", "query After { x }"])
+  })
+
+  it("reads a regular expression as one, so its quotes don't hide a call", () => {
+    const code = [
+      "const quote = /['\"`]/g, slash = /\\//; const A = graphql(`query A { x }`)",
+      "const ratio = total / count; const B = graphql(`query B { x }`) // ' unbalanced",
+      "const C = graphql(`query C { x }`)",
+    ].join("\n")
+    expect(extractDocuments(code)).toEqual(["query A { x }", "query B { x }", "query C { x }"])
+  })
+
+  it("finds a call after a JSX apostrophe on an earlier line", () => {
+    const code = ["const view = <p>Don't panic</p>", "const A = graphql(`query A { x }`)"].join("\n")
+    expect(extractDocuments(code)).toEqual(["query A { x }"])
+  })
 })
 
 describe("generate", () => {

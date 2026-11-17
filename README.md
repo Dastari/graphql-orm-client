@@ -28,6 +28,7 @@ Install a [release archive](https://github.com/Dastari/graphql-orm-client/releas
 ```sh
 pnpm exec graphql-orm-client schema pull --url https://router.example/graphql --token-env TOKEN
 pnpm exec graphql-orm-client generate          # after any document or schema change
+pnpm exec graphql-orm-client generate --watch  # or keep it running while you work
 pnpm exec graphql-orm-client generate --check  # in CI: fail when it's out of date
 ```
 
