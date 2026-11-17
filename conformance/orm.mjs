@@ -17,6 +17,9 @@ import { compile } from '../dist/compiler/index.js'
 import { classifyError, createClient, createHttpNetwork, graphqlWsTransport, encodeNodeId, readFragment } from '../dist/index.js'
 
 const scratch = process.env.CONFORMANCE_SCRATCH
+// The router version, from what run.mjs installed. Compared as [major, minor, patch].
+const routerVersion = (process.env.ROUTER_VERSION ?? '0.8.1').split('.').map(Number)
+const routerAtLeast = (...version) => { for (let i = 0; i < 3; i++) if (routerVersion[i] !== version[i]) return routerVersion[i] > version[i]; return true }
 const base = Number(process.env.PORT_BASE ?? 42000)
 assert(base >= 42000 && base + 4 <= 42099)
 const serviceUrl = `http://127.0.0.1:${base+1}`
@@ -113,8 +116,8 @@ async function startRouter() {
  await until('router ready',async()=>{if(router.exitCode!==null)throw Error(`Router exited ${router.exitCode}`);try{return !!(await post('{__typename}')).data}catch{return false}})
 }
 async function stopRouter() { const p=router; await new Promise(r=>{p.once('exit',r);p.kill('SIGKILL')}) }
-async function raw() {
- const ws=new WebSocket(routerUrl.replace('http','ws'),'graphql-transport-ws');sockets.add(ws)
+async function raw(url=routerUrl) {
+ const ws=new WebSocket(url.replace('http','ws'),'graphql-transport-ws');sockets.add(ws)
  const frames=[];ws.on('message',d=>frames.push(JSON.parse(d)))
  await new Promise((r,j)=>{ws.once('open',r);ws.once('error',j)})
  ws.send(JSON.stringify({type:'connection_init',payload:{authorization:`Bearer ${token}`}}))
@@ -131,7 +134,8 @@ try {
  await listen(remote,base+4)
  child(process.env.SERVICE_BIN,[],{SERVICE_PORT:String(base+1),SERVICE_DATABASE:`sqlite://${scratch}/service.db?mode=rwc`})
  await until('service ready',async()=>{try{originalSdl=await(await fetch(`${serviceUrl}/sdl`)).text();originalDescriptor=await(await fetch(`${serviceUrl}/.well-known/graphql-router`)).json();return true}catch{return false}})
- await writeFile(`${scratch}/router.json`,JSON.stringify({listener:`127.0.0.1:${base+2}`,graphqlPath:'/graphql',nodeLookup:{},authentication:{jwksUrl:`${frontUrl}/jwks`,issuer:'https://conformance.local',audiences:['graphql-router'],allowInsecureLoopbackJwks:true},subscriptions:{maxOperationsPerConnection:32},schemaPollIntervalMs:200,gracefulShutdownTimeoutSeconds:1,subgraphs:[{name:'widgets',graphqlUrl:`${serviceUrl}/graphql`,sdlUrl:`${frontUrl}/sdl`,protocolUrl:`${frontUrl}/.well-known/graphql-router`},{name:'remote',graphqlUrl:`${remoteUrl}/graphql`,sdlUrl:`${remoteUrl}/sdl`,protocolUrl:`${remoteUrl}/.well-known/graphql-router`}]}))
+ // From router 0.11.0 introspection is off by default; the suite and doctor read the schema through it. Older routers refuse the field.
+ await writeFile(`${scratch}/router.json`,JSON.stringify({listener:`127.0.0.1:${base+2}`,graphqlPath:'/graphql',...(routerAtLeast(0,11,0)?{introspection:true}:{}),nodeLookup:{},authentication:{jwksUrl:`${frontUrl}/jwks`,issuer:'https://conformance.local',audiences:['graphql-router'],allowInsecureLoopbackJwks:true},subscriptions:{maxOperationsPerConnection:32},schemaPollIntervalMs:200,gracefulShutdownTimeoutSeconds:1,subgraphs:[{name:'widgets',graphqlUrl:`${serviceUrl}/graphql`,sdlUrl:`${frontUrl}/sdl`,protocolUrl:`${frontUrl}/.well-known/graphql-router`},{name:'remote',graphqlUrl:`${remoteUrl}/graphql`,sdlUrl:`${remoteUrl}/sdl`,protocolUrl:`${remoteUrl}/.well-known/graphql-router`}]}))
  await startRouter()
  const schema=buildClientSchema((await post(getIntrospectionQuery())).data)
  await writeFile(`${scratch}/introspection.json`,JSON.stringify((await post(getIntrospectionQuery())).data))
@@ -189,6 +193,37 @@ try {
  assert.equal(slot.NodeId,encodeNodeId('Slot',['north','a']))
  assert.equal((await post('query($id: ID!) { node(NodeId: $id) { ... on Slot { Site Name } } }',{id:slot.NodeId})).data.node.Site,'north')
  pass('single and composite server NodeIds agree with client; router node lookup')
+ // What `node` returns for an id with no row (graphql-orm#490). refetchFragment reads a null node without errors as deleted.
+ {
+  const probes=[['unknown key',encodeNodeId('Widget',['no-such-widget'])],['unknown type',encodeNodeId('NoSuchType',['x'])],['malformed','not-a-node-id']]
+  const results={}
+  for(const [label,id] of probes) for(const [selection,fields] of [['identity','__typename NodeId'],['owner fields','__typename NodeId ... on Widget { Id Name }']]) {
+   const result=await post(`query($id: ID!) { node(NodeId: $id) { ${fields} } }`,{id},routerUrl,true)
+   results[`${label}, ${selection}`]=result
+   console.log(`node ${label}, ${selection}: ${JSON.stringify(result)}`)
+  }
+  // A NodeId whose type the router doesn't compose, or that doesn't decode, is null. A well-formed one for a missing row is the
+  // router's own reference when only identity is selected, and null once an owner field is (routers 0.8.1, 0.11.0 and 0.15.5).
+  for(const label of ['unknown type','malformed']) for(const selection of ['identity','owner fields']) {
+   const result=results[`${label}, ${selection}`]
+   assert.equal(result.data?.node,null,JSON.stringify(result));assert(!result.errors,JSON.stringify(result))
+  }
+  assert.deepEqual(results['unknown key, identity'],{data:{node:{__typename:'Widget',NodeId:encodeNodeId('Widget',['no-such-widget'])}}})
+  assert.deepEqual(results['unknown key, owner fields'],{data:{node:null}})
+  pass('node: null for an unknown type or a malformed id; for a missing row, a reference with identity only and null with an owner field')
+  // A record deleted elsewhere, read again through its @refetchable fragment: the router's answer decides whether the client removes it.
+  const docs=compile(schema,['fragment GoneCard on Widget @refetchable { Name }','query Gone { Widget(Id: "refetch-gone") { ...GoneCard } }'])
+  await post('mutation { CreateWidget(Input: {Id: "refetch-gone", Name: "Refetch gone"}) { Success } }')
+  const client=createClient({network:createHttpNetwork({url:routerUrl,headers})})
+  const ref=(await client.query(docs.operations.Gone,{})).data.Widget
+  await post('mutation { DeleteWidget(Id: "refetch-gone") { Success } }')
+  const refetched=await client.refetchFragment(docs.fragments.GoneCard,ref)
+  const kept=client.store.get(encodeNodeId('Widget',['refetch-gone']))!==undefined
+  console.log(`refetchFragment of a deleted row: ${JSON.stringify(refetched)}; record ${kept?'kept':'removed'}`)
+  assert.deepEqual(refetched,{found:false,errors:[]});assert(!kept)
+  client.dispose()
+  pass('refetchFragment of a row deleted elsewhere finds nothing and removes the record')
+ }
  // From 0.92.0 a stream admits NodeId, and so a federated field keyed on it (#312).
  const minor=Number((process.env.GRAPHQL_ORM_TAG??'').match(/v0\.(\d+)/)?.[1]??0)
  const nodeIdAdmitted=minor>=92
@@ -224,17 +259,95 @@ try {
  // The raw frame path proves the protocol violation separately from graphql-ws recovery.
  revision++
  await until('reload error',()=>a.frames.some(x=>x.id===all&&x.type==='error'))
- const reload=a.frames.filter(x=>x.id===all).slice(-2)
- assert.equal(reload[0].payload[0].extensions.code,'SUBSCRIPTION_SCHEMA_RELOAD');assert.equal(reload[1].type,'complete')
+ // Router 0.8.3 made `error` terminal (graphql-orm#339): before it, `complete` followed for the same id.
+ await sleep(300)
+ const reloadFrames=a.frames.filter(x=>x.id===all), reload=reloadFrames.slice(reloadFrames.findIndex(x=>x.type==='error'))
+ assert.equal(reload[0].payload[0].extensions.code,'SUBSCRIPTION_SCHEMA_RELOAD')
+ const completeAfterError=!routerAtLeast(0,8,3)
+ assert.deepEqual(reload.map(x=>x.type),completeAfterError?['error','complete']:['error'])
+ console.log(`Reload frames: ${reload.map(x=>x.type).join(', ')}`)
  const retired=a.subscribe(stream());await until('retired refusal',()=>a.frames.some(x=>x.id===retired))
  assert.equal(a.frames.find(x=>x.id===retired).payload[0].extensions.code,'SERVICE_UNAVAILABLE')
- a.ws.close();pass('reload error then complete; retired connection SERVICE_UNAVAILABLE')
+ a.ws.close();pass(`reload error${completeAfterError?' then complete':' alone'}; retired connection SERVICE_UNAVAILABLE`)
  const limit=await raw();for(let i=0;i<33;i++)limit.subscribe(stream('(Keys: [])'))
  await until('operation limit',()=>limit.frames.some(x=>JSON.stringify(x).includes('SUBSCRIPTION_LIMIT_EXCEEDED')))
  assert.equal(limit.frames.filter(x=>JSON.stringify(x).includes('SUBSCRIPTION_LIMIT_EXCEEDED')).length,1)
  limit.ws.close();pass('32 admitted operations; operation 33 SUBSCRIPTION_LIMIT_EXCEEDED')
  const updateDirect = name => post('mutation($Input: UpdateWidgetInput!) { UpdateWidget(Id: \"w1\", Input: $Input) { Success } }',{Input:{Name:name}},`${serviceUrl}/graphql`)
  const update = async name => (await post('mutation($Input: UpdateWidgetInput!) { UpdateWidget(Id: "w1", Input: $Input) { Success Widget { __typename Id Name NodeId RecordVersion } } }',{Input:{Name:name}})).data.UpdateWidget.Widget
+ // Under a burst the router must deliver every frame or say it lost some (graphql-orm#359). Router 0.9.0 signals loss with
+ // SUBSCRIPTION_CONTINUITY_LOST. Before that it dropped frames silently, so there the counts are logged, not required.
+ // First a test-owned stream sending its frames as fast as the socket takes them, which is what overflowed router 0.8.1's buffers.
+ for(const count of [1000,5000]) for(let round=1;round<=2;round++) {
+  const bare=await raw(), id=bare.subscribe(`subscription { Burst(Count: ${count}) }`)
+  await until('tight burst ends',()=>bare.frames.some(f=>f.id===id&&(f.type!=='next'||f.payload?.errors)),60000)
+  await sleep(200)
+  const mine=bare.frames.filter(f=>f.id===id), next=mine.filter(f=>f.type==='next'&&f.payload?.data)
+  const ends=mine.filter(f=>f.type!=='next'||f.payload?.errors), codes=ends.flatMap(f=>(f.type==='error'?f.payload:f.payload?.errors??[]).map(e=>e.extensions?.code))
+  const last=next.at(-1)?.payload.data.Burst
+  console.log(`Tight burst of ${count}, run ${round}: ${next.length} frames through the router, last ${last}; ends ${JSON.stringify(ends.map(f=>f.type==='complete'?'complete':f.type+' '+codes.join(',')))}`)
+  if(routerAtLeast(0,9,0)) assert(next.length===count||codes.includes('SUBSCRIPTION_CONTINUITY_LOST'),`lost ${count-next.length} of ${count} frames with no signal`)
+  bare.ws.close()
+  pass(`tight burst of ${count}: ${next.length} frames${codes.length?`, then ${codes.join(', ')}`:next.length<count?', lost with no signal':''}`)
+ }
+ // From router 0.9.0 a loss ends every active subscription on the router with SUBSCRIPTION_CONTINUITY_LOST, since it can't tell
+ // whose frames were dropped. A held record's stream then ends as lost, comes back and reads again.
+ if(routerAtLeast(0,9,0)) {
+  const docs=compile(schema,[`fragment LossRow on Widget @live { Name }`,`query LossHeld { Widget(Id: "w1") { ...LossRow } }`])
+  const ws=createWs({url:routerUrl.replace('http:','ws:'),webSocketImpl:WebSocket,connectionParams:{authorization:`Bearer ${token}`},retryAttempts:Infinity})
+  let reads=0
+  const http=createHttpNetwork({url:routerUrl,headers})
+  const c=createClient({network:{execute:(r,o)=>{reads++;return http.execute(r,o)}},live:{artifacts:docs.live,...graphqlWsTransport(ws),onDiagnostic:null,restart:{minMs:100,maxMs:500}}})
+  const q=c.watchQuery(docs.operations.LossHeld,{});q.open()
+  const shown=()=>c.store.get(encodeNodeId('Widget',['w1']))?.fields.get('Name')
+  await until('loss holder streams',()=>q.getState().status==='ready'&&c.live.status().Widget?.subscriptions>=1)
+  await sleep(500)
+  const bare=await raw(), id=bare.subscribe('subscription { Burst(Count: 1000) }')
+  await until('tight burst ends',()=>bare.frames.some(f=>f.id===id&&f.type!=='next'),60000)
+  if(!JSON.stringify(bare.frames.filter(f=>f.id===id&&f.type!=='next')).includes('SUBSCRIPTION_CONTINUITY_LOST')) {
+   // A runner fast enough to take every frame loses none, and then nothing ends.
+   console.log('NOT RUN router-signalled loss of a held stream: this burst lost no frames')
+   bare.ws.close();q.close();c.dispose();await ws.dispose()
+  } else {
+  await until('held stream ended as lost',()=>c.live.status().Widget?.lastEnd?.reason==='lost')
+  const before=reads
+  await updateDirect('after-router-loss')
+  await until('read after loss',()=>shown()==='after-router-loss',20000)
+  await until('stream back after loss',()=>c.live.status().Widget?.subscriptions>=1)
+  await sleep(1500)
+  await update('event-after-router-loss')
+  await until('event after loss',()=>shown()==='event-after-router-loss',10000)
+  console.log(`Router loss: held stream ended ${JSON.stringify(c.live.status().Widget.lastEnd)}; ${reads-before} reads after`)
+  bare.ws.close();q.close();c.dispose();await ws.dispose()
+  pass('a router-signalled loss ends a held stream as lost; it comes back, reads again and receives the next event')
+  }
+ }
+ // Then generated Changed events from eight concurrent writers, on bare sockets with no client library: count what the router
+ // delivers and what the service delivers directly to a socket open at the same time.
+ const quiet=async(label,count)=>{let seen=-1,since=Date.now();await until(label,()=>{const n=count();if(n!==seen){seen=n;since=Date.now()};return Date.now()-since>2000},60000)}
+ {
+  const query='subscription { WidgetChanged(Key: "w1") { Action Widget { Name RecordVersion } } }'
+  const routed=await raw(), direct=await raw(`${serviceUrl}/graphql`)
+  const ids=[routed.subscribe(query),direct.subscribe(query)]
+  await sleep(300)
+  await update('raw-burst-ready'); await until('raw burst streams admitted',()=>routed.frames.some(f=>f.id===ids[0])&&direct.frames.some(f=>f.id===ids[1]))
+  await quiet('raw burst ready quiet',()=>routed.frames.length+direct.frames.length)
+  routed.frames.length=0;direct.frames.length=0
+  await Promise.all(Array.from({length:8},(_,worker)=>(async()=>{for(let i=0;i<125;i++)assert.equal((await updateDirect(`raw-burst-${worker}-${i}`)).data.UpdateWidget.Success,true)})()))
+  await update('raw-burst-final')
+  // A frame carries the row as it is when the frame is sent, so the final name can arrive before the last frames do: wait for quiet.
+  await quiet('raw burst quiet',()=>routed.frames.length+direct.frames.length)
+  const [viaRouter,fromService]=[routed,direct].map((socket,i)=>{
+   const mine=socket.frames.filter(f=>f.id===ids[i]), next=mine.filter(f=>f.type==='next'&&f.payload?.data)
+   const ends=mine.filter(f=>f.type!=='next'||f.payload?.errors)
+   return {delivered:next.length,versions:new Set(next.map(f=>f.payload.data.WidgetChanged.Widget.RecordVersion)).size,
+    final:next.at(-1)?.payload.data.WidgetChanged.Widget.Name==='raw-burst-final',ends,codes:ends.flatMap(f=>(f.type==='error'?f.payload:f.payload?.errors??[]).map(e=>e.extensions?.code))}
+  })
+  for(const [label,r] of [['through the router',viaRouter],['from the service directly',fromService]])
+   console.log(`Generated burst ${label}: ${r.delivered}/1001 frames carrying ${r.versions} distinct versions; last frame ${r.final?'is':'is not'} the final row; ends ${JSON.stringify(r.ends)}`)
+  routed.ws.close();direct.ws.close()
+  pass(`generated burst on bare sockets: ${viaRouter.delivered}/1001 frames through the router${viaRouter.codes.length?` then ${viaRouter.codes.join(', ')}`:' with no loss signal'}, ${fromService.delivered}/1001 directly`)
+ }
  // A generated service burst through the real router. Frame loss is timing-dependent.
  {
   const docs=compile(schema,[`fragment BurstRow on Widget @live { Name }`,`query BurstHeld { Widget(Id: "w1") { ...BurstRow } }`])
@@ -247,6 +360,7 @@ try {
   q.open(); await until('burst holder ready',()=>q.getState().status==='ready')
   await sleep(500)
   await update('burst-ready'); await until('burst stream admitted',()=>frames>0)
+  const burstAt=Date.now()
   await Promise.all(Array.from({length:8},(_,worker)=>(async()=>{
    for(let i=0;i<125;i++) {
     const result=await updateDirect(`burst-${worker}-${i}`)
@@ -255,14 +369,18 @@ try {
   })()))
   const finalWriteAt=Date.now()
   const final=await update('burst-final')
-  try { await until('burst repair request',()=>c.live.status().Widget.lastBurstReadAt>=finalWriteAt,20000) }
+  // From router 0.9.0 the router may drop frames and say so: the stream then ends as lost and restarts, which clears the burst window.
+  const signalled=()=>routerAtLeast(0,9,0)&&c.live.status().Widget.lastEnd?.reason==='lost'&&c.live.status().Widget.lastEnd.at>=burstAt
+  try { await until('burst repair request or signalled loss',()=>c.live.status().Widget.lastBurstReadAt>=finalWriteAt||signalled(),20000) }
   catch(error) { console.error('Burst failure', JSON.stringify({frames,health:c.liveHealth(),status:c.live.status()},null,2));throw error }
   await until('burst repair completed',()=>q.getState().status==='ready')
   await until('burst final row',()=>c.store.get(encodeNodeId('Widget',['w1']))?.fields.get('RecordVersion')===final.RecordVersion,20000)
   assert.equal(c.store.get(encodeNodeId('Widget',['w1'])).fields.get('Name'),'burst-final')
-  console.log(`Burst: ${frames}/1002 frames arrived; burstReads=${c.live.status().Widget.burstReads}`)
+  await quiet('burst frames quiet',()=>frames)
+  const {burstReads,lastEnd}=c.live.status().Widget, lost=signalled()
+  console.log(`Burst: ${frames}/1002 frames arrived; burstReads=${burstReads}; restart reads=${c.liveHealth().reads.restart}; last end ${JSON.stringify(lastEnd)}`)
   c.dispose(); await ws.dispose()
-  pass('burst repair reaches final generated row through router, with counted repair read')
+  pass(lost?'burst through router: the router signalled lost frames, and the restarted stream and its read reach the final generated row':'burst repair reaches final generated row through router, with counted repair read')
  }
  const old = (await post('{ Widget(Id: "w1") { __typename Id Name NodeId RecordVersion } }')).data.Widget
  const newer = await update('Newest')
@@ -397,9 +515,10 @@ try {
  assert.equal(ordered.store.get(encodeNodeId('Widget',['w1']))?.fields.get('Name'),'Newest')
  ordered.dispose()
  pass('managed server versions advance; client rejects delayed older server snapshot')
- // The served schema doesn't give a composite key's order; the client takes it from the record's NodeId.
+ // The served schema doesn't promise a composite key's order; the client takes it from the record's NodeId. Introspection
+ // through router 0.8.x lists SlotKeyInput as `Name, Site`; from 0.9.1 the router keeps the subgraph's order, `Site, Name` (graphql-orm#356).
  const composite=compile(schema,[`fragment SlotRow on Slot @live { Label }`,`query OneSlot { Slot(Site: "north", Name: "a") { ...SlotRow } }`])
- assert.deepEqual(composite.live.Slot.keyFields,['Name','Site'])
+ assert.deepEqual(composite.live.Slot.keyFields,routerAtLeast(0,9,1)?['Site','Name']:['Name','Site'])
  {
   const socket=createWs({url:routerUrl.replace('http','ws'),webSocketImpl:WebSocket,connectionParams:{authorization:`Bearer ${token}`}})
   const transport=graphqlWsTransport(socket)
@@ -416,7 +535,7 @@ try {
   assert.equal(client.liveTypeHealth('Slot').reason,null)
   slotQuery.close();client.dispose();await socket.dispose()
  }
- pass('a composite-key event reaches its record though the served schema lists the key in another order')
+ pass(routerAtLeast(0,9,1)?'a composite-key event reaches its record; the served schema lists the key in NodeId order':'a composite-key event reaches its record though the served schema lists the key in another order')
  // Deleting a child under a relation with propagate_change = "up". From 0.93.0 this notifies the parent (#290), and the
  // parent must stay. Before that, nothing is sent.
  const parents=compile(schema,[`fragment VendorRow on Vendor @live { Name }`,`query OneVendor($Id: String!) { Vendor(Id: $Id) { ...VendorRow } }`])
