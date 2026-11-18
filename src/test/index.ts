@@ -265,8 +265,8 @@ export interface TestClock {
   pending(): readonly PendingTimer[]
   /** Spread into `live`: `{ ...clock.live, subscribe }`. */
   readonly live: Required<Pick<LiveOptions, "setTimeout" | "clearTimeout" | "now">>
-  /** Pass as `store`. */
-  readonly store: Required<Pick<StoreOptions, "setTimeout" | "clearTimeout">>
+  /** Pass as `store`, or spread into it: its retention timers, lifetime expiry and `staleMs` run on this clock. */
+  readonly store: Required<Pick<StoreOptions, "setTimeout" | "clearTimeout" | "now">>
   /** Pass as `polling`, or spread into it. */
   readonly polling: Required<Pick<PollingOptions, "setInterval" | "clearInterval">>
 }
@@ -316,7 +316,7 @@ export function createTestClock(start = 1_000_000): TestClock {
     },
     pending: () => [...timers.values()].map(({ ms, at, repeats }) => ({ ms, at, repeats })),
     live: { setTimeout: (callback, ms) => add(callback, ms, false), clearTimeout: remove, now: () => time },
-    store: { setTimeout: (callback, ms) => add(callback, ms, false), clearTimeout: remove },
+    store: { setTimeout: (callback, ms) => add(callback, ms, false), clearTimeout: remove, now: () => time },
     polling: { setInterval: (callback, ms) => add(callback, ms, true), clearInterval: remove },
   }
   return clock

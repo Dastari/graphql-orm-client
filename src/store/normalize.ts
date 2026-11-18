@@ -61,6 +61,7 @@ export function normalize(
   store.configureLifetimes(context.lifetimes)
   const root = store.getOrCreate(rootId, rootTypename)
   writeFields(store, root, rootTypename, selections, data, context, true)
+  store.wrote(root, selections, data, context.variables, false)
 }
 
 /** False when the stored record is newer than the incoming one. Versions that can't be compared accept the write. */
@@ -124,7 +125,7 @@ function writeFields(
           break
         }
         if (selection.connection && !selection.plural) {
-          const id = writeConnection(store, `${record.__id}.${key}`, selection, child as Record<string, unknown>, context)
+          const id = writeConnection(store, `${record.__id}.${key}`, selection, child as Record<string, unknown>, context, write)
           if (write) store.setField(record, key, { __ref: id })
           break
         }
@@ -132,11 +133,11 @@ function writeFields(
           const refs = (child as unknown[]).map((item, index) =>
             item === null || item === undefined
               ? null
-              : writeObject(store, `${record.__id}.${key}.${index}`, selection.selections, item as Record<string, unknown>, context)
+              : writeObject(store, `${record.__id}.${key}.${index}`, selection.selections, item as Record<string, unknown>, context, write)
           )
           if (write) store.setField(record, key, { __refs: refs })
         } else {
-          const ref = writeObject(store, `${record.__id}.${key}`, selection.selections, child as Record<string, unknown>, context)
+          const ref = writeObject(store, `${record.__id}.${key}`, selection.selections, child as Record<string, unknown>, context, write)
           if (write) store.setField(record, key, { __ref: ref })
         }
         break
@@ -158,7 +159,8 @@ function writeObject(
   path: string,
   selections: readonly Selection[],
   value: Record<string, unknown>,
-  context: NormalizeContext
+  context: NormalizeContext,
+  parent = true
 ): string {
   const typename = value.__typename
   if (typeof typename !== "string")
@@ -169,11 +171,13 @@ function writeObject(
   const write = accepts(record, value, context.versions[typename], context.versionCompare?.[typename])
   // Older data never replaces newer data, but nested records carry their own versions.
   writeFields(store, record, typename, selections, value, context, write)
+  // A record without a key under a parent refused as older came with that older write.
+  if (write && (parent || id !== path)) store.wrote(record, selections, value, context.variables, id === path)
   return id
 }
 
 /** Stored on a connection record: how many edges the last first-page fetch returned. */
-const HEAD_LENGTH = "__headLength"
+export const HEAD_LENGTH = "__headLength"
 
 /**
  * Merge one page into a connection's stored list. A page that continues after a cursor is
@@ -185,7 +189,8 @@ function writeConnection(
   id: string,
   selection: LinkSelection,
   value: Record<string, unknown>,
-  context: NormalizeContext
+  context: NormalizeContext,
+  parent: boolean
 ): string {
   const spec = selection.connection!
   const typename = value.__typename
@@ -232,6 +237,9 @@ function writeConnection(
     store.setField(record, HEAD_LENGTH, incoming.length)
   }
   store.setField(record, edgesKey, { __refs: merged })
+  // The list's age restarts only when this response replaced every row it holds, under a parent the store accepted it for: a
+  // next page, or a first page that kept the pages loaded after it, doesn't say the rows read earlier are still the list's rows.
+  if (parent && !appending && !keepPageInfo) store.wrote(record, selection.selections, value, context.variables, true)
 
   if (pageInfoSelection) {
     const pageInfoKey = fieldStorageKey(pageInfoSelection, context.variables)

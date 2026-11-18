@@ -73,6 +73,10 @@
     "./inspector": {
       "types": "./dist/inspector.d.ts",
       "import": "./dist/inspector.js"
+    },
+    "./freshness": {
+      "types": "./dist/freshness.d.ts",
+      "import": "./dist/freshness.js"
     }
   },
   "peerDependencies": {

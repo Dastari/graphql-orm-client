@@ -319,7 +319,7 @@ throws to its error boundary; a read still suspended stays suspended without sho
 holds the handle open for at most twice `timeoutMs`. On the server it throws, so the Suspense fallback is rendered there. A `useSuspenseQuery` for a query started at render is not built.
 See [suspending read](design.md#suspending-read-r29).
 
-**R30. Per-type freshness. Proposed, not built** ([#103](https://github.com/Dastari/graphql-orm-client/issues/103), from [#85](https://github.com/Dastari/graphql-orm-client/issues/85)). A per-type
+**R30. Per-type freshness.** ([#103](https://github.com/Dastari/graphql-orm-client/issues/103), from [#85](https://github.com/Dastari/graphql-orm-client/issues/85)). A per-type
 `staleMs`: how long a record counts as fresh after a server write. A `store-or-network` read answers from the store
 only when every record it reaches is complete and fresh. A type with no setting behaves as today, and lifetime fields
 (R17) still decide expiry. Whether a stream's coverage keeps a record fresh is decided while building, since live
@@ -327,6 +327,17 @@ delivery is never the only path to correct data.
 *Acceptance:* with one minute for a type, on the test clock, a `store-or-network` read within a minute of the last write
 sends no request and one after a minute sends one; a type with no setting is unchanged; an event's write restarts the
 age.
+*Built after 0.1.0-alpha.13:* `installFreshness(client, { staleMs })` from its own entry point,
+`graphql-orm-client/freshness`, so the main bundle carries only the calls into it. A response, a re-read or an event that
+the store accepts restarts a record's age only when it wrote every field the store holds for the record; a partial write, an
+optimistic write, a write refused as older, and a restore don't. A list (a record without a key that holds one) able to
+reach a type with a setting takes the smallest such setting from when a response last replaced all its rows, so a list is
+aged by when it was read, not by its rows, and an empty list ages too. A query field that answered null ages on its own.
+A stream's coverage doesn't keep a record fresh, and a keys-only event, a `PROPAGATED` delete, an event whose stream leaves
+out fields some fragment reads, or an event for a record no open query holds makes it stale. The decision is made when a
+read starts, and skipped for a query that can't reach a type with a setting; an open query doesn't read again when its
+records age. `createTestClock().store` now carries `now`, so the test clock drives ages and lifetime expiry. See
+[freshness](design.md#freshness-r30).
 
 **R31. A store inspector.** ([#104](https://github.com/Dastari/graphql-orm-client/issues/104), from [#85](https://github.com/Dastari/graphql-orm-client/issues/85)). A
 development-only inspector, in its own entry point, shows the records in a client's store, the queries holding each,
