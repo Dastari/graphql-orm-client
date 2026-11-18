@@ -273,6 +273,11 @@ artifact per root:
   but not nullable (`readonly Limit?: number`): leaving it out applies the server's default, and an
   explicit `null` is invalid ([#65](https://github.com/Dastari/graphql-orm-client/issues/65)).
 
+`documents` lists directories, searched recursively for the `extensions` (default `.ts` and `.tsx`), and files; it doesn't
+take globs. An entry that contains a glob character and doesn't exist fails `generate`, `generate --check` and `doctor`, and
+so does a list in which no entry exists, so a mistyped entry can't give an empty module that `--check` then accepts. One
+missing entry among others that exist prints a warning and is skipped.
+
 `generate` takes every `graphql(` followed by a quote as a candidate. When the `typescript` package can be loaded
 (an optional peer dependency, found from this package or the current directory), it parses each file that has one,
 with JSX for `.tsx` and `.jsx`, and skips a candidate in a comment or inside the text of another string, template,
