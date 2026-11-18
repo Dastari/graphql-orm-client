@@ -168,22 +168,29 @@ export class Store {
 
   /** Undefined means the type has no lifetime policy. */
   lifetime(id: string): LifetimeState | undefined {
+    return this.lifetimeAt(id, this.now())?.state
+  }
+
+  private lifetimeAt(id: string, now: number): { state: LifetimeState; time: number | null } | undefined {
     const record = this.records.get(id)
     const policy = record && this.policies.get(record.__typename)
     if (!record || !policy) return undefined
     const time = lifetimeTime(record.fields.get(policy.field), policy.format)
-    return time === null ? "unknown" : time <= this.now() ? "expired" : "valid"
+    return { state: time === null ? "unknown" : time <= now ? "expired" : "valid", time }
   }
 
   private nextExpiry = Infinity
 
   /** Note what these records' lifetimes say now. A publish looks only at what changed, so a large store isn't scanned per event. */
   private checkLifetimes(ids: Iterable<string>): void {
+    // One reading decides both a record's state and whether it needs the timer. With two, the clock could pass the expiry between
+    // them, leaving the record valid with no timer to expire it.
+    const now = this.now()
     for (const id of ids) {
       const record = this.records.get(id)
       const policy = record && this.policies.get(record.__typename)
       if (!record || !policy) continue
-      const state = this.lifetime(id)!
+      const { state, time } = this.lifetimeAt(id, now)!
       if (state !== this.lifetimeStates.get(id)) {
         this.changed.add(id)
         this.structural.add(id)
@@ -192,8 +199,7 @@ export class Store {
         }
       }
       this.lifetimeStates.set(id, state)
-      const time = lifetimeTime(record.fields.get(policy.field), policy.format)
-      if (time !== null && time > this.now()) this.nextExpiry = Math.min(this.nextExpiry, time)
+      if (state === "valid") this.nextExpiry = Math.min(this.nextExpiry, time!)
     }
   }
 

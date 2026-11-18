@@ -682,8 +682,10 @@ try {
  const lifetimeNetwork=createHttpNetwork({url:routerUrl,headers});let lifetimeReads=0
  const lifetimeClient=createClient({network:{execute:(...args)=>{lifetimeReads++;return lifetimeNetwork.execute(...args)}}})
  const lifetimeWatch=lifetimeClient.watchQuery(lifetimeQuery,{});lifetimeWatch.open();await lifetimeWatch.refetch()
+ assert.equal(lifetimeWatch.getState().status,'ready');assert.equal(lifetimeWatch.getState().data?.Widget?.Name,expiry)
  assert.equal(lifetimeWatch.getState().lifetime,undefined)
- await until('lifetime expiry',()=>lifetimeWatch.getState().lifetime==='expired' && lifetimeReads>=2)
+ try {await until('lifetime expiry',()=>lifetimeWatch.getState().lifetime==='expired' && lifetimeReads>=2)}
+ catch(e){const {status,lifetime,error}=lifetimeWatch.getState();console.error({expiry,now:Date.now()/1000,status,lifetime,error:error?.message,reads:lifetimeReads});throw e}
  lifetimeWatch.close();lifetimeClient.dispose();pass('explicit String lifetime expires and holders re-read')
  await liveSettingCheck({schema,scratch,routerUrl,token,post,until,sleep})
  await doctorChecks({schema,scratch,routerUrl,token,post})

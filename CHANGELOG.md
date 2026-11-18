@@ -129,6 +129,14 @@ ages, on the test clock instead of `Date.now`. A test that already passed its ow
 
 To keep the earlier behaviour, pass `store: { ...clock.store, now: Date.now }`.
 
+### Fixed: a record could stay valid after its lifetime ran out
+
+The store read the clock twice when it checked a record's lifetime: once for whether it had expired, and again for whether to
+arm the timer for it. If the clock passed the expiry between the two, as it can when the timer fires a moment early, the record
+was left valid with no timer, so its holders never saw it expire or read it again until something else wrote to the store. In a
+local measurement with real timers, about one expiry in 2,500 did this. One reading now decides both. This intermittently failed the conformance suite's
+lifetime scenario ([#109](https://github.com/Dastari/graphql-orm-client/issues/109)). Nothing to change in an application.
+
 ## 0.1.0-alpha.13 (2026-11-17)
 
 Install from the GitHub release archive:

@@ -99,3 +99,34 @@ it("a publish looks only at what changed, and the timer still finds the next exp
   store.dispose()
   expect(vi.getTimerCount()).toBe(0)
 })
+
+it("stays armed when the clock reaches the expiry while a timer that fired early checks the record", () => {
+  // A timer can fire just before the expiry, and the clock can tick over it while the store checks the record. The check must still
+  // leave a timer armed, or nothing tells the record's holders that it expired.
+  const timers: (() => void)[] = []
+  let now = 0
+  const readings: number[] = []
+  const store = new Store({
+    lifetimes: { Widget: { field: "Expires", format: "unix-seconds" } },
+    now: () => readings.shift() ?? now,
+    setTimeout: (callback) => timers.push(callback),
+    clearTimeout: () => {},
+  })
+  const record = store.getOrCreate("w", "Widget")
+  store.setField(record, "Expires", "1")
+  store.publish()
+  const selector = { id: "w", selections: [], variables: {}, fragments: {} }
+  const onChange = vi.fn()
+  store.subscribe(store.lookup(selector), onChange)
+  expect(timers).toHaveLength(1)
+  // The first clock reading in the check is 1ms short of the expiry; every later one is at it.
+  now = 1000
+  readings.push(999)
+  timers.shift()!()
+  expect(onChange).not.toHaveBeenCalled()
+  expect(timers).toHaveLength(1)
+  timers.shift()!()
+  expect(onChange).toHaveBeenCalledTimes(1)
+  expect(store.lookup(selector)).toMatchObject({ missing: true, lifetime: "expired" })
+  store.dispose()
+})
