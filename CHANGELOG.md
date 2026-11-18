@@ -35,6 +35,17 @@ Nothing changes for a working application: until now these directives failed the
   setting and regenerate; fix what the type checker reports by handling each conditional field as possibly `undefined`, and wrapping
   each read through a conditional spread in `if (hasFragment(Fragment, ref))`. A fragment whose condition variable has different
   defaults in the operations that spread it fails the build: give it the same default in each, or none.
+- **With any other `conditionalDirectives` value:** generation now fails with `conditionalDirectives must be "evaluate", "reject"
+  or "legacy"`. An unknown value used to act as `"reject"`; set `"reject"` to keep that, or remove the setting.
+
+### Fixed: a link selected twice under one parent read only its last selection
+
+A link field selected more than once under one parent, such as `Vendor { Id } Vendor { Name }`, or once beside an inline fragment
+without a type condition that selects it again, read as the last selection alone: fields and fragment references from the others
+were absent from the data although the response and the store held them. The compiler now merges those selections into one link
+in the read selections, so the data holds all of them; a part under `@skip`/`@include` keeps its condition inside the merged link.
+The operation sent to the server is unchanged, and so are the artifacts of documents that select no link twice. Regenerate to get
+the fix. Selections of one link in inline fragments that narrow an interface or union to different types are still read separately.
 
 ## 0.1.0-alpha.13 (2026-11-17)
 

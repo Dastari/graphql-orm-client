@@ -17,8 +17,8 @@ import {
   type GraphQLSchema,
   type OperationDefinitionNode,
 } from "graphql"
-import type { Selection, SelectionCondition } from "../artifact.js"
-import { CompileError, compile, type CompileOptions, type LiveAreaReport } from "./compile.js"
+import type { Selection } from "../artifact.js"
+import { CompileError, compile, mayLeaveOut, type CompileOptions, type LiveAreaReport } from "./compile.js"
 import { hasDefault, printSchemaStable } from "./print.js"
 
 export interface GenerateOptions extends CompileOptions {
@@ -64,11 +64,6 @@ type Part = { readonly selections: readonly Selection[]; readonly optional: bool
 type Member =
   | { readonly kind: "scalar"; readonly ts: string; readonly optional: boolean }
   | { kind: "link"; readonly type: GraphQLOutputType; readonly types: readonly string[]; parts: Part[]; batch?: boolean; optional: boolean }
-
-/** Whether a selection's `@skip`/`@include` can leave it out: not when every condition is a literal that keeps it. */
-function mayLeaveOut(conditions: readonly SelectionCondition[] | undefined): boolean {
-  return conditions?.some((condition) => typeof condition.if !== "boolean" || condition.if !== (condition.directive === "include")) === true
-}
 
 /**
  * Generate a TypeScript module from the documents in an application's `graphql(...)` calls.

@@ -59,12 +59,18 @@ export function argumentValue(args: readonly ArgumentSpec[], name: string, varia
 
 /**
  * Whether a selection with these `@skip`/`@include` conditions applies under the variables. A variable left out takes the
- * default the operation declares; one with neither counts as false (the server refuses such a request).
+ * default the operation declares, as on the server; an explicit null doesn't, and like a variable with neither counts as false
+ * (the server refuses such a request).
  */
 export function included(conditions: readonly SelectionCondition[] | undefined, variables: Variables): boolean {
   if (!conditions) return true
   for (const condition of conditions) {
-    const value = typeof condition.if === "boolean" ? condition.if : (variables[condition.if.variable] ?? condition.if.default) === true
+    if ("anyOf" in condition) {
+      if (!condition.anyOf.some((alternative) => included(alternative, variables))) return false
+      continue
+    }
+    const test = condition.if
+    const value = typeof test === "boolean" ? test : (variables[test.variable] === undefined ? test.default : variables[test.variable]) === true
     if (value !== (condition.directive === "include")) return false
   }
   return true

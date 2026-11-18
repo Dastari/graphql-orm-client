@@ -278,7 +278,8 @@ holder selects conditionally. `conditionalDirectives: "legacy"` goes away afterw
 has optional generated types for both, and re-reads on a change of the variable without treating the record as
 missing. No stream selects a field that a holder includes only conditionally.
 *Built:* selections carry `conditions` (literal, or variable with the operations' declared default), evaluated by the reader,
-the normaliser, `missingFields` and garbage collection. Generated types make a conditional field optional and type a
+the normaliser, `missingFields` and garbage collection; a link selected more than once under one parent is merged into one
+read selection, each conditional part keeping its conditions. Generated types make a conditional field optional and type a
 conditional spread `({} | FragmentRefs<"Name">)`, narrowed with `hasFragment`. A field live fragments select only
 conditionally stays out of the stream and its fragments re-read their holders. `conditionalDirectives` defaults to
 `"evaluate"`; `"reject"` keeps the build error; `"legacy"` still works, is deprecated and warns at each build, and is removed

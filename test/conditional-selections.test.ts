@@ -13,7 +13,7 @@ const schema = buildSchema(`
   type Query { Widget(Id: ID!): Widget }
   type Subscription { WidgetChanged(Key: ID): WidgetEvent! }
   type WidgetEvent { Action: String! Widget: Widget }
-  type Vendor { Id: ID! Name: String! }
+  type Vendor { Id: ID! Name: String! City: String }
   type Widget { Id: ID! Name: String! Note: String Sku: String RecordVersion: Int! Vendor: Vendor }
 `)
 const sources = [
@@ -184,6 +184,93 @@ describe("@skip and @include evaluated with the operation's variables", () => {
     expect(snapshot.missing).toBe(false)
     expect(snapshot.data.Widget).toEqual({ __typename: "Widget", Id: "w1", Name: "n" })
     client.dispose()
+  })
+
+  it("doesn't write a field its condition leaves out, even when the response carries it", async () => {
+    const { client } = setup(() => answer(false, 1, { Note: "unasked" }))
+    await client.execute(ops.Page!, { detail: false })
+    expect(client.store.get(W1)!.fields.has("Note")).toBe(false)
+    client.dispose()
+  })
+
+  it("treats an explicit null as null, not as the declared default, as the server does", async () => {
+    const defaultTrue = compile(schema, [`query On($detail: Boolean = true) { Widget(Id: "w1") { Id Name Note @include(if: $detail) } }`]).operations.On!
+    const { client } = setup(() => answer(false))
+    const { snapshot } = await client.execute<any>(defaultTrue, { detail: null })
+    expect(snapshot.missing).toBe(false)
+    expect("Note" in snapshot.data.Widget).toBe(false)
+    // Left out, the default applies and the field is selected.
+    expect(client.store.lookup(selectorOf(defaultTrue, {})).missing).toBe(true)
+    client.dispose()
+  })
+})
+
+describe("a link selected more than once under one parent is read as one object", () => {
+  const vendorFragments = [`fragment A on Vendor { City }`, `fragment B on Vendor { Name }`]
+  const vendor = { __typename: "Vendor", Id: "v1", Name: "vendor", City: "city" }
+  const reply = (request: OperationRequest): GraphQLResponse => ({ data: { Widget: { __typename: "Widget", Id: "w1", RecordVersion: 1, Vendor: request.variables.d === false ? { __typename: "Vendor", Id: "v1", City: "city" } : vendor } } })
+  const cases = {
+    "unconditional, then conditional": `query Q($d: Boolean!) { Widget(Id: "w1") { Id Vendor { Id ...A } Vendor @include(if: $d) { Name ...B } } }`,
+    "conditional, then unconditional": `query Q($d: Boolean!) { Widget(Id: "w1") { Id Vendor @include(if: $d) { Name ...B } Vendor { Id ...A } } }`,
+    "the conditional part in an inline fragment": `query Q($d: Boolean!) { Widget(Id: "w1") { Id Vendor { Id ...A } ... @include(if: $d) { Vendor { Name ...B } } } }`,
+  }
+  for (const [name, query] of Object.entries(cases)) it(name, async () => {
+    const compiled = compile(schema, [...vendorFragments, query])
+    const { client, requests } = setup(reply)
+    const fragmentA = compiled.fragments.A!, fragmentB = compiled.fragments.B!
+    for (const d of [true, false]) {
+      const { snapshot } = await client.execute<any>(compiled.operations.Q!, { d })
+      expect(snapshot.missing).toBe(false)
+      const read = snapshot.data.Widget.Vendor
+      expect(read.Id).toBe("v1")
+      expect("Name" in read).toBe(d)
+      expect(hasFragment(fragmentA, read)).toBe(true)
+      expect(readFragment(fragmentA, read)).toEqual({ __typename: "Vendor", City: "city" })
+      expect(hasFragment(fragmentB, read)).toBe(d)
+      if (d) expect(readFragment(fragmentB, read)).toEqual({ __typename: "Vendor", Name: "vendor" })
+    }
+    // The merge is the artifact's: the server gets the document as written.
+    expect(requests[0]!.text).toBe(compiled.operations.Q!.text)
+    expect(compiled.operations.Q!.text.match(/^\s+Vendor( @include\(if: \$d\))? \{$/gm)).toHaveLength(2)
+    client.dispose()
+  })
+
+  it("two unconditional selections", async () => {
+    const compiled = compile(schema, [`query Q { Widget(Id: "w1") { Id Vendor { Id Name } Vendor { Id City } } }`])
+    const { client } = setup(reply)
+    const { snapshot } = await client.execute<any>(compiled.operations.Q!, {})
+    expect(snapshot.data.Widget.Vendor).toEqual({ __typename: "Vendor", Id: "v1", Name: "vendor", City: "city" })
+    client.dispose()
+  })
+
+  it("a link every part selects conditionally is there when any of their conditions holds", async () => {
+    const compiled = compile(schema, [`query Q($a: Boolean!, $b: Boolean!) { Widget(Id: "w1") { Id Vendor @include(if: $a) { Id Name } Vendor @include(if: $b) { Id City } } }`])
+    const widget = compiled.operations.Q!.selections[0]!
+    if (widget.kind !== "link") throw new Error("expected a link")
+    expect(widget.selections.filter((selection) => selection.kind === "link")).toHaveLength(1)
+    const { client } = setup((request) => ({ data: { Widget: { __typename: "Widget", Id: "w1", RecordVersion: 1, ...(request.variables.a || request.variables.b ? { Vendor: { __typename: "Vendor", Id: "v1", ...(request.variables.a ? { Name: "vendor" } : {}), ...(request.variables.b ? { City: "city" } : {}) } } : {}) } } }))
+    const expected = [
+      [true, true, { __typename: "Vendor", Id: "v1", Name: "vendor", City: "city" }],
+      [true, false, { __typename: "Vendor", Id: "v1", Name: "vendor" }],
+      [false, true, { __typename: "Vendor", Id: "v1", City: "city" }],
+      [false, false, undefined],
+    ] as const
+    for (const [a, b, value] of expected) {
+      const { snapshot } = await client.execute<any>(compiled.operations.Q!, { a, b })
+      expect(snapshot.missing).toBe(false)
+      expect(snapshot.data.Widget.Vendor).toEqual(value)
+      expect("Vendor" in snapshot.data.Widget).toBe(value !== undefined)
+    }
+    const types = generate(schema, [`query Q($a: Boolean!, $b: Boolean!) { Widget(Id: "w1") { Id Vendor @include(if: $a) { Id Name } Vendor @include(if: $b) { Id City } } }`], { onWarning: () => {} })
+    expect(types).toContain(`readonly Vendor?: { readonly __typename: "Vendor"; readonly Id: string; readonly Name?: string; readonly City?: string | null } | null`)
+    client.dispose()
+  })
+
+  it("leaves selections that repeat no link as they were", () => {
+    const plain = compile(schema, [`query Q($d: Boolean!) { Widget(Id: "w1") { Id Vendor { Id } ... on Widget { Name } ... @include(if: $d) { Note } } }`])
+    const widget = plain.operations.Q!.selections[0]!
+    if (widget.kind !== "link") throw new Error("expected a link")
+    expect(widget.selections.map((selection) => selection.kind)).toEqual(["scalar", "scalar", "link", "inline", "inline"])
   })
 })
 

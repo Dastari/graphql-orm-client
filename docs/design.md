@@ -136,7 +136,14 @@ operation declares for it. The reader and the normaliser evaluate them with the 
   selection is collected.
 - A variable left out takes the default its operation declares. A fragment is compiled once, so the operations that spread it
   must agree on that default; when two give different defaults, the build fails naming the fragment, the variable and the
-  operations. A variable with no default and no value counts as false; the server refuses such a request anyway.
+  operations. An explicit null is null, not the default, as on the server. A variable with no default and no value, or a null,
+  counts as false; the server refuses such a request anyway.
+- A link selected more than once under one parent, side by side or through an inline fragment without a type condition, is
+  merged into one link in the read selections, as GraphQL merges it in the response, so the reader builds one object from all
+  of them. A part under `@skip`/`@include` keeps its conditions on an inline fragment inside the merged link. The merged link is
+  conditional only when every part is: under the same conditions, or under `anyOf`, which holds when any part's do. The
+  normaliser needs no merge, since each part writes into the same stored record, and the operation text is unchanged.
+  Selections of one link in inline fragments that narrow an interface or union to different types aren't merged.
 
 Generated types make a selection optional (`readonly Note?: ...`) when a condition can leave it out. A response key selected
 both with and without a condition stays required, and the fields only its conditional selection adds are optional. A

@@ -33,6 +33,8 @@ import type {
   ArgumentSpec,
   ConnectionSpec,
   FragmentArtifact,
+  InlineFragmentSelection,
+  LinkSelection,
   LiveArtifact,
   LiveMode,
   OperationArtifact,
@@ -249,7 +251,95 @@ type ConvertOptions = CompileOptions & { readonly conditionScope?: string; reado
 
 /** Whether a selection's literal `@skip(if: true)` or `@include(if: false)` always leaves it out. */
 function never(conditions: readonly SelectionCondition[] | undefined): boolean {
-  return conditions?.some((condition) => typeof condition.if === "boolean" && condition.if !== (condition.directive === "include")) === true
+  return conditions?.some((condition) => "anyOf" in condition
+    ? condition.anyOf.every(never)
+    : typeof condition.if === "boolean" && condition.if !== (condition.directive === "include")) === true
+}
+
+/** Whether a selection's `@skip`/`@include` can leave it out: not when every condition is a literal that keeps it. */
+export function mayLeaveOut(conditions: readonly SelectionCondition[] | undefined): boolean {
+  return conditions?.some((condition) => "anyOf" in condition
+    ? condition.anyOf.every(mayLeaveOut)
+    : typeof condition.if !== "boolean" || condition.if !== (condition.directive === "include")) === true
+}
+
+/** An inline fragment that narrows nothing under a parent of these types: its selections apply to every record, under its conditions. */
+function transparent(selection: Selection, parentTypes: readonly string[]): selection is InlineFragmentSelection {
+  return selection.kind === "inline" && (selection.possibleTypes === null || parentTypes.every((type) => selection.possibleTypes!.includes(type)))
+}
+
+/** Whether a link response key is selected more than once, side by side or through inline fragments that narrow nothing. */
+function repeatsLink(selections: readonly Selection[], parentTypes: readonly string[], seen = new Set<string>()): boolean {
+  for (const selection of selections) {
+    if (selection.kind === "link" && !selection.batch) {
+      if (seen.has(selection.responseKey)) return true
+      seen.add(selection.responseKey)
+    } else if (transparent(selection, parentTypes) && repeatsLink(selection.selections, parentTypes, seen)) return true
+  }
+  return false
+}
+
+/** The selections of inline fragments that narrow nothing, lifted into their parent with the fragment's conditions added. */
+function lift(selections: readonly Selection[], parentTypes: readonly string[], outer: readonly SelectionCondition[] = []): Selection[] {
+  return selections.flatMap((selection): Selection[] => {
+    const conditions = [...outer, ...(selection.conditions ?? [])]
+    if (transparent(selection, parentTypes)) return lift(selection.selections, parentTypes, conditions)
+    return [conditions.length ? { ...selection, conditions } : selection]
+  })
+}
+
+/**
+ * One link from every selection of a response key under one parent. GraphQL merges them into one field in the response; the
+ * reader builds one object per key, so the compiler merges them too. A part its conditions can leave out keeps them on an
+ * inline fragment inside the merged link, and the link is conditional only when every part is. Only read selections are
+ * merged: the normaliser already writes each part into the same stored record. Selections that repeat no link are returned
+ * as they are, so their artifacts don't change.
+ */
+function mergeLinks(selections: Selection[], parentTypes: readonly string[], options: CompileOptions): Selection[] {
+  if (!repeatsLink(selections, parentTypes)) return selections
+  const flat = lift(selections, parentTypes)
+  const groups = new Map<string, LinkSelection[]>()
+  for (const selection of flat) {
+    if (selection.kind !== "link" || selection.batch) continue
+    groups.set(selection.responseKey, [...(groups.get(selection.responseKey) ?? []), selection])
+  }
+  const merged: Selection[] = []
+  for (const selection of flat) {
+    if (selection.kind !== "link" || selection.batch) {
+      merged.push(selection)
+      continue
+    }
+    const parts = groups.get(selection.responseKey)!
+    if (parts[0] !== selection) continue
+    if (parts.length === 1) {
+      merged.push(selection)
+      continue
+    }
+    const conditional = parts.filter((part) => mayLeaveOut(part.conditions))
+    const same = conditional.length === parts.length && parts.every((part) => JSON.stringify(part.conditions) === JSON.stringify(parts[0]!.conditions))
+    // A field every part selects without a condition of its own is there whenever the link is: it needn't be wrapped.
+    const common = conditional.length === parts.length && !same
+      ? parts[0]!.selections.filter((child) => child.kind === "scalar" && !child.conditions &&
+        parts.every((part) => part.selections.some((other) => JSON.stringify(other) === JSON.stringify(child))))
+      : []
+    const shared = new Set(common.map((child) => JSON.stringify(child)))
+    const children = [...common, ...parts.flatMap((part): Selection[] => same || !mayLeaveOut(part.conditions)
+      ? [...part.selections]
+      : [{ kind: "inline", typeCondition: null, possibleTypes: null, selections: part.selections.filter((child) => !shared.has(JSON.stringify(child))), conditions: part.conditions! }])]
+    const { conditions: _conditions, conditional: _legacy, ...first } = parts[0]!
+    const connection = parts.find((part) => part.connection)?.connection
+    const listNode = parts.find((part) => part.listNode)?.listNode
+    merged.push({
+      ...first,
+      ...(connection ? { connection } : {}),
+      ...(listNode ? { listNode } : {}),
+      selections: mergeLinks(children, first.types, options),
+      // Under the deprecated legacy setting a link is marked conditional only when every part was.
+      ...(options.conditionalDirectives === "legacy" && parts.every((part) => part.conditional) ? { conditional: true as const } : {}),
+      ...(conditional.length < parts.length ? {} : same ? { conditions: parts[0]!.conditions! } : { conditions: [{ anyOf: parts.map((part) => part.conditions!) }] }),
+    })
+  }
+  return merged
 }
 
 /** The Boolean literal defaults an operation declares for its variables. */
@@ -1395,7 +1485,8 @@ function convert(
       }
     }
   }
-  return result
+  // The reader builds one object per response key: a link selected more than once under one parent is read as one.
+  return inlineSpreads ? result : mergeLinks(result, possibleTypes(schema, parent), options)
 }
 
 /** Read connection identity from schema structure, even when the document selects only totals. */

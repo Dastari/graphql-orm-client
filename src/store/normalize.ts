@@ -101,7 +101,7 @@ function writeFields(
   write: boolean
 ): void {
   for (const selection of selections) {
-    // What `@skip`/`@include` left out of the request isn't written, even when another selection put the response key there.
+    // What `@skip`/`@include` left out of the request isn't written, even if the response carries that key.
     if (!included(selection.conditions, context.variables)) continue
     switch (selection.kind) {
       case "scalar": {

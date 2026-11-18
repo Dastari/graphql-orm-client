@@ -13,11 +13,13 @@ export type ArgumentSpec =
 /**
  * A `@skip` or `@include` on a selection. `if` is a literal, or an operation variable with the default the operations
  * declare for it (absent when they declare none). A selection applies when no `@skip` holds and every `@include` does.
+ *
+ * `anyOf` is on a link the compiler merged from several selections of one response key, each under its own conditions:
+ * it holds when any of those lists does.
  */
-export interface SelectionCondition {
-  readonly directive: "skip" | "include"
-  readonly if: boolean | { readonly variable: string; readonly default?: boolean }
-}
+export type SelectionCondition =
+  | { readonly directive: "skip" | "include"; readonly if: boolean | { readonly variable: string; readonly default?: boolean } }
+  | { readonly anyOf: readonly (readonly SelectionCondition[])[] }
 
 export interface ScalarSelection {
   readonly kind: "scalar"
