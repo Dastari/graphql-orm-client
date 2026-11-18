@@ -255,8 +255,7 @@ are recorded separately. Server rendering stays a non-goal, but
 document how the client behaves inside a framework that renders a shell on the server.
 *Built:* `client.loadQuery` and `useLoadedQuery` share a retained read across loader and mount,
 with abort, unused-load timeout and StrictMode replay cleanup. `useSuspenseLoadedQuery` is the suspending read (R29). Conditional selections
-are rejected by default (`conditionalDirectives: "legacy"` is migration only); fragment arguments
-are rejected. Node server shells return idle without starting queries; no data streaming or store
+are evaluated (R27); fragment arguments are rejected. Node server shells return idle without starting queries; no data streaming or store
 handoff. See [route loading](design.md#route-loading-r18) for lifecycle and migration.
 
 **R19. Several windows.** An application with pop-out windows or several tabs opens one socket and
@@ -270,7 +269,7 @@ and the router's codes to an `ErrorKind`, with `unknown` for anything else. Miss
 `Success: false` carries only free text (`Error: "Entity not found"`); requested as
 [graphql-orm#385](https://github.com/Dastari/graphql-orm/issues/385).
 
-**R27. Conditional selections. Proposed, not built** ([#100](https://github.com/Dastari/graphql-orm-client/issues/100), from
+**R27. Conditional selections** ([#100](https://github.com/Dastari/graphql-orm-client/issues/100), from
 [#84](https://github.com/Dastari/graphql-orm-client/issues/84)). `@skip` and `@include` on fields, spreads and inline fragments are evaluated with the
 operation's variables in readers and normalisation, so a skipped field is neither missing nor a cause of a re-read.
 Generated types make conditional selections optional. A live projection never selects a field unconditionally that a
@@ -278,6 +277,14 @@ holder selects conditionally. `conditionalDirectives: "legacy"` goes away afterw
 *Acceptance:* a query with `@include(if: $detail)` on a field and `@skip` on a spread reads complete for both values,
 has optional generated types for both, and re-reads on a change of the variable without treating the record as
 missing. No stream selects a field that a holder includes only conditionally.
+*Built:* selections carry `conditions` (literal, or variable with the operations' declared default), evaluated by the reader,
+the normaliser, `missingFields` and garbage collection; a link selected more than once under one parent is merged into one
+read selection, each conditional part keeping its conditions. Generated types make a conditional field optional and type a
+conditional spread `({} | FragmentRefs<"Name">)`, narrowed with `hasFragment`. A field live fragments select only
+conditionally stays out of the stream and its fragments re-read their holders. `conditionalDirectives` defaults to
+`"evaluate"`; `"reject"` keeps the build error; `"legacy"` still works, is deprecated and warns at each build, and is removed
+in a later release. Limit: whether an event re-reads a query is decided per operation, not per value of the variable.
+See [conditional selections](design.md#conditional-selections-and-fragment-arguments).
 
 **R28. Fragment arguments. Proposed, not built** ([#101](https://github.com/Dastari/graphql-orm-client/issues/101), from
 [#84](https://github.com/Dastari/graphql-orm-client/issues/84)). A fragment declares local arguments with types and defaults (`@argumentDefinitions`), and a
@@ -358,7 +365,7 @@ the previous errors. *Built.*
 **R37. A left-out field is reported.** A response that omits a selected field (a non-conformant server, a gateway that drops a
 field, a schema changed under the client) is reported, not silently `ready`: a development warning naming the operation, type,
 record and response key, once per operation and path, and an opt-in mode that reports it as an error at that path. No warning for
-a null at a nullable field or a legacy `@skip`/`@include` field, and no read loop
+a null at a nullable field, a field `@skip`/`@include` leaves out, or a legacy `@skip`/`@include` field, and no read loop
 ([#66](https://github.com/Dastari/graphql-orm-client/issues/66)).
 *Acceptance:* a test shows the warning once, its absence for nulls and conditional fields, the strict error at the path, and a
 bounded number of reads. *Built:* `missingFields: "warn" | "error" | "off"`.

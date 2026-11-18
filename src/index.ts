@@ -10,6 +10,7 @@ export type {
   OperationArtifact,
   PagedSpec,
   Selection,
+  SelectionCondition,
 } from "./artifact.js"
 export { DEFAULT_REFUSAL_BACKOFF_MS, LiveManager } from "./live.js"
 export type { LiveConnection, LiveEnd, LiveEndReason, LiveOptions, LiveTypeStatus, RefusalBackoff, StreamRestart, SubscriptionSink } from "./live.js"
@@ -19,6 +20,7 @@ export {
   OperationError,
   createClient,
   fragmentSelector,
+  hasFragment,
   pageSizeOf,
   pageVariables,
   pagedState,

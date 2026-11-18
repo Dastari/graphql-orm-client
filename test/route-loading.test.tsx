@@ -73,11 +73,12 @@ it("identity disposal clears the loader timer and rejects a late write", async (
   expect(loaded.getState().error).toBeNull()
   expect(() => loaded.mount()).toThrow(/disposed/)
 })
-for (const directive of ["skip", "include"]) it(`rejects @${directive} on fields and live fragments at build`, () => {
+for (const directive of ["skip", "include"]) it(`rejects @${directive} on fields and live fragments at build under conditionalDirectives: "reject"`, () => {
   const sources = [`fragment Conditional on Widget @live { Name @${directive}(if: true) }`, `query Conditional { Widget(Id: "w1") { ...Conditional } }`]
-  expect(() => compile(schema, sources)).toThrow(/conditional reads, generated optional types and live projections/)
-  expect(() => generate(schema, sources)).toThrow(/unsupported/)
-  expect(() => compile(schema, sources, { conditionalDirectives: "legacy" })).not.toThrow()
+  expect(() => compile(schema, sources, { conditionalDirectives: "reject" })).toThrow(/rejected by conditionalDirectives: "reject"/)
+  expect(() => generate(schema, sources, { conditionalDirectives: "reject" })).toThrow(/rejected/)
+  expect(() => compile(schema, sources)).not.toThrow()
+  expect(() => compile(schema, sources, { conditionalDirectives: "legacy", onWarning: () => {} })).not.toThrow()
 })
 it("rejects fragment arguments clearly", () => {
   expect(() => compile(schema, [`fragment Args on Widget @argumentDefinitions(id: {type: "ID!"}) { Name }`])).toThrow(/fragment arguments are unsupported/)
@@ -122,11 +123,13 @@ it("opens a list stream before the read, preserves it through mount replay, and 
 })
 it("pins unsafe legacy conditional behaviour end to end for migration", async () => {
   const sources = [`fragment Conditional on Widget @live { Name @include(if: false) }`, `query Conditional { Widget(Id: "w1") { ...Conditional } }`]
-  const compiled = compile(schema, sources, { conditionalDirectives: "legacy" })
+  const warnings: string[] = []
+  const compiled = compile(schema, sources, { conditionalDirectives: "legacy", onWarning: (message) => warnings.push(message) })
+  expect(warnings.some((message) => /conditionalDirectives: "legacy" is deprecated/.test(message))).toBe(true)
   expect(compiled.operations.Conditional!.text).toContain("@include(if: false)")
   expect(compiled.live.Widget!.operation.text).not.toContain("@include")
   expect(compiled.live.Widget!.operation.text).toContain("Name")
-  const types = generate(schema, sources, { conditionalDirectives: "legacy" })
+  const types = generate(schema, sources, { conditionalDirectives: "legacy", onWarning: () => {} })
   expect(types).toMatch(/readonly Name: string/)
   expect(types).not.toMatch(/Name\?:/)
   const { selectorOf } = await import("../src/client.js")

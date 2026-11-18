@@ -1,6 +1,6 @@
 ---
 name: graphql-orm-client-data
-description: Write components and data flows with graphql-orm-client. Use whenever a component shows or changes server data: fragments and route roots (loadQuery), pagination (@paged, @connection), refetching records (@refetchable), mutations and write outcomes, secrets (@sensitive), batched relations (@batch), readAll, deleted rows, persistence, porting from Apollo, and testing with graphql-orm-client/test.
+description: Write components and data flows with graphql-orm-client. Use whenever a component shows or changes server data: fragments and route roots (loadQuery), pagination (@paged, @connection), refetch (@refetchable), mutations, write outcomes, secrets (@sensitive), batched relations (@batch), @skip/@include, readAll, deleted rows, persistence, porting from Apollo, and testing with graphql-orm-client/test.
 ---
 
 # Fragments, roots, pagination and mutations
@@ -73,10 +73,14 @@ function Page({ loaded }: { loaded: LoadedQuery<TicketsPageQuery> }) {
   client makes a reader showing data throw to its error boundary. Browser only; the server renders the Suspense
   fallback, and React reports a recoverable error at hydration. In tests, render it inside `await act(async () => ...)`: React waits on
   the suspended read inside an awaited `act`.
-- `@skip`/`@include` selections and fragment arguments (`@argumentDefinitions`/`@arguments`) are
-  unsupported build errors. Use separate roots and operation variables. For existing conditional
-  documents, `conditionalDirectives: "legacy"` temporarily keeps unsafe old behaviour while migrating;
-  remove it after splitting roots. Whole-query hook `skip` is still supported.
+- `@skip`/`@include` on fields, spreads and inline fragments are evaluated with the operation's
+  variables: a skipped field is absent, not missing, and its generated type is optional. A conditional
+  spread is typed as maybe absent; check `hasFragment(Fragment, ref)` before `useFragment`. A variable's
+  default must be the same in every operation that spreads the fragment. A field a `@live` fragment
+  selects only conditionally isn't carried by the stream; its holders read it again on an event.
+  `conditionalDirectives: "legacy"` is deprecated: remove it and regenerate. `"reject"` keeps the
+  old build error. Fragment arguments (`@argumentDefinitions`/`@arguments`) are build errors; use
+  operation variables. Whole-query hook `skip` is still supported.
 
 ## Filters and lists
 
