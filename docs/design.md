@@ -1511,8 +1511,9 @@ read; a record written before then has no age and counts as stale. `0` makes eve
 because the compiler has to select the lifetime field; freshness selects nothing, so it needs no regeneration and adds nothing to
 the artifacts. It is the application's tolerance for old data, not a fact about the schema, and a test can set it per client. The
 cost is that a misspelled type name isn't caught at build time: it is simply never matched. It is its own entry point because the
-main bundle is watched for growth: main carries only the calls into it (MAIN_GROWTH), and the entry is ENTRY_SIZE bytes
-standalone, much of it the store reader and argument keys that main already has, which a bundler shares.
+main bundle is watched for growth: main carries only the calls into it (452 bytes, 167 gzip, measured at 85,013 / 27,335), and
+the entry is 6,847 / 2,835 bytes standalone, much of it the store reader and argument keys that main already has, which a
+bundler shares.
 
 **What restarts a record's age.** A write the store accepts from a query or refetch response, a mutation's response, a `@batch`
 relation's read, or a live event, when it wrote every field the store holds for the record. Each argument-keyed field

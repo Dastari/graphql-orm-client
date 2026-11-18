@@ -36,7 +36,7 @@ polled summary, doesn't restart its age. A query field that answered null is ask
 write refused as older, a restore and a stream with no event don't make a record fresh. A lifetime field still expires a record.
 Install it right after `createClient`, before any read.
 
-Nothing changes without it, and types left out of `staleMs` read as before. The main bundle grows by MAIN_GROWTH for the calls
+Nothing changes without it, and types left out of `staleMs` read as before. The main bundle grows by 452 bytes (167 gzip) for the calls
 into it.
 
 ### Changed: the test clock's `store` carries `now`
