@@ -222,11 +222,11 @@ it("disposing the client under a committed reader removes its data, even when th
   }
   await show(<Identity/>)
   expect(screen.getByText("a 3 ready")).toBeTruthy()
-  expected.push(/client this load belongs to was disposed/)
+  expected.push(/load's client was disposed/)
   await act(async () => { clientA.dispose(); swap(clientB) })
   // The old identity's rows are gone from the document, not hidden behind a fallback.
   expect(document.body.textContent).not.toContain("a 3")
-  expect(screen.getByText(/client this load belongs to was disposed/)).toBeTruthy()
+  expect(screen.getByText(/load's client was disposed/)).toBeTruthy()
   cleanup(); clientB.dispose()
 })
 
@@ -238,10 +238,10 @@ it("disposing the client re-renders a committed reader that nothing else re-rend
   const Still = memo(function Still() { return <Route loaded={loaded} label="kept"/> })
   await show(app(client, <Still/>))
   expect(screen.getByText("kept 2 ready")).toBeTruthy()
-  expected.push(/client this load belongs to was disposed/)
+  expected.push(/load's client was disposed/)
   await act(async () => { client.dispose() })
   expect(document.body.textContent).not.toContain("kept 2")
-  expect(screen.getByText(/client this load belongs to was disposed/)).toBeTruthy()
+  expect(screen.getByText(/load's client was disposed/)).toBeTruthy()
 })
 
 it("a read suspended when its client is disposed lets the next identity's transition finish", async () => {

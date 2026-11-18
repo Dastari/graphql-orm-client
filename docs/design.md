@@ -147,10 +147,10 @@ Disposing the client re-renders each mounted reader at once, through the store's
 urgent, so it happens even when the next identity's client arrives inside a transition. A reader with data throws
 to its error boundary, so none of the old identity's rows stay in the document, not even hidden behind a fallback.
 A read still suspended stays suspended for good: its wait never resolves once the client is disposed, and a render
-of a disposed client's handle without data suspends on a promise that never settles, cached weakly per client. It
-never shows the old identity's data, never throws into the next identity's boundary, and holds no listener or
-retention. A boundary showing only its fallback lets the next identity's transition commit. The next identity's
-loader supplies a new handle. A handle disposed or aborted while its client is alive throws `route load was
+of that handle suspends on the same wait. It never shows the old identity's data, never throws into the next
+identity's boundary, and holds no listener or retention. A boundary showing only its fallback lets the next
+identity's transition commit. Any other render of a disposed client's handle throws. The next identity's loader
+supplies a new handle. A handle disposed or aborted while its client is alive throws `route load was
 disposed`, as `useLoadedQuery`'s mount does, and a handle from another live client throws as well.
 
 The hook suspends with React's `use`, so React 19 is required (as the peer range says). In tests, render inside
