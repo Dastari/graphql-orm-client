@@ -35,7 +35,7 @@ const Token = compiled.operations.Token!
 const ticket = (Id: string, Title = `title-${Id}`, RecordVersion = 1) => ({ __typename: "Ticket", Id, Title, RecordVersion })
 const SECRET = "sensitive-value-never-inspected"
 
-function setup() {
+function setup(live: { minRereadMs?: number } = {}) {
   const clock = createTestClock()
   const streams = createMockStreams({ schema })
   let titles: Record<string, string> = {}
@@ -63,6 +63,7 @@ function setup() {
       settleMs: false,
       resyncJitterMs: 0,
       onDiagnostic: null,
+      ...live,
     },
   })
   const inspector = inspect(client, { enabled: true })
@@ -132,6 +133,46 @@ describe("the store inspector", () => {
     client.dispose()
   })
 
+  it("keeps an event's cause for its re-read when another read comes between, and drops it when the query closes", async () => {
+    const { client, clock, streams, inspector } = setup({ minRereadMs: 5000 })
+    const page = client.watchQuery(TicketPage, { Id: "t1" })
+    page.open()
+    await clock.tick(1)
+    const childDeleted = () => streams.one("LiveTicket").emit(ticket("t1"), { action: "DELETED", changeKind: "PROPAGATED" })
+    childDeleted()
+    await clock.tick(1)
+    // The second event's re-read waits out minRereadMs, and a refetch is read meanwhile.
+    childDeleted()
+    await page.refetch()
+    await clock.tick(5000)
+    const causes = () => inspector.reads().map((read) => read.cause + (read.typename ? `:${read.typename}` : ""))
+    expect(causes()).toEqual(["first", "event:Ticket", "manual", "event:Ticket"])
+
+    // A re-read the close cancelled leaves no mark behind for the next time it opens.
+    await clock.tick(5000)
+    childDeleted()
+    await clock.tick(1)
+    childDeleted()
+    page.close()
+    page.open()
+    await clock.tick(1)
+    expect(causes().slice(4)).toEqual(["event:Ticket", "first"])
+    client.store.delete(encodeNodeId("Ticket", ["t1"]))
+    client.store.publish()
+    await clock.tick(5000)
+    expect(causes().slice(6)).toEqual(["stale"])
+    client.dispose()
+  })
+
+  it("names the client.query read a read is for", async () => {
+    const { client, inspector } = setup()
+    await client.query(TicketPage, { Id: "t1" }, { policy: "network-only" })
+    const [read] = inspector.reads()
+    expect(read).toMatchObject({ operation: "TicketPage", cause: "manual" })
+    expect(read!.query).toMatch(/^query:/)
+    client.dispose()
+  })
+
   it("keeps a bounded list of reads", async () => {
     const { client, clock } = setup()
     const inspector = inspect(client)
@@ -143,6 +184,14 @@ describe("the store inspector", () => {
     await clock.tick(1)
     for (let i = 0; i < 3; i++) await page.refetch()
     expect(bounded.reads().map((read) => read.cause)).toEqual(["manual", "manual"])
+    bounded.dispose()
+    // Anything but a finite positive number is the default.
+    for (const maxReads of [Number.NaN, 0, -1, Infinity]) {
+      const fallback = inspect(client, { enabled: true, maxReads })
+      for (let i = 0; i < 201; i++) await page.refetch()
+      expect(fallback.reads()).toHaveLength(200)
+      fallback.dispose()
+    }
     client.dispose()
   })
 
@@ -233,6 +282,40 @@ describe("the store inspector", () => {
     expect(again).not.toBe(inspector)
     await page.refetch()
     expect(again.reads()).toMatchObject([{ operation: "TicketPage", cause: "manual" }])
+    client.dispose()
+  })
+
+  it("passes calls through once detached, and puts back only a member that is still its own", async () => {
+    const { client, clock, inspector } = setup()
+    // A second copy of the module, as an application can end up with.
+    const copy = (await import("../src/inspector.js?copy" as string)) as typeof import("../src/inspector.js")
+    const second = copy.inspect(client, { enabled: true })
+    expect(second).not.toBe(inspector)
+    const page = client.watchQuery(TicketPage, { Id: "t1" })
+    page.open()
+    await clock.tick(1)
+    expect([inspector.reads().length, second.reads().length]).toEqual([1, 1])
+    // Detached in the order they attached: the first's wrapper is under the second's, so it stays and passes calls through.
+    inspector.dispose()
+    await page.refetch()
+    expect([inspector.reads().length, second.reads().length]).toEqual([0, 2])
+    second.dispose()
+    await page.refetch()
+    expect([inspector.reads().length, second.reads().length]).toEqual([0, 0])
+    expect(page.getState().status).toBe("ready")
+
+    // Something else wraps the member after the inspector: detaching leaves that wrapper in place.
+    const third = inspect(client, { enabled: true })
+    const target = client as unknown as { executeResponse: (...args: unknown[]) => unknown }
+    const underneath = target.executeResponse
+    const outer = vi.fn(function (this: unknown, ...args: unknown[]) { return underneath.apply(this, args) })
+    target.executeResponse = outer
+    third.dispose()
+    expect(target.executeResponse).toBe(outer)
+    await page.refetch()
+    expect(outer).toHaveBeenCalledTimes(1)
+    expect(third.reads()).toEqual([])
+    expect(page.getState().status).toBe("ready")
     client.dispose()
   })
 

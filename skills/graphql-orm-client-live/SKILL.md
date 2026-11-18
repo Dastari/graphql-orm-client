@@ -129,7 +129,7 @@ Then, in the running application:
 
    ```ts
    if (import.meta.env.DEV) void import("graphql-orm-client/inspector").then(({ inspect }) => {
-     const inspector = inspect(client)
+     const inspector = inspect(client, { enabled: import.meta.env.DEV })
      inspector.subscribe((event) => { if (event.type === "read") console.debug(event.read.operation, event.read.cause) })
    })
    ```

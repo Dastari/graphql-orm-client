@@ -28,7 +28,10 @@ export interface InspectedRead {
   readonly operation: string
   /** The variables it was sent with. A `loadMore` read has the next page's. */
   readonly variables: Variables
-  /** The `InspectedQuery.key` of the query it reads, or null when no query holds those variables (a `loadMore` page). */
+  /**
+   * The `InspectedQuery.key` of the query keeping records under these variables: a watched query's, else a `client.query` read's.
+   * Null when none does, as for a `loadMore` page, a `readAll` page or a `client.execute` call.
+   */
   readonly query: string | null
   readonly cause: InspectedReadCause
   /** The type of the event behind an `event` or `list` read. */
@@ -42,7 +45,10 @@ export interface InspectedRecord {
   readonly typename: string
   /** A copy of the stored fields, by storage key. A link is `{ __ref: id }` and a list of links `{ __refs: [id, ...] }`. */
   readonly fields: Readonly<Record<string, unknown>>
-  /** The `key` of each query whose read reaches the record and keeps it from collection. Empty: it goes at the next collection. */
+  /**
+   * The `key` of each retained query whose read reaches the record. Empty means no query keeps it: the next collection deletes it,
+   * unless it is the root record (`client:root`) or, with `@batch` relation batching installed, a mounted fragment or query reaches it.
+   */
   readonly heldBy: readonly string[]
   /** The `id` of each stream whose events are written into the record. */
   readonly coveredBy: readonly string[]
@@ -99,7 +105,7 @@ export interface InspectorOptions {
    * isn't `"production"`). Where `NODE_ENV` is `"production"` it never attaches, whatever this says.
    */
   readonly enabled?: boolean
-  /** Most reads `reads()` keeps, oldest dropped first. Default 200. */
+  /** Most reads `reads()` keeps, oldest dropped first. Default 200, also for anything but a finite positive number. */
   readonly maxReads?: number
 }
 
@@ -117,29 +123,37 @@ export interface Inspector {
   reads(): readonly InspectedRead[]
   /** Hear each read as it starts, each batch of writes, and disposal. Returns the function that stops it. */
   subscribe(listener: (event: InspectorEvent) => void): () => void
-  /** Detach from the client and drop everything. The client is unaffected. */
+  /** Detach from the client and drop everything, for every caller that was given this inspector. The client is unaffected. */
   dispose(): void
 }
 
 const attached = new WeakMap<Client, Inspector>()
 
 /**
- * Inspect `client` in development. Returns the inspector already attached to it, if there is one.
+ * Inspect `client` in development.
+ *
+ * There is one inspector per client: while one is attached, `inspect(client, options)` returns it and ignores `options`, and
+ * `dispose()` from any caller ends it for all of them.
  *
  * It never receives an `@sensitive` result or a `no-store` mutation's result: neither enters the store, and it sees only that a
  * query read started, never a response. Mutations, and `@sensitive` queries, aren't recorded at all. When the client is disposed it
  * drops what it holds and its listeners, at once.
  *
  * Imported from `graphql-orm-client/inspector`, so an application that doesn't import it doesn't bundle it. Import it behind a
- * development check, so a production bundle doesn't carry it: `if (import.meta.env.DEV) void import("graphql-orm-client/inspector")
- * .then(({ inspect }) => inspect(client))`.
+ * development check, so a production bundle doesn't carry it, and say where it's development:
+ *
+ * ```ts
+ * if (import.meta.env.DEV) void import("graphql-orm-client/inspector").then(({ inspect }) => inspect(client, { enabled: import.meta.env.DEV }))
+ * ```
  */
 export function inspect(client: Client, options: InspectorOptions = {}): Inspector {
   const existing = attached.get(client)
   if (existing?.active) return existing
   const environment = nodeEnv()
   if (environment === "production" || !(options.enabled ?? environment !== undefined) || client.store.isDisposed) return INERT
-  const inspector = new StoreInspector(client, Math.max(0, Math.floor(options.maxReads ?? 200)), () => attached.delete(client))
+  const max = options.maxReads
+  const maxReads = typeof max === "number" && Number.isFinite(max) && max >= 1 ? Math.floor(max) : 200
+  const inspector = new StoreInspector(client, maxReads, () => attached.delete(client))
   attached.set(client, inspector)
   return inspector
 }
@@ -152,8 +166,16 @@ class StoreInspector implements Inspector {
   private client: Client | null
   private log: InspectedRead[] = []
   private listeners = new Set<(event: InspectorEvent) => void>()
-  /** Queries an event marked to read again, by key, with what marked them. Consumed by the query's next read. */
+  /**
+   * Queries an event marked to read again, by key, with what marked them. The re-read the event asked for consumes it; another
+   * read meanwhile, such as a refetch, doesn't. Closing the query, which cancels that re-read, drops it.
+   */
   private marks = new Map<string, { readonly cause: "event" | "list"; readonly typename: string }>()
+  /**
+   * What the wrappers this inspector puts on the client reach it through. Null once it has detached, so a wrapper it couldn't
+   * take off (something else wrapped the member after it) passes calls straight through.
+   */
+  private link: { inspector: StoreInspector | null } = { inspector: this }
   /** Operation names by selections, for queries no longer open. */
   private names = new WeakMap<readonly Selection[], string>()
   private detach: (() => void)[] = []
@@ -163,10 +185,10 @@ class StoreInspector implements Inspector {
     const target = client as unknown as { executeResponse: ExecuteResponse }
     const own = Object.prototype.hasOwnProperty.call(client, "executeResponse") ? target.executeResponse : undefined
     const original = target.executeResponse
-    const self = this
+    const link = this.link
     // Only arguments pass through here; the response goes back to the caller untouched.
     const wrapper = function (this: Client, artifact, variables, options = {}) {
-      if (artifact.kind === "query" && !artifact.sensitive) self.started(artifact, variables, options.readCause ?? "manual")
+      if (artifact.kind === "query" && !artifact.sensitive) link.inspector?.started(artifact, variables, options.readCause ?? "manual", options.beforeSend !== undefined)
       return original.call(this, artifact, variables, options)
     } as ExecuteResponse
     target.executeResponse = wrapper
@@ -179,7 +201,7 @@ class StoreInspector implements Inspector {
     if (live) {
       const onEvent = live.onEvent
       const tap: OnEvent = (holders, typename, stale, fragments) => {
-        this.marked(holders, typename, stale, fragments)
+        link.inspector?.marked(holders, typename, stale, fragments)
         onEvent(holders, typename, stale, fragments)
       }
       live.onEvent = tap
@@ -200,20 +222,23 @@ class StoreInspector implements Inspector {
     return this.client !== null
   }
 
-  private started(artifact: { readonly name: string; readonly hash: string; readonly selections: readonly Selection[] }, variables: Variables, sent: ReadCause): void {
+  /** A query read started. `reread`: a re-read a query scheduled itself (it carries `beforeSend`), not a refetch, poll or page. */
+  private started(artifact: { readonly name: string; readonly hash: string; readonly selections: readonly Selection[] }, variables: Variables, sent: ReadCause, reread: boolean): void {
     try {
       const client = this.client
       if (!client) return
       this.names.set(artifact.selections, artifact.name)
       const key = `${artifact.hash}:${stableStringify(variables)}`
       const mark = this.marks.get(key)
-      this.marks.delete(key)
-      const held = [...client["resources"].values()].some((resource) => resource.key === key)
+      // The re-read an event asked for: it can be sent as another cause when one came first, such as a burst repair.
+      if (sent === "stale" || reread) this.marks.delete(key)
+      const retained = client.store["retained"]
+      const query = retained.has(key) ? key : retained.has(`query:${key}`) ? `query:${key}` : null
       const read: InspectedRead = {
         at: client.now(),
         operation: artifact.name,
         variables,
-        query: held ? key : null,
+        query,
         ...(sent === "stale" && mark ? { cause: mark.cause, typename: mark.typename } : { cause: sent }),
       }
       this.log.push(read)
@@ -229,10 +254,27 @@ class StoreInspector implements Inspector {
     try {
       for (const resource of this.client?.["resources"].values() ?? []) {
         if (resource.users === 0 || !holders.has(resource.key) || !resource.needsEventReread(typename, stale, fragments)) continue
-        if (!this.marks.has(resource.key)) this.marks.set(resource.key, { cause: resource.artifact.lists?.includes(typename) ? "list" : "event", typename })
+        if (this.marks.has(resource.key)) continue
+        this.marks.set(resource.key, { cause: resource.artifact.lists?.includes(typename) ? "list" : "event", typename })
+        this.onClose(resource)
       }
     } catch {
       // As above.
+    }
+  }
+
+  /** Queries whose close this inspector watches. */
+  private closing = new WeakSet<object>()
+
+  /** Drop a query's mark when it closes: closing cancels the re-read the mark was for. Once per query; passes through after detach. */
+  private onClose(resource: { readonly key: string; cancelRereads(): void }): void {
+    if (this.closing.has(resource)) return
+    this.closing.add(resource)
+    const link = this.link
+    const cancel = resource.cancelRereads
+    resource.cancelRereads = function (this: unknown) {
+      link.inspector?.marks.delete(resource.key)
+      return cancel.call(this)
     }
   }
 
@@ -353,11 +395,13 @@ class StoreInspector implements Inspector {
     if (!this.client) return
     for (const detach of this.detach) detach()
     this.detach = []
+    this.link.inspector = null
     this.client = null
     this.forget()
     this.log = []
     this.marks = new Map()
     this.names = new WeakMap()
+    this.closing = new WeakSet()
     const listeners = this.listeners
     this.emit({ type: "dispose" })
     listeners.clear()

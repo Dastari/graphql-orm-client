@@ -1713,15 +1713,20 @@ no UI:
 | `dispose()` | Detaches. The client is unaffected |
 
 Everything but `reads()` is worked out from the client when it is called, so it is current and the inspector keeps no copy of
-the store. `heldBy` is what collection uses: the reads of the store's retained queries. A record with none goes at the next
-collection.
+the store. `heldBy` comes from what collection uses: the reads of the store's retained queries. A record with none is deleted
+by the next collection, unless it is the root record (`client:root`) or, with `@batch` relation batching installed, a mounted
+fragment or query reaches it, since collection then keeps what subscribed views read too. A read's `query` is the key of the
+retained query under those variables, a watched query's before a `client.query` read's, or null when none is retained, as for
+a `loadMore` or `readAll` page.
 
 A read's `cause` is a `ReadCause` from [read and stream counters](#read-and-stream-counters), with the client's `stale` split in two
 where an event was behind it. `event` means an event for a record the query holds carried something it couldn't use (a keys-only
 stream, a child deleted below the record, a field the stream can't carry). `list` means an event for the type of a list the query
 shows. Both name the event's `typename`. `stale` alone now means a record the query shows was deleted or collected. Events that
-coalesce into one read give it the first one's cause. A refresh that reads several pages of a list is one
-read; `liveHealth().reads` counts its requests.
+coalesce into one read give it the first one's cause. The mark an event leaves is used by the re-read it asked for, even when a
+refetch or poll is read first, and dropped when the query closes, since closing cancels that re-read. A re-read that goes out
+under another cause that came first, such as a burst repair, uses the mark up and keeps that cause. A refresh that reads several
+pages of a list is one read; `liveHealth().reads` counts its requests.
 
 What it never receives:
 
@@ -1734,17 +1739,21 @@ What it never receives:
 How it can't be on in production:
 
 - It is its own entry point, so it is in a bundle only if the application imports it. Import it behind a development check, such as
-  `if (import.meta.env.DEV) void import("graphql-orm-client/inspector").then(({ inspect }) => inspect(client))`.
+  `if (import.meta.env.DEV) void import("graphql-orm-client/inspector").then(({ inspect }) => inspect(client, { enabled: import.meta.env.DEV }))`.
 - Where the bundle's `process.env.NODE_ENV` is `production`, `inspect` returns an inert inspector (`active: false`, every list
   empty) and attaches nothing, whatever `enabled` says. Left out, `enabled` is on only where `NODE_ENV` is set and isn't
   `production`, as in development and tests. Where nothing sets `NODE_ENV`, pass `enabled: import.meta.env.DEV` or your bundler's
   equivalent, not `true`.
 - It puts nothing on `window` or any other global.
 
-It attaches by wrapping the client's `executeResponse` on the instance, to see each query read start, and the live layer's
-event handler, to see which queries an event marked; both are put back on dispose. The main entry point has no hook for it and
-is the same bytes with or without it. It reads the client's internals, so it works only with a client from the same installed
-package. `inspect(client)` again returns the inspector already attached.
+It attaches by wrapping the client's `executeResponse` on the instance, to see each query read start, the live layer's event
+handler, to see which queries an event marked, and a marked query's `cancelRereads`, to see it close. On dispose it puts back
+each client member that is still its own wrapper; one that something else wrapped afterwards, such as a second copy of this
+module, stays and passes every call straight through. The main entry point has no hook for it and is the same bytes with or
+without it. It reads the client's internals, so it works only with a client from the same installed package.
+
+There is one inspector per client. While one is attached, `inspect(client, options)` returns it and ignores `options`, and
+`dispose()` from any caller ends it for all of them. `maxReads` that isn't a finite positive number is the default, 200.
 
 ## Zero keyed subscription cap
 
