@@ -1,7 +1,8 @@
 /**
  * Printing that gives the same text with graphql 16 and 17. Operation text is hashed and compared by `generate --check`,
  * and a schema snapshot is hashed for drift and persistence, so a project's output must not change with the graphql
- * version it installs. graphql 17 prints object values as `{ a: 1 }` where 16 prints `{a: 1}`, and prints a schema
+ * version it installs. graphql 17 prints object values as `{ a: 1 }` where 16 prints `{a: 1}`, breaks a list value
+ * longer than 80 characters over several lines where 16 keeps it on one, and prints a schema
  * default as written where 16 prints the coerced value, with the input fields' own defaults filled in. Both are
  * printed here as graphql 16 prints them, so nothing changes for a project that stays on 16.
  */
@@ -22,16 +23,19 @@ import {
   type GraphQLInputType,
   type GraphQLSchema,
   type InputValueDefinitionNode,
+  type ListValueNode,
   type ObjectValueNode,
   type ValueNode,
 } from "graphql"
 import * as graphql from "graphql"
 
-/** `print`, with object values written as graphql 16 writes them, so line wrapping also matches. */
+/** `print`, with object and list values written as graphql 16 writes them, so line wrapping also matches. */
 export function printStable(node: ASTNode): string {
   return print(visit(node, {
     // An enum value prints verbatim, so it carries the finished text through the rest of the printer.
     ObjectValue: { leave: (value: ObjectValueNode) => ({ kind: Kind.ENUM, value: `{${value.fields.map((field) => `${field.name.value}: ${print(field.value)}`).join(", ")}}` }) },
+    // graphql 17 breaks a list longer than 80 characters onto several lines; graphql 16 keeps it on one.
+    ListValue: { leave: (value: ListValueNode) => ({ kind: Kind.ENUM, value: `[${value.values.map((item) => print(item)).join(", ")}]` }) },
   }))
 }
 
