@@ -315,7 +315,7 @@ main bundle is unchanged.
 `subscribe`, `dispose`) with no UI. It sees reads only as they start, never a response, and skips mutations and `@sensitive`
 queries; it detaches and drops everything inside `client.dispose()`. It never attaches where `NODE_ENV` is `production`, and by
 default only where `NODE_ENV` says development or tests. The main bundle is byte-for-byte the same (84,561 raw, 27,168 gzip);
-the inspector's own closure is 7,961 raw, 3,332 gzip.
+the inspector's own closure is 8,369 raw, 3,494 gzip.
 
 **R32. Both current graphql versions.** An application can use graphql 16 or 17 as the single copy of `graphql`, and
 the generated output, operation hashes and schema snapshot are the same text with either
