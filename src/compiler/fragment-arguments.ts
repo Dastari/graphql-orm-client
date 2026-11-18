@@ -360,32 +360,46 @@ function checkSpreads(
   variableOf: (name: string) => VariableType | undefined,
   problems: string[]
 ): void {
-  type Seen = { readonly name: string; readonly key: string; readonly types: ReadonlySet<string> | null }
-  // `types`: the concrete types the selections can apply to, narrowed by type conditions; null for any.
-  const onObject = (set: SelectionSetNode, seen: Seen[], types: ReadonlySet<string> | null) => {
-    for (const selection of set.selections) {
-      if (selection.kind === Kind.FIELD) {
-        if (selection.selectionSet) onObject(selection.selectionSet, [], null)
-      } else if (selection.kind === Kind.INLINE_FRAGMENT) {
-        onObject(selection.selectionSet, seen, narrow(types, possibleTypesOf(schema, selection.typeCondition?.name.value)))
-      } else {
-        const name = selection.name.value
-        const definition = fragments.get(name)
-        if (!definition) continue
-        checkSpread(schema, selection, definition, where, variableOf, problems)
-        const args = spreadArguments(definition, selection)
-        if (!args) continue
-        const key = [...bindingsOf(args)].map(([argument, value]) => `${argument}: ${print(value)}`).join(", ")
-        const applies = narrow(types, possibleTypesOf(schema, definition.typeCondition.name.value))
-        // Spreads under type conditions that can't both match one object never meet.
-        const earlier = seen.find((entry) => entry.name === name && entry.key !== key && overlaps(entry.types, applies))
-        if (earlier)
-          problems.push(`${where}: fragment ${name} is spread twice on one object with different arguments (${earlier.key}) and (${key}); spread each under its own alias`)
-        seen.push({ name, key, types: applies })
+  // `types`: the concrete types a spread can apply to, narrowed by type conditions; null for any. `path`: the same for each
+  // object above, since fields of one response key merge into one object only where their parents can be one object.
+  type Types = ReadonlySet<string> | null
+  type Seen = { readonly name: string; readonly key: string; readonly types: Types; readonly path: readonly Types[] }
+  type Part = { readonly set: SelectionSetNode; readonly path: readonly Types[] }
+  const together = (a: readonly Types[], b: readonly Types[]) => a.every((types, index) => overlaps(types, b[index] ?? null))
+  // GraphQL merges every field of one response key under an object into one field, and the reader builds one object for it,
+  // so their selections are checked as one object.
+  const onObject = (parts: readonly Part[]) => {
+    const seen: Seen[] = []
+    const children = new Map<string, Part[]>()
+    const walk = (set: SelectionSetNode, types: Types, path: readonly Types[]) => {
+      for (const selection of set.selections) {
+        if (selection.kind === Kind.FIELD) {
+          if (!selection.selectionSet) continue
+          const key = selection.alias?.value ?? selection.name.value
+          children.set(key, [...(children.get(key) ?? []), { set: selection.selectionSet, path: [...path, types] }])
+        } else if (selection.kind === Kind.INLINE_FRAGMENT) {
+          walk(selection.selectionSet, narrow(types, possibleTypesOf(schema, selection.typeCondition?.name.value)), path)
+        } else {
+          const name = selection.name.value
+          const definition = fragments.get(name)
+          if (!definition) continue
+          checkSpread(schema, selection, definition, where, variableOf, problems)
+          const args = spreadArguments(definition, selection)
+          if (!args) continue
+          const key = [...bindingsOf(args)].map(([argument, value]) => `${argument}: ${print(value)}`).join(", ")
+          const applies = narrow(types, possibleTypesOf(schema, definition.typeCondition.name.value))
+          // Spreads under type conditions that can't both match one object never meet.
+          const earlier = seen.find((entry) => entry.name === name && entry.key !== key && overlaps(entry.types, applies) && together(entry.path, path))
+          if (earlier)
+            problems.push(`${where}: fragment ${name} is spread twice on one object with different arguments (${earlier.key}) and (${key}); spread each under its own alias`)
+          seen.push({ name, key, types: applies, path })
+        }
       }
     }
+    for (const part of parts) walk(part.set, null, part.path)
+    for (const group of children.values()) onObject(group)
   }
-  onObject(selectionSet, [], null)
+  onObject([{ set: selectionSet, path: [] }])
 }
 
 function checkSpread(

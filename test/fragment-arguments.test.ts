@@ -1,6 +1,6 @@
 import { buildSchema, graphql, parse, validate } from "graphql"
 import { describe, expect, it } from "vitest"
-import { createClient, readFragment } from "../src/client.js"
+import { createClient, fragmentSelector, hasFragment, readFragment } from "../src/client.js"
 import { CompileError, compile, generate, type CompileOptions } from "../src/compiler/index.js"
 import { encodeNodeId } from "../src/node-id.js"
 import { createMockNetwork, createMockStreams, createTestClock } from "../src/test/index.js"
@@ -418,5 +418,93 @@ describe("fragment arguments", () => {
     expect(operation.text).toMatch(/^fragment Plain on Widget \{\n {2}__typename\n {2}Id\n {2}RecordVersion\n {2}Name\n {2}\.\.\.Thumb_[0-9a-f]{8}\n\}/m)
     const widget = operation.selections[0] as import("../src/artifact.js").LinkSelection
     expect(widget.selections.find((selection) => selection.kind === "spread")).toEqual({ kind: "spread", name: "Plain", typeCondition: "Widget", possibleTypes: ["Widget"] })
+  })
+})
+
+describe("fragment arguments with @skip and @include", () => {
+  const detail = `fragment Detail on Widget @argumentDefinitions(full: {type: "Boolean!", defaultValue: false}) {
+    Name
+    Caption(Locale: "en") @include(if: $full)
+  }`
+  const details = `query Details($Id: String!, $Full: Boolean!) {
+    brief: Widget(Id: $Id) { ...Detail }
+    literal: Widget(Id: $Id) { ...Detail @arguments(full: true) }
+    passed: Widget(Id: $Id) { ...Detail @arguments(full: $Full) }
+  }`
+  const merged = `query Merged($Id: String!, $show: Boolean!) {
+    w: Widget(Id: $Id) { Name }
+    w: Widget(Id: $Id) { ...Thumb @arguments(size: 5) @include(if: $show) }
+    big: Widget(Id: $Id) { ...Thumb @arguments(size: 500) }
+  }`
+
+  it("evaluates a condition on a fragment's argument in each spread's scope: a default, a literal, an operation variable", async () => {
+    for (const full of [false, true]) {
+      const { compiled, network, client } = setup([detail, details])
+      const operation = compiled.operations.Details!
+      expect(operation.text).toContain("@include(if: false)")
+      expect(operation.text).toContain("@include(if: true)")
+      expect(operation.text).toContain("@include(if: $Full)")
+      const { snapshot, errors } = await client.execute<any>(operation, { Id: "w1", Full: full })
+      expect(errors).toEqual([])
+      expect(network.failures).toEqual([])
+      const read = (alias: string) => {
+        const { store, selector } = fragmentSelector(compiled.fragments.Detail!, snapshot.data[alias])
+        return store.lookup<any>(selector)
+      }
+      // A field its condition leaves out is neither in the data nor missing.
+      expect(read("brief").data).not.toHaveProperty("Caption")
+      expect(read("brief").missing).toBe(false)
+      expect(read("literal").data).toMatchObject({ Name: "name-w1", Caption: "w1/en" })
+      expect(read("passed").missing).toBe(false)
+      if (full) expect(read("passed").data).toMatchObject({ Caption: "w1/en" })
+      else expect(read("passed").data).not.toHaveProperty("Caption")
+      client.dispose()
+    }
+  })
+
+  it("reads a conditional spread of a fragment with arguments inside a merged link, beside the same fragment under another alias", async () => {
+    for (const show of [false, true]) {
+      const { compiled, network, client } = setup([thumb, merged])
+      const { snapshot, errors } = await client.execute<any>(compiled.operations.Merged!, { Id: "w1", show })
+      expect(errors).toEqual([])
+      expect(network.failures).toEqual([])
+      expect(snapshot.data.w.Name).toBe("name-w1")
+      expect(hasFragment(compiled.fragments.Thumb!, snapshot.data.w)).toBe(show)
+      if (show) expect(readFragment<any>(compiled.fragments.Thumb!, snapshot.data.w)).toMatchObject({ Image: "w1@5:1" })
+      expect(readFragment<any>(compiled.fragments.Thumb!, snapshot.data.big)).toMatchObject({ Image: "w1@500:1" })
+      client.dispose()
+    }
+  })
+
+  it("keeps records a condition on a fragment's argument includes while a query holds them", async () => {
+    const documents = [
+      `fragment Kept on Widget @argumentDefinitions(on: {type: "Boolean!"}) { Notes(Limit: 1) @include(if: $on) { Body } }`,
+      `query Holds { Widget(Id: "w1") { ...Kept @arguments(on: true) } }`,
+    ]
+    const { compiled, client } = setup(documents)
+    const watched = client.watchQuery<any>(compiled.operations.Holds!, {})
+    watched.open()
+    await watched.refetch()
+    const note = encodeNodeId("Note", ["w1-any-n0"])
+    expect(client.store.get(note)).toBeDefined()
+    client.store.collect()
+    expect(client.store.get(note)).toBeDefined()
+    watched.close()
+    client.dispose()
+  })
+
+  it("refuses one fragment with different arguments in two fields of one response key, which read as one object", () => {
+    const tag = `fragment Tag on Widget @argumentDefinitions(on: {type: "Boolean!"}) { Caption(Locale: "x") @include(if: $on) }`
+    expect(problemsOf(() => compile(schema, [tag, `query Q { w: Widget(Id: "w1") { ...Tag @arguments(on: true) } w: Widget(Id: "w1") { ...Tag @arguments(on: false) } }`]))).toEqual([
+      "operation Q: fragment Tag is spread twice on one object with different arguments (on: true) and (on: false); spread each under its own alias",
+    ])
+  })
+
+  it("generates a conditional field of a fragment with arguments as optional, and a conditional spread of one as maybe absent", () => {
+    const output = generate(schema, [thumb, detail, details, merged], { onWarning: () => {} })
+    expect(output).toContain('export type DetailFragment = { readonly __typename: "Widget"; readonly Name: string; readonly Caption?: string | null }')
+    expect(output).toContain('readonly brief: { readonly __typename: "Widget" } & FragmentRefs<"Detail"> | null')
+    expect(output).toMatch(/readonly w: \{ readonly __typename: "Widget"; readonly Name: string \} & \(\{\} \| FragmentRefs<"Thumb">\) \| null/)
+    expect(output).toContain('readonly big: { readonly __typename: "Widget" } & FragmentRefs<"Thumb"> | null')
   })
 })

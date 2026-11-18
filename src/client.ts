@@ -3,7 +3,7 @@ import { RESPONSE_FIELD_MISSING, missingFieldMessage, missingFields } from "./mi
 import { withoutErrorNulls } from "./partial.js"
 import { hadNoResponse, markNoResponse, rootKeys, wasNotSent, writeStatus, type WriteOutcome } from "./outcome.js"
 import type { ConnectionSpec, FragmentArtifact, FragmentRefFor, LinkSelection, OperationArtifact, PagedSpec, Selection } from "./artifact.js"
-import { fieldStorageKey, stableStringify, type Variables } from "./store/arguments.js"
+import { fieldStorageKey, included, stableStringify, type Variables } from "./store/arguments.js"
 import { contextOf, identify, normalize } from "./store/normalize.js"
 import { IDLE_TYPE_HEALTH, diagnosticMessage, typeHealth, worstOf, type LiveDiagnostic, type LiveHealth, type LiveHolding, type LiveTypeHealth } from "./health.js"
 import { LiveManager, type LiveOptions, type SubscriptionSink } from "./live.js"
@@ -366,6 +366,17 @@ export interface LoadedQuery<T> extends WatchedQuery<T> {
   readonly client: Client
   /** Retain while mounted, opening again if the load expired or its last user unmounted. The cleanup tolerates StrictMode effect replay. */
   mount(): () => void
+  /**
+   * For a suspending read (`useSuspenseLoadedQuery`) before it mounts: a promise, the same one while it is pending, that resolves
+   * when the read leaves `loading` (data or an error), when the load is disposed with its client alive, or when the load closes.
+   * It never resolves once the client is disposed. Opens an expired load again, as `mount` does, which sends a request. While it
+   * is pending the load stays open for up to twice `timeoutMs`; then it closes, so a render that never commits releases it, and a
+   * render still waiting opens it again. When it settles the usual deadline starts again. Throws once the load or its client is
+   * disposed.
+   */
+  suspend(): Promise<void>
+  /** The promise `suspend()` last returned, kept after it settles (then with `status: "fulfilled"`, which React's `use` reads). */
+  readonly waiting: Promise<void> | null
   /** End this loader; it can't be mounted again. Idempotent. Without this, an unused loader only pauses. */
   dispose(): void
 }
@@ -1684,8 +1695,8 @@ export class Client {
   }
 
   /** Report fields the response leaves out, per `missingFields`; returns the errors to resolve with. */
-  private checkFields(artifact: OperationArtifact<any, any>, data: Record<string, unknown>, errors: readonly GraphQLErrorLike[]): readonly GraphQLErrorLike[] {
-    const missing = missingFields(artifact, data, errors)
+  private checkFields(artifact: OperationArtifact<any, any>, data: Record<string, unknown>, errors: readonly GraphQLErrorLike[], variables: Variables): readonly GraphQLErrorLike[] {
+    const missing = missingFields(artifact, data, errors, variables)
     if (!missing.length) return errors
     if (this.missingFields === "error")
       return [...errors, ...missing.map((field) => ({ message: missingFieldMessage(artifact.name, field), path: field.path, extensions: { code: RESPONSE_FIELD_MISSING } }))]
@@ -1765,7 +1776,7 @@ export class Client {
       let errors = response.errors ?? []
       options.beforeWrite?.()
       if (!response.data) throw new OperationError(artifact.name, errors)
-      if (this.missingFields !== "off") errors = this.checkFields(artifact, response.data, errors)
+      if (this.missingFields !== "off") errors = this.checkFields(artifact, response.data, errors, variables as Variables)
       if (artifact.sensitive) return {
         snapshot: { data: response.data as T, missing: false, seen: new Set(), selector: selectorOf(artifact, variables) },
         errors,
@@ -1885,12 +1896,17 @@ export class Client {
     let timer: ReturnType<typeof setTimeout> | undefined
     // Nobody is using it for now: an expired load, or the last unmount. A later mount opens it again, because a handle can
     // outlive this, as when a slow route chunk takes longer than timeoutMs or a parent remounts.
+    // The wait of a render suspended on this load (`suspend`), while it is pending.
+    let wake: (() => void) | null = null
     const idle = () => {
       if (!open) return
       open = false
       clearTimeout(timer)
       this.subscriptions.delete(dispose)
       watched.close()
+      // After the caller's turn: a client being disposed has disposed its store by then, and that wait never resolves.
+      const pending = wake
+      if (pending) queueMicrotask(pending)
     }
     const dispose = () => {
       if (disposed) return
@@ -1904,14 +1920,45 @@ export class Client {
       this.subscriptions.add(dispose)
       watched.open()
     }
+    const live = () => {
+      if (disposed || this.store.isDisposed) throw new Error(`${artifact.name}: route load was disposed; start a new loadQuery`)
+      clearTimeout(timer)
+      if (!open) start()
+    }
+    const unused = (ms = timeoutMs) => {
+      clearTimeout(timer)
+      timer = setTimeout(idle, ms)
+      timer.unref?.()
+    }
+    let waiting: (Promise<void> & { status?: "fulfilled"; value?: undefined }) | null = null
     const loaded: LoadedQuery<T> = {
       ...watched, client: this,
       ready: Promise.resolve(),
       dispose,
+      get waiting() { return waiting },
+      suspend: () => {
+        if (wake) return waiting!
+        live()
+        // A waiting render holds the load for up to two deadlines; then it closes, and a render still waiting opens it again.
+        unused(2 * timeoutMs)
+        let off = () => {}, resolve!: () => void
+        const promise: NonNullable<typeof waiting> = new Promise<void>(done => { resolve = done })
+        const settle = wake = () => {
+          if (wake !== settle) return
+          wake = null
+          off()
+          if (open && mounts === 0) unused()
+          if (this.store.isDisposed) return
+          // As React's `use` reads it, so a render after this one doesn't suspend on a settled wait.
+          promise.status = "fulfilled"
+          resolve()
+        }
+        off = watched.subscribe(() => { if (watched.getState().status !== "loading") settle() })
+        if (watched.getState().status !== "loading") queueMicrotask(settle)
+        return waiting = promise
+      },
       mount: () => {
-        if (disposed || this.store.isDisposed) throw new Error(`${artifact.name}: route load was disposed; start a new loadQuery`)
-        clearTimeout(timer)
-        if (!open) start()
+        live()
         mounts += 1
         let released = false
         return () => {
@@ -1925,8 +1972,7 @@ export class Client {
     }
     if (options.signal?.aborted || this.store.isDisposed) { dispose(); return loaded }
     options.signal?.addEventListener("abort", dispose, { once: true })
-    timer = setTimeout(idle, timeoutMs)
-    timer.unref?.()
+    unused()
     start()
     // open starts the request; refetch joins it, except for an already complete cached read.
     if (!disposed) Object.assign(loaded, { ready: watched.getState().status === "ready" ? Promise.resolve() : Promise.race([watched.refetch(), cancelled]) })
@@ -2213,6 +2259,19 @@ export function refData(ref: unknown): FragmentRefData | null {
   return ((ref as Record<symbol, unknown>)[FRAGMENT_REF] as FragmentRefData | undefined) ?? null
 }
 
+/**
+ * Whether `ref` carries a spread of `fragment`. A spread under `@skip` or `@include` is typed as possibly absent, and is absent
+ * when its condition leaves it out; check with this before `readFragment` or `useFragment`.
+ *
+ * @example
+ * ```ts
+ * if (hasFragment(WidgetDetail, data.Widget)) return <Detail widget={data.Widget} />
+ * ```
+ */
+export function hasFragment<N extends string, R>(fragment: FragmentArtifact<any, N>, ref: R): ref is R & FragmentRefFor<N> {
+  return refData(ref)?.fragments.has(fragment.name) === true
+}
+
 /** The selector a fragment reads through a reference produced by a spread of that fragment. */
 export function fragmentSelector(fragment: FragmentArtifact<any, any>, ref: unknown): { store: Store; selector: Selector } {
   const data = refData(ref)
@@ -2272,6 +2331,7 @@ function findConnections(
   const record = store.get(id)
   if (!record) return found
   for (const selection of selections) {
+    if (!included(selection.conditions, variables)) continue
     if (selection.kind === "inline") {
       findConnections(store, selection.selections, variables, id, found)
       continue

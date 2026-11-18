@@ -1,4 +1,4 @@
-import type { ArgumentSpec, ConnectionSpec, FragmentArgumentSpec } from "../artifact.js"
+import type { ArgumentSpec, ConnectionSpec, FragmentArgumentSpec, SelectionCondition } from "../artifact.js"
 
 export type Variables = Readonly<Record<string, unknown>>
 
@@ -74,4 +74,23 @@ export function fragmentScope(fragment: string, args: readonly FragmentArgumentS
 export function argumentValue(args: readonly ArgumentSpec[], name: string, variables: Variables): unknown {
   const spec = args.find((arg) => arg.name === name)
   return spec ? resolve(spec, variables) : undefined
+}
+
+/**
+ * Whether a selection with these `@skip`/`@include` conditions applies under the variables. A variable left out takes the
+ * default the operation declares, as on the server; an explicit null doesn't, and like a variable with neither counts as false
+ * (the server refuses such a request).
+ */
+export function included(conditions: readonly SelectionCondition[] | undefined, variables: Variables): boolean {
+  if (!conditions) return true
+  for (const condition of conditions) {
+    if ("anyOf" in condition) {
+      if (!condition.anyOf.some((alternative) => included(alternative, variables))) return false
+      continue
+    }
+    const test = condition.if
+    const value = typeof test === "boolean" ? test : (variables[test.variable] === undefined ? test.default : variables[test.variable]) === true
+    if (value !== (condition.directive === "include")) return false
+  }
+  return true
 }

@@ -25,6 +25,64 @@ prints list values as graphql 16 does too, in operation text and in schema snaps
 Nothing changes on graphql 16. On graphql 17, run `graphql-orm-client generate` once; the output then matches what graphql 16
 generates.
 
+### Added: a development store inspector
+
+`inspect(client)`, from the new `graphql-orm-client/inspector` entry point, shows in development the records in a client's store,
+the queries holding each, the streams covering each, and why each query was read: `records()`, `queries()`, `streams()`,
+`reads()` and `subscribe(listener)`. A read's cause is one of `liveHealth().reads`' causes, with `event` and `list` where an event
+made the query read again. It never sees a response, so an `@sensitive` result or a `no-store` mutation result can't reach it,
+and it drops everything when its client is disposed. It doesn't attach where `NODE_ENV` is `production`; import it behind a
+development check so it isn't bundled. See "Store inspector" in `docs/design.md`.
+
+Nothing changes for an application that doesn't import it: the main entry point is the same bytes.
+
+### Added: `useSuspenseLoadedQuery`, a suspending read of a loader handle
+
+`useSuspenseLoadedQuery(handle)` from `graphql-orm-client/react` reads a `client.loadQuery` handle and suspends until it
+has data, so a route's `<Suspense>` fallback shows while the loader's read is in flight. It sends no request of its own,
+StrictMode included. A first read that fails throws to the nearest error boundary; `await handle.refetch()` before
+resetting the boundary. After the first data it doesn't suspend again for that handle; a new handle does, and keeps the
+previous screen when set inside `startTransition`. Disposing the client re-renders a reader showing data at once, even
+when the next client arrives in a transition, and it throws to its error boundary, so the old identity's data leaves the
+page. A read still suspended stays suspended: it never shows data or throws under the next identity, and retains nothing.
+On the server it throws, so React renders the fallback there and reports a recoverable error at hydration.
+`LoadedQuery` gains `suspend()`, which the hook uses while it waits, and `waiting`, the promise it last returned. A pending
+wait holds the handle open for up to twice `timeoutMs`, then closes it. Nothing changes for `useLoadedQuery`. No
+migration.
+
+### Added: `@skip` and `@include` are evaluated with the operation's variables
+
+`@skip` and `@include` on fields, fragment spreads and inline fragments now compile by default
+([#100](https://github.com/Dastari/graphql-orm-client/issues/100)). The directive stays in the operation text, and readers and
+normalisation evaluate it with the operation's variables: a field the condition leaves out is absent from the data, not missing, and
+causes no read. `missingFields` reports a field the condition keeps and the response leaves out. Generated types make a conditional
+field optional, and type a conditional spread as maybe absent; narrow it with the new `hasFragment(fragment, ref)` before
+`readFragment` or `useFragment`. A field `@live` fragments select only conditionally stays out of the stream (the generator warns
+that the stream excludes it), and the fragments selecting it re-read their holders on an event with their own variables. A variable's
+declared default applies when it's left out; operations that spread one fragment must give its variable the same default, or the
+build fails naming them.
+
+Nothing changes for a working application: until now these directives failed the build unless `conditionalDirectives: "legacy"` was set.
+
+- **Without `conditionalDirectives`:** nothing to do. Documents that failed the build with `@skip` or `@include` now build. To keep
+  that build error, set `conditionalDirectives: "reject"`.
+- **With `conditionalDirectives: "legacy"`:** it still works as before (a skipped field reads as missing, its type is required, and
+  the stream selects it), and it now warns at each build that it's deprecated and will be removed. To move off it: remove the
+  setting and regenerate; fix what the type checker reports by handling each conditional field as possibly `undefined`, and wrapping
+  each read through a conditional spread in `if (hasFragment(Fragment, ref))`. A fragment whose condition variable has different
+  defaults in the operations that spread it fails the build: give it the same default in each, or none.
+- **With any other `conditionalDirectives` value:** generation now fails with `conditionalDirectives must be "evaluate", "reject"
+  or "legacy"`. An unknown value used to act as `"reject"`; set `"reject"` to keep that, or remove the setting.
+
+### Fixed: a link selected twice under one parent read only its last selection
+
+A link field selected more than once under one parent, such as `Vendor { Id } Vendor { Name }`, or once beside an inline fragment
+without a type condition that selects it again, read as the last selection alone: fields and fragment references from the others
+were absent from the data although the response and the store held them. The compiler now merges those selections into one link
+in the read selections, so the data holds all of them; a part under `@skip`/`@include` keeps its condition inside the merged link.
+The operation sent to the server is unchanged, and so are the artifacts of documents that select no link twice. Regenerate to get
+the fix. Selections of one link in inline fragments that narrow an interface or union to different types are still read separately.
+
 ### Added: fragment arguments
 
 A fragment can declare arguments with `@argumentDefinitions(size: {type: "Int!", defaultValue: 64})`, and a spread passes them

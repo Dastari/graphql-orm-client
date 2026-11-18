@@ -18,7 +18,7 @@ import {
   type OperationDefinitionNode,
 } from "graphql"
 import type { Selection } from "../artifact.js"
-import { CompileError, compile, type CompileOptions, type LiveAreaReport } from "./compile.js"
+import { CompileError, compile, mayLeaveOut, type CompileOptions, type LiveAreaReport } from "./compile.js"
 import { hasDefault, printSchemaStable } from "./print.js"
 
 export interface GenerateOptions extends CompileOptions {
@@ -57,9 +57,13 @@ const BUILT_IN_SCALARS: Record<string, string> = {
 
 const OPERATION_SUFFIX = { query: "Query", mutation: "Mutation", subscription: "Subscription" } as const
 
+/** One selection of a response key; `optional` when its `@skip`/`@include`, or an enclosing one, can leave it out. */
+type Part = { readonly selections: readonly Selection[]; readonly optional: boolean }
+
+/** `optional`: every selection of the response key can be left out. */
 type Member =
-  | { readonly kind: "scalar"; readonly ts: string }
-  | { kind: "link"; readonly type: GraphQLOutputType; readonly types: readonly string[]; selections: Selection[]; batch?: boolean }
+  | { readonly kind: "scalar"; readonly ts: string; readonly optional: boolean }
+  | { kind: "link"; readonly type: GraphQLOutputType; readonly types: readonly string[]; parts: Part[]; batch?: boolean; optional: boolean }
 
 /**
  * Generate a TypeScript module from the documents in an application's `graphql(...)` calls.
@@ -115,44 +119,56 @@ export function generate(schema: GraphQLSchema, sources: readonly string[], opti
   const wrapNonNull = (type: GraphQLOutputType, inner: string): string =>
     isListType(type) ? `ReadonlyArray<${wrapOutput(type.ofType, inner)}>` : inner
 
-  const objectType = (typenames: readonly string[], selections: readonly Selection[]): string => {
+  // When a key is selected more than once and only some selections are conditional, the fields only those select are optional.
+  const objectType = (typenames: readonly string[], parts: readonly Part[]): string => {
     const variants = typenames.map((typename) => {
       const members = new Map<string, Member>()
-      const refs = new Set<string>()
-      collect(typename, selections, members, refs)
+      // Each spread, and whether its `@skip`/`@include` can leave it out.
+      const refs = new Map<string, boolean>()
+      for (const part of parts) collect(typename, part.selections, members, refs, parts.length > 1 && part.optional)
       const fields = [...members].map(([key, member]) => {
-        if (member.kind === "scalar") return `readonly ${key}: ${member.ts}`
-        return `readonly ${key}: ${member.batch ? `RelationState<${objectType(member.types, member.selections)}>` : wrapOutput(member.type, objectType(member.types, member.selections))}`
+        const name = `readonly ${key}${member.optional ? "?" : ""}`
+        if (member.kind === "scalar") return `${name}: ${member.ts}`
+        return `${name}: ${member.batch ? `RelationState<${objectType(member.types, member.parts)}>` : wrapOutput(member.type, objectType(member.types, member.parts))}`
       })
       const body = `{ ${fields.join("; ")}${fields.length ? " " : ""}}`
-      return refs.size ? `${body} & FragmentRefs<${[...refs].sort().map((ref) => JSON.stringify(ref)).join(" | ")}>` : body
+      const always = [...refs].filter(([, optional]) => !optional).map(([ref]) => ref).sort()
+      // A spread its condition can leave out is either there or not: narrow it with `hasFragment`.
+      const maybe = [...refs].filter(([, optional]) => optional).map(([ref]) => ref).sort()
+      return [body, ...(always.length ? [`FragmentRefs<${always.map((ref) => JSON.stringify(ref)).join(" | ")}>`] : []), ...maybe.map((ref) => `({} | FragmentRefs<${JSON.stringify(ref)}>)`)].join(" & ")
     })
     return variants.length === 1 ? variants[0]! : `(${variants.join(" | ")})`
   }
 
-  const collect = (typename: string, selections: readonly Selection[], members: Map<string, Member>, refs: Set<string>) => {
+  const collect = (typename: string, selections: readonly Selection[], members: Map<string, Member>, refs: Map<string, boolean>, conditional: boolean) => {
     const type = schema.getType(typename)
     const fields = type && isObjectType(type) ? type.getFields() : {}
     for (const selection of selections) {
+      const optional = conditional || mayLeaveOut(selection.conditions)
+      // A key selected once without a condition is always there.
+      const existingOptional = members.get((selection as { responseKey?: string }).responseKey ?? "")?.optional ?? true
       if (selection.kind === "scalar") {
         if (selection.fieldName === "__typename") {
-          members.set(selection.responseKey, { kind: "scalar", ts: JSON.stringify(typename) })
+          members.set(selection.responseKey, { kind: "scalar", ts: JSON.stringify(typename), optional: optional && existingOptional })
           continue
         }
         const field = fields[selection.fieldName]
         if (!field) continue
-        members.set(selection.responseKey, { kind: "scalar", ts: wrapOutput(field.type, leaf(getNamedType(field.type))) })
+        members.set(selection.responseKey, { kind: "scalar", ts: wrapOutput(field.type, leaf(getNamedType(field.type))), optional: optional && existingOptional })
       } else if (selection.kind === "link") {
         const field = fields[selection.fieldName]
         if (!field) continue
         const existing = members.get(selection.responseKey)
-        if (existing?.kind === "link") existing.selections = [...existing.selections, ...selection.selections]
-        else members.set(selection.responseKey, { kind: "link", batch: !!selection.batch, type: field.type, types: selection.types, selections: [...selection.selections] })
+        const part = { selections: selection.selections, optional }
+        if (existing?.kind === "link") {
+          existing.parts.push(part)
+          existing.optional &&= optional
+        } else members.set(selection.responseKey, { kind: "link", batch: !!selection.batch, type: field.type, types: selection.types, parts: [part], optional })
       } else if (selection.kind === "inline") {
         if (selection.possibleTypes === null || selection.possibleTypes.includes(typename))
-          collect(typename, selection.selections, members, refs)
+          collect(typename, selection.selections, members, refs, optional)
       } else if (selection.possibleTypes.includes(typename)) {
-        refs.add(selection.name)
+        refs.set(selection.name, (refs.get(selection.name) ?? true) && optional)
       }
     }
   }
@@ -188,7 +204,7 @@ export function generate(schema: GraphQLSchema, sources: readonly string[], opti
       const fragment = compiled.fragments[definition.name]!
       const type = schema.getType(fragment.typeCondition)!
       const typenames = isAbstractType(type) ? schema.getPossibleTypes(type).map((entry) => entry.name).sort() : [type.name]
-      lines.push(`export type ${typeName} = ${objectType(typenames, fragment.selections)}`)
+      lines.push(`export type ${typeName} = ${objectType(typenames, [{ selections: fragment.selections, optional: false }])}`)
       lines.push(
         `export const ${typeName} = ${JSON.stringify(fragment)} as unknown as FragmentArtifact<${typeName}, ${JSON.stringify(definition.name)}>`
       )
@@ -201,7 +217,7 @@ export function generate(schema: GraphQLSchema, sources: readonly string[], opti
         return `readonly ${variable.variable.name.value}${optional ? "?" : ""}: ${inputType(type)}`
       })
       lines.push(`export type ${definition.name}Variables = { ${variables.join("; ")}${variables.length ? " " : ""}}`)
-      lines.push(`export type ${typeName} = ${objectType([operation.rootType], operation.selections)}`)
+      lines.push(`export type ${typeName} = ${objectType([operation.rootType], [{ selections: operation.selections, optional: false }])}`)
       lines.push(
         `export const ${typeName} = ${JSON.stringify(operation)} as unknown as OperationArtifact<${typeName}, ${definition.name}Variables>`
       )

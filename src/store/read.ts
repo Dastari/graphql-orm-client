@@ -1,5 +1,5 @@
 import type { Selection } from "../artifact.js"
-import { fieldStorageKey, fragmentScope, storageKey, type Variables } from "./arguments.js"
+import { fieldStorageKey, fragmentScope, included, storageKey, type Variables } from "./arguments.js"
 import { ROOT_ID, type Selector, type Store, type StoredLink, type StoredLinks } from "./store.js"
 
 /** Hidden on every object that carries masked fragment references. */
@@ -178,6 +178,8 @@ export function readSelections<T>(store: Store, selector: Selector, options: Rea
   ): void => {
     const record = store.get(id)!
     for (const selection of selections) {
+      // A selection its `@skip`/`@include` leaves out isn't read, so it is neither missing nor a reason to read again.
+      if (!included(selection.conditions, variables)) continue
       switch (selection.kind) {
         case "scalar": {
           if (selection.fieldName === "__typename") {

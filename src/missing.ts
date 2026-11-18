@@ -1,5 +1,6 @@
 import type { OperationArtifact, Selection } from "./artifact.js"
 import type { GraphQLErrorLike } from "./client.js"
+import { included, type Variables } from "./store/arguments.js"
 import { identify } from "./store/normalize.js"
 
 /** A field the operation selects that the response leaves out. */
@@ -15,7 +16,7 @@ export interface MissingField {
 const marked = new WeakMap<OperationArtifact<any, any>, boolean>()
 
 function hasConditional(selections: readonly Selection[]): boolean {
-  return selections.some((selection) => selection.conditional === true || ((selection.kind === "link" || selection.kind === "inline") && hasConditional(selection.selections)))
+  return selections.some((selection) => selection.conditional === true || selection.conditions !== undefined || ((selection.kind === "link" || selection.kind === "inline") && hasConditional(selection.selections)))
 }
 
 /**
@@ -32,10 +33,11 @@ function checkable(artifact: OperationArtifact<any, any>): boolean {
 }
 
 /**
- * The fields the operation selects that `data` leaves out. A null is a value, not a left-out field. Fields under a legacy `@skip`
- * or `@include`, `@batch` relations (read separately) and fields at or below a path an error names are not reported.
+ * The fields the operation selects that `data` leaves out. A null is a value, not a left-out field. A field `@skip` or `@include`
+ * leaves out under `variables` isn't reported; one they keep is. Fields under a legacy `@skip` or `@include`, `@batch` relations
+ * (read separately) and fields at or below a path an error names are not reported.
  */
-export function missingFields(artifact: OperationArtifact<any, any>, data: Record<string, unknown>, errors: readonly GraphQLErrorLike[]): MissingField[] {
+export function missingFields(artifact: OperationArtifact<any, any>, data: Record<string, unknown>, errors: readonly GraphQLErrorLike[], variables: Variables = {}): MissingField[] {
   if (!checkable(artifact)) return []
   const found: MissingField[] = []
   const errorPaths = errors.flatMap((error) => (error.path ? [error.path] : []))
@@ -43,7 +45,7 @@ export function missingFields(artifact: OperationArtifact<any, any>, data: Recor
     errorPaths.some((errorPath) => errorPath.length <= path.length && errorPath.every((part, index) => path[index] === part))
   const walk = (selections: readonly Selection[], value: Record<string, unknown>, typename: string, record: string | null, path: readonly (string | number)[]): void => {
     for (const selection of selections) {
-      if (selection.conditional) continue
+      if (selection.conditional || !included(selection.conditions, variables)) continue
       if (selection.kind === "inline") {
         if (selection.possibleTypes === null || selection.possibleTypes.includes(typename)) walk(selection.selections, value, typename, record, path)
         continue
