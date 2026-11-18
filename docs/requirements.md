@@ -287,7 +287,8 @@ Fields with arguments stay out of streams, as R2 already requires.
 values, with exact generated types. A spread missing a required argument fails `generate`, naming the fragment and the
 argument.
 *Built:* Relay's directive syntax, which graphql 16 and 17 both parse. The text sent has a copy of the fragment per
-argument set, with the values written in, so the router gets ordinary GraphQL. Each spread carries its values and each
+argument set, with the values written in, so the router gets ordinary GraphQL; an argument with no value and no default is
+left out, as an unset variable is, so the schema's default applies. Each spread carries its values and each
 reference a scope with them; the store keeps every value under its own arguments. `generate` also fails for an undeclared
 argument, a value or variable of the wrong type, a declared type that doesn't fit where it's used, and one fragment
 spread twice on one object with different arguments. A `@live` fragment with arguments works under the default stream

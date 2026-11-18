@@ -13,6 +13,7 @@ import {
   Kind,
   VariablesInAllowedPositionRule,
   getNamedType,
+  isAbstractType,
   isInputObjectType,
   isInputType,
   isListType,
@@ -55,15 +56,23 @@ export function declaredArguments(fragment: FragmentDefinitionNode): readonly Fr
   return declarations.get(fragment)
 }
 
-/**
- * The value of each argument a fragment declares at one spread of it: what the spread passes, else the declared default,
- * else null. Undefined when the fragment declares no arguments. Values are in the spreading scope's terms.
- */
-export function spreadValues(fragment: FragmentDefinitionNode, spread: FragmentSpreadNode): readonly (readonly [string, ValueNode])[] | undefined {
+/** One argument a fragment declares, at one spread of it. */
+export interface SpreadArgument {
+  readonly name: string
+  /** What the spread passes with `@arguments`, in the spreading scope's terms. */
+  readonly passed?: ValueNode
+  readonly defaultValue?: ConstValueNode
+}
+
+/** Each argument a fragment declares, at one spread of it. Undefined when the fragment declares none. */
+export function spreadArguments(fragment: FragmentDefinitionNode, spread: FragmentSpreadNode): readonly SpreadArgument[] | undefined {
   const declared = declarations.get(fragment)
   if (!declared) return undefined
   const passed = new Map((argumentsDirective(spread)?.arguments ?? []).map((argument) => [argument.name.value, argument.value]))
-  return declared.map((argument) => [argument.name, passed.get(argument.name) ?? argument.defaultValue ?? NULL] as const)
+  return declared.map((argument) => {
+    const value = passed.get(argument.name)
+    return { name: argument.name, ...(value ? { passed: value } : {}), ...(argument.defaultValue ? { defaultValue: argument.defaultValue } : {}) }
+  })
 }
 
 /** The name a reader resolves a fragment's local argument under. It has a dot, so it can't be an operation variable's name. */
@@ -72,6 +81,33 @@ export function scopedName(fragment: string, argument: string): string {
 }
 
 const NULL: ValueNode = { kind: Kind.NULL }
+
+/** What a spread binds each argument to, as written: what it passes, else the default. An argument with neither is unbound. */
+function bindingsOf(args: readonly SpreadArgument[]): Map<string, ValueNode> {
+  return new Map(args.flatMap((argument) => {
+    const value = argument.passed ?? argument.defaultValue
+    return value ? [[argument.name, value] as const] : []
+  }))
+}
+
+/** Possible concrete types of a named type, or null for any. */
+function possibleTypesOf(schema: GraphQLSchema, name: string | undefined): ReadonlySet<string> | null {
+  const type = name === undefined ? undefined : schema.getType(name)
+  if (!type) return null
+  return new Set(isAbstractType(type) ? schema.getPossibleTypes(type).map((entry) => entry.name) : [type.name])
+}
+
+function narrow(outer: ReadonlySet<string> | null, inner: ReadonlySet<string> | null): ReadonlySet<string> | null {
+  if (!outer) return inner
+  if (!inner) return outer
+  return new Set([...outer].filter((name) => inner.has(name)))
+}
+
+function overlaps(a: ReadonlySet<string> | null, b: ReadonlySet<string> | null): boolean {
+  if (!a || !b) return true
+  for (const name of a) if (b.has(name)) return true
+  return false
+}
 
 function argumentsDirective(spread: FragmentSpreadNode): DirectiveNode | undefined {
   return spread.directives?.find((directive) => directive.name.value === "arguments")
@@ -146,41 +182,62 @@ export function applyFragmentArguments(
   if (problems.length) return { operations: new Map(), fragments: new Map(), problems }
 
   const wire = new Map<string, FragmentDefinitionNode>()
-  const active = new Set<string>()
-  const rewrite = <T extends ASTNode>(node: T, bindings: ReadonlyMap<string, ValueNode> | null): T =>
+  // Each copy's name, with the fragment and values it was made for, so two argument sets never share one.
+  const copies = new Map<string, string>()
+  // The fragments being written out, outermost first. A fragment met again inside itself is a cycle.
+  const expanding: string[] = []
+  type Scope = { readonly bindings: ReadonlyMap<string, ValueNode>; readonly locals: ReadonlySet<string> }
+  const rewrite = <T extends ASTNode>(node: T, scope: Scope | null): T =>
     visit(node, {
-      // Substituting whole values, so a bound value's own variables, the operation's, are never substituted again.
+      // Substituting whole values, so a bound value's own variables, the operation's, are never substituted again. An argument
+      // whose value is an unbound one of the fragment's is left out, as an unset variable would be.
       Argument(argument) {
-        return bindings ? { ...argument, value: substitute(argument.value, bindings) } : undefined
+        if (!scope) return undefined
+        const value = substitute(argument.value, scope)
+        return value ? { ...argument, value } : null
       },
       FragmentSpread: {
         leave(spread) {
           const definition = fragments.get(spread.name.value)
           const directives = spread.directives?.filter((directive) => directive.name.value !== "arguments")
           if (!definition) return { ...spread, directives }
-          const values = spreadValues(definition, spread)
-          return { ...spread, directives, name: { kind: Kind.NAME, value: specialize(definition, values ? new Map(values) : null) } }
+          const args = spreadArguments(definition, spread)
+          return { ...spread, directives, name: { kind: Kind.NAME, value: specialize(definition, args) } }
         },
       },
     }) as T
-  const specialize = (definition: FragmentDefinitionNode, bindings: ReadonlyMap<string, ValueNode> | null): string => {
+  const specialize = (definition: FragmentDefinitionNode, args: readonly SpreadArgument[] | undefined): string => {
     const name = definition.name.value
+    const bindings = args ? bindingsOf(args) : null
     const key = bindings ? printStable({ kind: Kind.OBJECT, fields: [...bindings].map(([field, value]) => ({ kind: Kind.OBJECT_FIELD, name: { kind: Kind.NAME, value: field }, value })) }) : ""
     const copy = bindings ? `${name}_${createHash("sha256").update(`${name}${key}`).digest("hex").slice(0, 8)}` : name
-    // A cycle is reported by validation; stop here instead of following it.
-    if (wire.has(copy) || active.has(copy)) return copy
-    if (bindings && fragments.has(copy)) {
-      problems.push(`Fragment ${copy} has the name of the copy of fragment ${name} for the arguments ${key}; rename it`)
+    if (bindings) {
+      if (fragments.has(copy)) {
+        problems.push(`Fragment ${copy} has the name the compiler gives the copy of fragment ${name} for ${key}; rename it`)
+        return copy
+      }
+      const made = copies.get(copy)
+      if (made !== undefined && made !== `${name} ${key}`) {
+        problems.push(`Fragment ${name}'s copies for ${key} and for ${made.slice(name.length + 1)} would both be named ${copy}; change one of the values`)
+        return copy
+      }
+      copies.set(copy, `${name} ${key}`)
+    }
+    const at = expanding.indexOf(name)
+    if (at >= 0) {
+      problems.push(`Fragment ${name} spreads itself: ${[...expanding.slice(at), name].join(" → ")}`)
       return copy
     }
-    active.add(copy)
-    const body = rewrite(definition, bindings)
-    active.delete(copy)
+    if (wire.has(copy)) return copy
+    expanding.push(name)
+    const locals = new Set((declarations.get(definition) ?? []).map((argument) => argument.name))
+    const body = rewrite(definition, bindings ? { bindings, locals } : null)
+    expanding.pop()
     wire.set(copy, { ...body, name: { kind: Kind.NAME, value: copy }, directives: withoutArgumentDefinitions(body.directives) })
     return copy
   }
   for (const definition of fragments.values()) {
-    if (!declarations.has(definition)) specialize(definition, null)
+    if (!declarations.has(definition)) specialize(definition, undefined)
   }
   const result = new Map(operations.map((operation) => [operation, rewrite(operation, null)]))
   for (const [name, definition] of fragments) {
@@ -194,21 +251,33 @@ export function applyFragmentArguments(
     if (wire.has(name)) problems.push(`Fragment ${name}: its name is taken by the copy of another fragment; rename it`)
     wire.set(name, { ...generic, directives: withoutArgumentDefinitions(generic.directives) })
   }
-  return { operations: result, fragments: wire, problems }
+  return { operations: result, fragments: wire, problems: [...new Set(problems)] }
 }
 
 function withoutArgumentDefinitions(directives: readonly DirectiveNode[] | undefined): readonly DirectiveNode[] | undefined {
   return directives?.filter((directive) => directive.name.value !== "argumentDefinitions")
 }
 
-function substitute(value: ValueNode, bindings: ReadonlyMap<string, ValueNode>): ValueNode {
+/**
+ * A value with the fragment's arguments written in. An unbound argument is absent, as an unset variable is: undefined at
+ * the top, so the caller leaves the argument out; an object field is left out; a list item, which can't be, is null.
+ */
+function substitute(value: ValueNode, scope: { readonly bindings: ReadonlyMap<string, ValueNode>; readonly locals: ReadonlySet<string> }): ValueNode | undefined {
   switch (value.kind) {
-    case Kind.VARIABLE:
-      return bindings.get(value.name.value) ?? value
+    case Kind.VARIABLE: {
+      const name = value.name.value
+      return scope.bindings.get(name) ?? (scope.locals.has(name) ? undefined : value)
+    }
     case Kind.LIST:
-      return { ...value, values: value.values.map((item) => substitute(item, bindings)) }
+      return { ...value, values: value.values.map((item) => substitute(item, scope) ?? NULL) }
     case Kind.OBJECT:
-      return { ...value, fields: value.fields.map((field) => ({ ...field, value: substitute(field.value, bindings) })) }
+      return {
+        ...value,
+        fields: value.fields.flatMap((field) => {
+          const inner = substitute(field.value, scope)
+          return inner ? [{ ...field, value: inner }] : []
+        }),
+      }
     default:
       return value
   }
@@ -291,28 +360,32 @@ function checkSpreads(
   variableOf: (name: string) => VariableType | undefined,
   problems: string[]
 ): void {
-  const onObject = (set: SelectionSetNode, seen: Map<string, string>) => {
+  type Seen = { readonly name: string; readonly key: string; readonly types: ReadonlySet<string> | null }
+  // `types`: the concrete types the selections can apply to, narrowed by type conditions; null for any.
+  const onObject = (set: SelectionSetNode, seen: Seen[], types: ReadonlySet<string> | null) => {
     for (const selection of set.selections) {
       if (selection.kind === Kind.FIELD) {
-        if (selection.selectionSet) onObject(selection.selectionSet, new Map())
+        if (selection.selectionSet) onObject(selection.selectionSet, [], null)
       } else if (selection.kind === Kind.INLINE_FRAGMENT) {
-        onObject(selection.selectionSet, seen)
+        onObject(selection.selectionSet, seen, narrow(types, possibleTypesOf(schema, selection.typeCondition?.name.value)))
       } else {
         const name = selection.name.value
         const definition = fragments.get(name)
         if (!definition) continue
         checkSpread(schema, selection, definition, where, variableOf, problems)
-        const values = spreadValues(definition, selection)
-        if (!values) continue
-        const key = values.map(([argument, value]) => `${argument}: ${print(value)}`).join(", ")
-        const earlier = seen.get(name)
-        if (earlier !== undefined && earlier !== key)
-          problems.push(`${where}: fragment ${name} is spread twice on one object with different arguments (${earlier}) and (${key}); spread each under its own alias`)
-        seen.set(name, key)
+        const args = spreadArguments(definition, selection)
+        if (!args) continue
+        const key = [...bindingsOf(args)].map(([argument, value]) => `${argument}: ${print(value)}`).join(", ")
+        const applies = narrow(types, possibleTypesOf(schema, definition.typeCondition.name.value))
+        // Spreads under type conditions that can't both match one object never meet.
+        const earlier = seen.find((entry) => entry.name === name && entry.key !== key && overlaps(entry.types, applies))
+        if (earlier)
+          problems.push(`${where}: fragment ${name} is spread twice on one object with different arguments (${earlier.key}) and (${key}); spread each under its own alias`)
+        seen.push({ name, key, types: applies })
       }
     }
   }
-  onObject(selectionSet, new Map())
+  onObject(selectionSet, [], null)
 }
 
 function checkSpread(

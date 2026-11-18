@@ -1,4 +1,4 @@
-import type { ArgumentSpec, ConnectionSpec } from "../artifact.js"
+import type { ArgumentSpec, ConnectionSpec, FragmentArgumentSpec } from "../artifact.js"
 
 export type Variables = Readonly<Record<string, unknown>>
 
@@ -7,7 +7,8 @@ function resolve(spec: ArgumentSpec, variables: Variables): unknown {
     case "literal":
       return spec.value
     case "variable":
-      return variables[spec.variable] ?? null
+      // A fragment's own argument (`Fragment.name`) can be unbound, and is then absent. An unset operation variable is null.
+      return spec.variable.includes(".") ? variables[spec.variable] : variables[spec.variable] ?? null
     case "object":
       return Object.fromEntries(spec.fields.map((field) => [field.name, resolve(field, variables)]))
     case "list":
@@ -36,8 +37,9 @@ export function storageKey(
   variables: Variables
 ): string {
   if (args.length === 0) return fieldName
-  const resolved = Object.fromEntries(args.map((arg) => [arg.name, resolve(arg, variables)]))
-  return `${fieldName}(${stableStringify(resolved)})`
+  // An argument given an unbound fragment argument isn't sent, so it isn't part of the key.
+  const resolved = Object.fromEntries(args.map((arg) => [arg.name, resolve(arg, variables)]).filter(([, value]) => value !== undefined))
+  return Object.keys(resolved).length ? `${fieldName}(${stableStringify(resolved)})` : fieldName
 }
 
 /** The storage key of a selected field; a connection leaves out its paging arguments. */
@@ -53,12 +55,18 @@ export function fieldStorageKey(
 
 /**
  * The variables a fragment that declares arguments is read with: the spreading scope's, and each of the fragment's
- * arguments under `<Fragment>.<argument>`, resolved in the spreading scope. The compiler names the fragment's own
- * variables that way, so an operation variable of the same name is never mistaken for one.
+ * arguments under `<Fragment>.<argument>`: what the spread passes, resolved in the spreading scope, else the default, else
+ * undefined (unbound). The compiler names the fragment's own variables that way, so an operation variable of the same name
+ * is never mistaken for one.
  */
-export function fragmentScope(fragment: string, args: readonly ArgumentSpec[], variables: Variables): Variables {
+export function fragmentScope(fragment: string, args: readonly FragmentArgumentSpec[], variables: Variables): Variables {
   const scope: Record<string, unknown> = { ...variables }
-  for (const arg of args) scope[`${fragment}.${arg.name}`] = resolve(arg, variables)
+  for (const arg of args) {
+    let value = arg.value ? resolve(arg.value, variables) : undefined
+    if (value === undefined && "defaultValue" in arg) value = arg.defaultValue
+    // Set even when unbound, so a value of the same fragment's from further out never shows through.
+    scope[`${fragment}.${arg.name}`] = value
+  }
   return scope
 }
 

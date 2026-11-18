@@ -6,10 +6,11 @@ import { encodeNodeId } from "../src/node-id.js"
 import { createMockNetwork, createMockStreams, createTestClock } from "../src/test/index.js"
 
 const sdl = `
-  type Query { Widget(Id: String!): Widget, Widgets(Where: WidgetWhereInput): [Widget!]! }
+  type Query { Widget(Id: String!): Widget, Widgets(Where: WidgetWhereInput): [Widget!]!, Search: [Hit!]! }
+  union Hit = Widget | Vendor
   type Subscription { WidgetChanged(Keys: [String!]): WidgetChangedEvent! }
   type WidgetChangedEvent { Action: String!, Widget: Widget }
-  input WidgetWhereInput { Name: StringFilter }
+  input WidgetWhereInput { Name: StringFilter, And: [WidgetWhereInput!] }
   input StringFilter { Eq: String }
   enum NoteKind { OPEN CLOSED }
   type Widget {
@@ -17,14 +18,21 @@ const sdl = `
     Name: String!
     RecordVersion: Int!
     Image(Size: Int = 50): String
+    Pic(Size: Int! = 50): String
+    Matches(Where: WidgetWhereInput): String
+    Sizes(Of: [Int]): String
     Caption(Locale: String): String
     Notes(Limit: Int!, Kind: NoteKind): [Note!]!
     Vendor: Vendor
   }
   type Note { Id: String!, Body: String! }
-  type Vendor { Id: String!, Logo(Size: Int): String }
+  type Vendor { Id: String!, Logo(Size: Int): String, Mark(Size: Int = 16): String }
 `
 const schema = buildSchema(sdl)
+
+// What 0.1.0-alpha.13 and main before fragment arguments produce for a document without them.
+const PLAIN_TEXT = "query Q($Id: String!) {\n  Widget(Id: $Id) {\n    __typename\n    Id\n    RecordVersion\n    ...Plain\n  }\n}\n\nfragment Plain on Widget {\n  __typename\n  Id\n  RecordVersion\n  Name\n  Image(Size: 3)\n}"
+const PLAIN_HASH = "b50b7a51e7155851d0678809f97b8c763fb538aad3c2306709e70d470b265a04"
 
 const thumb = `fragment Thumb on Widget @argumentDefinitions(size: {type: "Int!", defaultValue: 64}) { Name Image(Size: $size) }`
 const page = `query Page($Id: String!, $Big: Int!) {
@@ -41,12 +49,15 @@ function server(options: { version?: () => number } = {}) {
     Name: `name-${id}`,
     RecordVersion: version(),
     Image: ({ Size }: { Size: number | null }) => `${id}@${Size}:${version()}`,
+    Pic: ({ Size }: { Size: number }) => `pic@${Size}`,
+    Matches: ({ Where }: { Where?: unknown }) => JSON.stringify(Where ?? "absent"),
+    Sizes: (args: { Of?: unknown }) => JSON.stringify("Of" in args ? args.Of : "absent"),
     Caption: ({ Locale }: { Locale: string | null }) => `${id}/${Locale}`,
     Notes: ({ Limit, Kind }: { Limit: number; Kind: string | null }) =>
       Array.from({ length: Limit }, (_, index) => ({ Id: `${id}-${Kind ?? "any"}-n${index}`, Body: `${Kind ?? "ANY"} ${index}` })),
-    Vendor: { Id: "v1", Logo: ({ Size }: { Size: number | null }) => `v1@${Size}` },
+    Vendor: { Id: "v1", Logo: (args: { Size?: number | null }) => `v1@${"Size" in args ? args.Size : "absent"}`, Mark: ({ Size }: { Size: number | null }) => `mark@${Size}` },
   })
-  const rootValue = { Widget: ({ Id }: { Id: string }) => widget(Id), Widgets: () => [widget("w1")] }
+  const rootValue = { Widget: ({ Id }: { Id: string }) => widget(Id), Widgets: () => [widget("w1")], Search: () => [{ __typename: "Widget", ...widget("w1") }, { __typename: "Vendor", ...widget("w1").Vendor }] }
   return createMockNetwork({
     schema: sdl,
     respond: async (request) => {
@@ -195,8 +206,8 @@ describe("fragment arguments", () => {
     const { compiled, network, client } = setup(documents)
     const operation = compiled.operations.Cards!
     expect(validate(schema, parse(operation.text))).toEqual([])
-    // An argument with no default that a spread doesn't pass is null.
-    expect(operation.text).toContain("Notes(Limit: 1, Kind: null)")
+    // An argument with no default that a spread doesn't pass is left out.
+    expect(operation.text).toContain("Notes(Limit: 1) {")
     const { snapshot, errors } = await client.execute<any>(operation, { size: 300, Locale: "fr" })
     expect(errors).toEqual([])
     expect(network.failures).toEqual([])
@@ -277,6 +288,128 @@ describe("fragment arguments", () => {
     const { snapshot } = await client.execute<any>(compiled.operations.Secret!, { Id: "w1" })
     expect(snapshot.data.Widget).toMatchObject({ Name: "name-w1", Image: "w1@5:1" })
     client.dispose()
+  })
+
+  it("leaves out an argument given an unbound fragment argument, so the schema's default applies, as for an unset variable", async () => {
+    const documents = [
+      `fragment Free on Widget @argumentDefinitions(size: {type: "Int"}, name: {type: "String"}) {
+        Image(Size: $size)
+        Pic(Size: $size)
+        Matches(Where: {Name: {Eq: $name}})
+        Sizes(Of: [$size, 1])
+      }`,
+      `query Free($Id: String!, $Unset: Int) {
+        none: Widget(Id: $Id) { ...Free }
+        some: Widget(Id: $Id) { ...Free @arguments(size: 7, name: "x") }
+        unset: Widget(Id: $Id) { ...Free @arguments(size: $Unset) }
+      }`,
+    ]
+    const { compiled, network, client } = setup(documents)
+    const operation = compiled.operations.Free!
+    expect(validate(schema, parse(operation.text))).toEqual([])
+    expect(operation.text).toContain("  Image\n")
+    expect(operation.text).toContain("  Pic\n")
+    // A filter field left out filters nothing; written as null it would mean "name is null".
+    expect(operation.text).toContain("Matches(Where: {Name: {}})")
+    expect(operation.text).toContain("Sizes(Of: [null, 1])")
+    const { snapshot, errors } = await client.execute<any>(operation, { Id: "w1" })
+    expect(errors).toEqual([])
+    expect(network.failures).toEqual([])
+    const read = (alias: string) => readFragment<any>(compiled.fragments.Free!, snapshot.data[alias])
+    expect(read("none")).toMatchObject({ Image: "w1@50:1", Pic: "pic@50", Matches: '{"Name":{}}', Sizes: "[null,1]" })
+    expect(read("some")).toMatchObject({ Image: "w1@7:1", Pic: "pic@7", Matches: '{"Name":{"Eq":"x"}}', Sizes: "[7,1]" })
+    // An operation variable passed and not set is sent as the variable, so the server applies the schema's default; the
+    // fragment's own default doesn't, since the text can't say "this default unless $Unset is set".
+    expect(read("unset")).toMatchObject({ Image: "w1@50:1" })
+    const record = client.store.get(encodeNodeId("Widget", ["w1"]))!
+    expect([...record.fields.keys()]).toEqual(expect.arrayContaining(["Image", "Pic", 'Matches({"Where":{"Name":{}}})', 'Sizes({"Of":[null,1]})', 'Image({"Size":7})', 'Image({"Size":null})']))
+    client.dispose()
+  })
+
+  it("lets a fragment's default apply when the spreading fragment passes on an argument it has no value for", async () => {
+    const documents = [
+      `fragment Logo on Vendor @argumentDefinitions(size: {type: "Int", defaultValue: 32}) { Logo(Size: $size) }`,
+      `fragment Mark on Vendor @argumentDefinitions(size: {type: "Int"}) { Mark(Size: $size) Bare: Logo(Size: $size) }`,
+      `fragment Outer on Widget @argumentDefinitions(size: {type: "Int"}) { Vendor { ...Logo @arguments(size: $size) ...Mark @arguments(size: $size) } }`,
+      `query Through($Id: String!) { a: Widget(Id: $Id) { ...Outer } b: Widget(Id: $Id) { ...Outer @arguments(size: 99) } }`,
+    ]
+    const { compiled, network, client } = setup(documents)
+    const operation = compiled.operations.Through!
+    expect(validate(schema, parse(operation.text))).toEqual([])
+    const { snapshot, errors } = await client.execute<any>(operation, { Id: "w1" })
+    expect(errors).toEqual([])
+    expect(network.failures).toEqual([])
+    const vendor = (alias: string) => readFragment<any>(compiled.fragments.Outer!, snapshot.data[alias]).Vendor
+    // Not passed on: Logo's own default, then the schema's default for Mark, and no argument at all for Logo without one.
+    expect(readFragment<any>(compiled.fragments.Logo!, vendor("a"))).toMatchObject({ Logo: "v1@32" })
+    expect(readFragment<any>(compiled.fragments.Mark!, vendor("a"))).toMatchObject({ Mark: "mark@16", Bare: "v1@absent" })
+    expect(readFragment<any>(compiled.fragments.Logo!, vendor("b"))).toMatchObject({ Logo: "v1@99" })
+    expect(readFragment<any>(compiled.fragments.Mark!, vendor("b"))).toMatchObject({ Mark: "mark@99", Bare: "v1@99" })
+    client.dispose()
+  })
+
+  it("fails when a copy's name is taken by a fragment of the application", () => {
+    const documents = [thumb, `query One { Widget(Id: "w1") { ...Thumb @arguments(size: 10) } }`]
+    const copy = /fragment (Thumb_[0-9a-f]{8})/.exec(compile(schema, documents).operations.One!.text)![1]!
+    expect(problemsOf(() => compile(schema, [...documents, `fragment ${copy} on Widget { Id }`]))).toEqual([
+      `Fragment ${copy} has the name the compiler gives the copy of fragment Thumb for {size: 10}; rename it`,
+    ])
+  })
+
+  it("fails, at once, for a fragment that spreads itself with a growing value", () => {
+    const documents = [
+      `fragment R on Widget @argumentDefinitions(w: {type: "WidgetWhereInput!"}) { Name ...R @arguments(w: {And: [$w]}) }`,
+      `query Q { Widget(Id: "w1") { ...R @arguments(w: {Name: {Eq: "a"}}) } }`,
+    ]
+    expect(problemsOf(() => compile(schema, documents))).toEqual(["Fragment R spreads itself: R → R"])
+  })
+
+  it("allows one fragment with different arguments under type conditions that can't both match", () => {
+    const tag = `fragment Tag on Hit @argumentDefinitions(size: {type: "Int"}) { __typename }`
+    expect(() => compile(schema, [tag, `query Q { Search { ... on Widget { ...Tag @arguments(size: 1) } ... on Vendor { ...Tag @arguments(size: 2) } } }`])).not.toThrow()
+    expect(problemsOf(() => compile(schema, [tag, `query Q { Search { ... on Widget { ...Tag @arguments(size: 1) } ...Tag @arguments(size: 2) } }`]))).toEqual([
+      "operation Q: fragment Tag is spread twice on one object with different arguments (size: 1) and (size: 2); spread each under its own alias",
+    ])
+  })
+
+  it("keeps a fragment's arguments out of a batched relation's request", async () => {
+    const batchSchema = buildSchema(`
+      type Query { Tickets: [Ticket!]!, Vendors(Where: VendorWhereInput, Page: PageInput): VendorConnection! }
+      type Ticket { Id: String!, VendorId: String, Vendor: Vendor, Label(Size: Int): String }
+      type Vendor { Id: String!, Name: String! }
+      type VendorConnection { Edges: [VendorEdge!]! }
+      type VendorEdge { Node: Vendor! }
+      input VendorWhereInput { Id: StringFilter }
+      input StringFilter { InList: [String!] }
+      input PageInput { Limit: Int }
+    `)
+    const compiled = compile(batchSchema, [
+      `fragment Row on Ticket @argumentDefinitions(size: {type: "Int", defaultValue: 3}) { Label(Size: $size) Vendor @batch(foreignKey: "VendorId", root: "Vendors", key: "Id") { Name } }`,
+      `query Rows($Size: Int) { Tickets { ...Row @arguments(size: $Size) } }`,
+    ])
+    const requests: Record<string, unknown>[] = []
+    const client = createClient({ network: { execute: async (request) => {
+      requests.push(request.variables)
+      if (!request.name.startsWith("Batch_")) return { data: { Tickets: [{ __typename: "Ticket", Id: "t1", VendorId: "v1", Label: "l" }] } }
+      return { data: { Vendors: { __typename: "VendorConnection", Edges: [{ __typename: "VendorEdge", Node: { __typename: "Vendor", Id: "v1", Name: "Acme" } }] } } }
+    } } })
+    const { installRelationBatching } = await import("../src/relations.js")
+    installRelationBatching(client, { withoutDocument: "read" })
+    const { snapshot } = await client.execute<any>(compiled.operations.Rows!, { Size: 4 })
+    const read = () => readFragment<any>(compiled.fragments.Row!, snapshot.data.Tickets[0])
+    expect(read().Vendor.status).toBe("pending")
+    await new Promise((resolve) => setTimeout(resolve, 25))
+    expect(read().Vendor).toMatchObject({ status: "ready", data: { Name: "Acme" } })
+    expect(read().Label).toBe("l")
+    const batch = requests[1]!
+    expect(Object.keys(batch).sort()).toEqual(["Page", "Size", "Where"])
+    client.dispose()
+  })
+
+  it("compiles a document without fragment arguments to the same text and hash as before", () => {
+    const operation = compile(schema, [`fragment Plain on Widget { Name Image(Size: 3) }`, `query Q($Id: String!) { Widget(Id: $Id) { ...Plain } }`]).operations.Q!
+    expect(operation.text).toBe(PLAIN_TEXT)
+    expect(operation.hash).toBe(PLAIN_HASH)
   })
 
   it("leaves a fragment without arguments as it is, beside one with them", () => {

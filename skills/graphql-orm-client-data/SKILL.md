@@ -90,7 +90,9 @@ query WidgetPage($Id: String!, $Big: Int!) {
 
 - Declare each as `name: {type: "<GraphQL type>", defaultValue: <value>}` (default optional). Inside the
   fragment `$name` is the argument; other variables are the operation's.
-- Pass a literal or a variable with `@arguments`. One not passed takes its default, or null without one.
+- Pass a literal or a variable with `@arguments`. One not passed takes its default; without one it acts as an unset
+  variable: the field argument is left out and the schema's default applies. A passed operation variable that isn't set
+  gets the schema's default too, not the fragment's.
   `generate` fails for a missing required argument, an undeclared one, or a wrong type.
 - Each spread's reference carries its own values: `useFragment(Thumb, data.small)` and
   `useFragment(Thumb, data.large)` read different sizes. Spread one fragment twice with different values

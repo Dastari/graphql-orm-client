@@ -136,22 +136,31 @@ query WidgetPage($Id: String!, $Big: Int!) {
   optional. Inside the fragment, `$name` is the argument; any other variable is the operation's, as before. An argument
   of the same name as an operation variable hides it inside that fragment only.
 - **Passing.** `@arguments(name: value)` on a spread passes a literal or a variable of the spreading scope: the
-  operation's, or the spreading fragment's own argument. An argument not passed takes its default; one with no default
-  is `null`, and the server sees an explicit `null`.
+  operation's, or the spreading fragment's own argument. An argument not passed takes its default. One with no default
+  is unbound, and behaves as an unset variable does: a field argument given it is left out, so the schema's default
+  applies; a field of an input object given it is left out (`Where: {Name: {Eq: $name}}` is sent as `{Name: {}}`, which
+  filters nothing, not as "name is null"); a list item given it is `null`. Passing on the spreading fragment's own
+  argument when it's unbound counts as not passing it, so the spread fragment's default applies. An operation variable
+  that's passed and not set is sent as the variable, so the server applies the field's schema default, not the fragment's
+  default: the text has no way to say "this default unless the variable is set". The store keys such a field as it keys
+  any field given an unset operation variable.
 - **Checks.** `generate` fails for a spread missing a required argument (non-null, no default), naming the fragment and
   the argument, and for an argument the fragment doesn't declare, a value of the wrong type, a variable whose type
   doesn't fit the declared one, `@arguments` on a fragment that declares none, a malformed declaration, or a declared
   type that doesn't fit where the argument is used. It also refuses one fragment spread twice on one object with different
-  arguments: the object's reference holds one set of values per fragment, so the spreads go under separate aliases.
+  arguments: the object's reference holds one set of values per fragment, so the spreads go under separate aliases. Spreads
+  under type conditions that can't both match one object (`... on Widget` and `... on Vendor` of a union) are allowed. A
+  fragment that spreads itself fails, naming the cycle, as does a fragment of the application named like a copy.
 - **What's sent.** The directives are client-only. The operation text has one copy of the fragment per argument set,
   named `<Fragment>_<hash of the values>`, with the values written in (a variable stays a variable), so it's ordinary
   GraphQL and the same values always give the same text and hash. Each copy counts toward the router's token and depth
   limits like any other text. Normalisation walks the same copies.
 - **Reading.** There's still one artifact per fragment, and one `FragmentRefs<"Thumb">` type, whatever the values.
-  Each spread carries its argument values (`args` on the spread selection), and the reference it produces carries a
+  Each spread carries its arguments (`arguments` on the spread selection), and the reference it produces carries a
   scope with them, so `useFragment(Thumb, data.small)` and `useFragment(Thumb, data.large)` read their own sizes. The
   store keeps both values on the one record, under their own arguments (`Image({"Size":64})`, `Image({"Size":512})`).
-  Garbage collection and live holdings read through the same scopes.
+  Garbage collection and live holdings read through the same scopes. A `@batch` relation inside such a fragment sends
+  none of them: they aren't GraphQL variable names.
 - **Live.** A `@live` fragment with arguments works under the default stream projection: fields with arguments stay out
   of the stream, as for any field with arguments, and the queries holding the record read them again with their own
   values. Under `liveSelection: "as-written"` the stream spreads the fragment, so it can't carry one spread's values, and

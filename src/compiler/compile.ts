@@ -16,6 +16,7 @@ import {
   print,
   specifiedRules,
   validate,
+  valueFromASTUntyped,
   visit,
   type ArgumentNode,
   type DocumentNode,
@@ -32,6 +33,7 @@ import {
 import type {
   ArgumentSpec,
   ConnectionSpec,
+  FragmentArgumentSpec,
   FragmentArtifact,
   LiveArtifact,
   LiveMode,
@@ -39,7 +41,7 @@ import type {
   PagedSpec,
   Selection,
 } from "../artifact.js"
-import { applyFragmentArguments, declaredArguments, scopedName, spreadValues, usesFragmentArguments } from "./fragment-arguments.js"
+import { applyFragmentArguments, declaredArguments, scopedName, spreadArguments, usesFragmentArguments, type SpreadArgument } from "./fragment-arguments.js"
 import { hasDefault, printStable } from "./print.js"
 
 /** Severity of a project policy diagnostic. */
@@ -1255,6 +1257,14 @@ function argumentSpec(name: string, value: ValueNode, locals?: Locals): Argument
   }
 }
 
+function fragmentArgumentSpec(argument: SpreadArgument, locals: Locals): FragmentArgumentSpec {
+  return {
+    name: argument.name,
+    ...(argument.passed ? { value: argumentSpec(argument.name, argument.passed, locals) } : {}),
+    ...(argument.defaultValue ? { defaultValue: valueFromASTUntyped(argument.defaultValue) } : {}),
+  }
+}
+
 function argumentsOf(nodes: readonly ArgumentNode[] | undefined, locals?: Locals): ArgumentSpec[] {
   return (nodes ?? []).map((node) => argumentSpec(node.name.value, node.value, locals))
 }
@@ -1328,13 +1338,13 @@ function convert(
         })
       } else {
         const target = schema.getType(typeCondition) as GraphQLCompositeType
-        const values = spreadValues(definition, selection)
+        const args = spreadArguments(definition, selection)
         result.push({
           kind: "spread",
           name: selection.name.value,
           typeCondition,
           possibleTypes: possibleTypes(schema, target),
-          ...(values ? { args: values.map(([name, value]) => argumentSpec(name, value, locals)) } : {}),
+          ...(args ? { arguments: args.map((argument) => fragmentArgumentSpec(argument, locals)) } : {}),
           ...conditional,
         })
       }

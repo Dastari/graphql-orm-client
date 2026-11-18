@@ -231,7 +231,7 @@ export function readSelections<T>(store: Store, selector: Selector, options: Rea
         case "spread": {
           if (!selection.possibleTypes.includes(typename)) break
           options.onSpread?.(selection.name, id, typename)
-          const scope = selection.args ? fragmentScope(selection.name, selection.args, variables) : variables
+          const scope = selection.arguments ? fragmentScope(selection.name, selection.arguments, variables) : variables
           if (options.inlineSpreads) {
             const fragment = selector.fragments[selection.name]
             if (fragment) readInto(data, id, typename, fragment.selections, scope)
@@ -242,7 +242,7 @@ export function readSelections<T>(store: Store, selector: Selector, options: Rea
           fragments.add(selection.name)
           // One reference serves every fragment spread on the object. Each fragment's arguments have names of their own, and the
           // compiler refuses one fragment spread twice on an object with different arguments, so their scopes merge.
-          const merged = !existing ? scope : selection.args ? { ...existing.variables, ...scope } : existing.variables
+          const merged = !existing ? scope : selection.arguments ? { ...existing.variables, ...scope } : existing.variables
           Object.defineProperty(data, FRAGMENT_REF, {
             value: { id, fragments, store, variables: merged } satisfies FragmentRefData,
             enumerable: false,
