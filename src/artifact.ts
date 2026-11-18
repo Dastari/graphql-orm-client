@@ -122,12 +122,30 @@ export interface InlineFragmentSelection {
   readonly conditions?: readonly SelectionCondition[]
 }
 
+/**
+ * One argument a fragment declares, at a spread of it. Its value is what the spread passes, resolved in the spreading scope;
+ * else the default. Passing one of the spreading fragment's own arguments that has no value counts as not passing it. With
+ * neither, the argument is unbound, and a field argument given it is left out, as for an unset variable.
+ */
+export interface FragmentArgumentSpec {
+  readonly name: string
+  /** What the spread passes with `@arguments`. */
+  readonly value?: ArgumentSpec
+  /** The declared default, as JSON. */
+  readonly defaultValue?: unknown
+}
+
 /** A spread of another fragment. Readers return a masked reference; normalisers inline it. */
 export interface FragmentSpreadSelection {
   readonly kind: "spread"
   readonly name: string
   readonly typeCondition: string
   readonly possibleTypes: readonly string[]
+  /**
+   * For a fragment that declares arguments (`@argumentDefinitions`): each one at this spread. The fragment is read with
+   * their values; inside it, a variable naming one of them is `<Fragment>.<argument>`. Absent when the fragment declares none.
+   */
+  readonly arguments?: readonly FragmentArgumentSpec[]
   /** The selection has `@skip` or `@include`, kept under `conditionalDirectives: "legacy"`: the response can leave it out. */
   readonly conditional?: true
   /** Its `@skip` and `@include`: it applies only when they hold for the operation's variables. */

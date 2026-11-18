@@ -1,5 +1,5 @@
 import type { Selection } from "../artifact.js"
-import { fieldStorageKey, included, storageKey } from "./arguments.js"
+import { fieldStorageKey, fragmentScope, included, storageKey, type Variables } from "./arguments.js"
 import { ROOT_ID, type Selector, type Store, type StoredLink, type StoredLinks } from "./store.js"
 
 /** Hidden on every object that carries masked fragment references. */
@@ -107,10 +107,13 @@ export function readSelections<T>(store: Store, selector: Selector, options: Rea
     }
   }
 
-  const readRecord = (id: string, selections: readonly Selection[], parent: string | null): Record<string | symbol, unknown> | null | undefined => {
-    if (!cache) {
+  // `variables`: the scope the selections are read in, which is the selector's except inside a fragment that takes arguments.
+  const readRecord = (id: string, selections: readonly Selection[], parent: string | null, variables: Variables): Record<string | symbol, unknown> | null | undefined => {
+    if (!cache || variables !== selector.variables) {
+      // A memo is keyed by selections alone, so one read in a fragment's own scope isn't memoised.
+      if (cache) cacheable = false
       seen.add(id)
-      return readFresh(id, selections)
+      return readFresh(id, selections, variables)
     }
     if (parent !== null) {
       const known = cache.parents.get(id)
@@ -133,7 +136,7 @@ export function readSelections<T>(store: Store, selector: Selector, options: Rea
     missing = false
     stale = false
     count = 0
-    const data = readFresh(id, selections)
+    const data = readFresh(id, selections, variables)
     count += 1
     // Put first, so it's found before an older result for the same selections.
     const chain = cache.nodes.get(id)
@@ -146,7 +149,7 @@ export function readSelections<T>(store: Store, selector: Selector, options: Rea
     return data
   }
 
-  const readFresh = (id: string, selections: readonly Selection[]): Record<string | symbol, unknown> | null | undefined => {
+  const readFresh = (id: string, selections: readonly Selection[], variables: Variables): Record<string | symbol, unknown> | null | undefined => {
     if (store.isRestored(id)) stale = true
     const record = store.get(id)
     if (!record) {
@@ -162,7 +165,7 @@ export function readSelections<T>(store: Store, selector: Selector, options: Rea
       }
     }
     const data: Record<string | symbol, unknown> = {}
-    readInto(data, record.__id, record.__typename, selections)
+    readInto(data, record.__id, record.__typename, selections, variables)
     return data
   }
 
@@ -170,19 +173,20 @@ export function readSelections<T>(store: Store, selector: Selector, options: Rea
     data: Record<string | symbol, unknown>,
     id: string,
     typename: string,
-    selections: readonly Selection[]
+    selections: readonly Selection[],
+    variables: Variables
   ): void => {
     const record = store.get(id)!
     for (const selection of selections) {
       // A selection its `@skip`/`@include` leaves out isn't read, so it is neither missing nor a reason to read again.
-      if (!included(selection.conditions, selector.variables)) continue
+      if (!included(selection.conditions, variables)) continue
       switch (selection.kind) {
         case "scalar": {
           if (selection.fieldName === "__typename") {
             data[selection.responseKey] = typename
             break
           }
-          const key = storageKey(selection.fieldName, selection.args, selector.variables)
+          const key = storageKey(selection.fieldName, selection.args, variables)
           if (id === ROOT_ID) options.rootKeys?.add(key)
           if (!record.fields.has(key)) {
             missing = true
@@ -195,14 +199,14 @@ export function readSelections<T>(store: Store, selector: Selector, options: Rea
           if (selection.batch) {
             if (!store.relation) throw new Error("@batch requires installRelationBatching(client) from graphql-orm-client/relations")
             cacheable = false
-            const state = store.relation(selection, id, selector.variables)
+            const state = store.relation(selection, id, variables)
             if (state.stateId) seen.add(state.stateId)
             data[selection.responseKey] = state.status === "ready" && state.id
-              ? { status: "ready", data: readRecord(state.id, selection.selections, id) }
+              ? { status: "ready", data: readRecord(state.id, selection.selections, id, variables) }
               : state.status === "error" ? { status: "error", error: state.error } : { status: state.status }
             break
           }
-          const key = fieldStorageKey(selection, selector.variables)
+          const key = fieldStorageKey(selection, variables)
           if (id === ROOT_ID) options.rootKeys?.add(key)
           if (!record.fields.has(key)) {
             missing = true
@@ -212,9 +216,9 @@ export function readSelections<T>(store: Store, selector: Selector, options: Rea
           if (value === null) {
             data[selection.responseKey] = null
           } else if (isLink(value)) {
-            data[selection.responseKey] = readRecord(value.__ref, selection.selections, id)
+            data[selection.responseKey] = readRecord(value.__ref, selection.selections, id, variables)
           } else if (isLinks(value)) {
-            const values = value.__refs.map((ref) => ref === null ? null : readRecord(ref, selection.selections, id))
+            const values = value.__refs.map((ref) => ref === null ? null : readRecord(ref, selection.selections, id, variables))
             data[selection.responseKey] = store.deletedRecords === "omit" ? values.filter((item, index) => (item !== undefined || value.__refs[index] === null) && (!selection.listNode || item?.[selection.listNode] != null)) : values
           } else {
             missing = true
@@ -223,22 +227,26 @@ export function readSelections<T>(store: Store, selector: Selector, options: Rea
         }
         case "inline": {
           if (selection.possibleTypes === null || selection.possibleTypes.includes(typename))
-            readInto(data, id, typename, selection.selections)
+            readInto(data, id, typename, selection.selections, variables)
           break
         }
         case "spread": {
           if (!selection.possibleTypes.includes(typename)) break
           options.onSpread?.(selection.name, id, typename)
+          const scope = selection.arguments ? fragmentScope(selection.name, selection.arguments, variables) : variables
           if (options.inlineSpreads) {
             const fragment = selector.fragments[selection.name]
-            if (fragment) readInto(data, id, typename, fragment.selections)
+            if (fragment) readInto(data, id, typename, fragment.selections, scope)
             break
           }
           const existing = data[FRAGMENT_REF] as FragmentRefData | undefined
           const fragments = new Set(existing?.fragments ?? [])
           fragments.add(selection.name)
+          // One reference serves every fragment spread on the object. Each fragment's arguments have names of their own, and the
+          // compiler refuses one fragment spread twice on an object with different arguments, so their scopes merge.
+          const merged = !existing ? scope : selection.arguments ? { ...existing.variables, ...scope } : existing.variables
           Object.defineProperty(data, FRAGMENT_REF, {
-            value: { id, fragments, store, variables: selector.variables } satisfies FragmentRefData,
+            value: { id, fragments, store, variables: merged } satisfies FragmentRefData,
             enumerable: false,
             configurable: true,
           })
@@ -248,7 +256,7 @@ export function readSelections<T>(store: Store, selector: Selector, options: Rea
     }
   }
 
-  const data = readRecord(selector.id, selector.selections, null)
+  const data = readRecord(selector.id, selector.selections, null, selector.variables)
   if (cache && !cacheable) {
     // The memo was changed in place and can't be continued from. A read without one gives this selector its own ids again.
     return readSelections(store, selector, { ...options, cache: undefined, changed: undefined })

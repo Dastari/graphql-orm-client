@@ -143,6 +143,7 @@ catalogue. This client is built on those guarantees.
 | Progress, AI text deltas, terminal output, search results | `createStream`, `useEphemeralStream` | `/streams`, `/react` |
 | Offline start, and lifetime fields | `persistClient`, generator `lifetimes` | `/persistence` |
 | One record's refresh | `@refetchable`, `useRefetchableFragment` | `/react` |
+| One fragment with different field arguments in one query (two image sizes) | `@argumentDefinitions`, `@arguments` | generator |
 | Reading again only the views showing some records | `refetchQueries([{ query, variables }])` | main |
 | Reads that survive a dropped connection | `reads: { retry }` on `createClient`; a default read deadline | main |
 | Seeing, in development, what the store holds, which queries and streams keep each record, and why a query read again | `inspect` | `/inspector` |

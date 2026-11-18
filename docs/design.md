@@ -164,12 +164,68 @@ that error on the server, and at hydration reports a recoverable "switched to cl
 trees. A `useSuspenseQuery` for a query started at render is not built: it would start a request from render,
 which the loader pattern avoids.
 
-### Conditional selections and fragment arguments
+### Fragment arguments (R28)
 
-Fragment-local `@argumentDefinitions`/`@arguments` are not implemented and fail compilation with a
-specific error. Route operations already own their variables and build-time composition; introducing
-local defaults and argument substitution would require distinct fragment reference identities and
-reader variable scopes. Use operation variables rather than silently losing those scopes.
+A fragment can declare arguments of its own, so one fragment is spread with different values in one query: two
+image sizes, two page sizes. The syntax is Relay's, which graphql 16 and 17 both parse with default options (graphql
+16 parses variables on a fragment definition only behind `allowLegacyFragmentVariables`, with no way to pass them, and
+graphql 17's fragment arguments are behind an experimental parser option):
+
+```graphql
+fragment Thumb on Widget @argumentDefinitions(size: {type: "Int!", defaultValue: 64}) {
+  Name
+  Image(Size: $size)
+}
+
+query WidgetPage($Id: String!, $Big: Int!) {
+  small: Widget(Id: $Id) { ...Thumb }
+  large: Widget(Id: $Id) { ...Thumb @arguments(size: $Big) }
+}
+```
+
+- **Declaring.** Each argument is `name: {type: "<GraphQL type>", defaultValue: <value>}`, with `defaultValue`
+  optional. Inside the fragment, `$name` is the argument; any other variable is the operation's, as before. An argument
+  of the same name as an operation variable hides it inside that fragment only.
+- **Passing.** `@arguments(name: value)` on a spread passes a literal or a variable of the spreading scope: the
+  operation's, or the spreading fragment's own argument. An argument not passed takes its default. One with no default
+  is unbound, and behaves as an unset variable does: a field argument given it is left out, so the schema's default
+  applies; a field of an input object given it is left out (`Where: {Name: {Eq: $name}}` is sent as `{Name: {}}`, which
+  filters nothing, not as "name is null"); a list item given it is `null`. Passing on the spreading fragment's own
+  argument when it's unbound counts as not passing it, so the spread fragment's default applies. An operation variable
+  that's passed and not set is sent as the variable, so the server applies the field's schema default, not the fragment's
+  default: the text has no way to say "this default unless the variable is set". The store keys such a field as it keys
+  any field given an unset operation variable.
+- **Checks.** `generate` fails for a spread missing a required argument (non-null, no default), naming the fragment and
+  the argument, and for an argument the fragment doesn't declare, a value of the wrong type, a variable whose type
+  doesn't fit the declared one, `@arguments` on a fragment that declares none, a malformed declaration, or a declared
+  type that doesn't fit where the argument is used. It also refuses one fragment spread twice on one object with different
+  arguments: the object's reference holds one set of values per fragment, so the spreads go under separate aliases. Spreads
+  under type conditions that can't both match one object (`... on Widget` and `... on Vendor` of a union) are allowed. A
+  fragment that spreads itself fails, naming the cycle, as does a fragment of the application named like a copy.
+- **What's sent.** The directives are client-only. The operation text has one copy of the fragment per argument set,
+  named `<Fragment>_<hash of the values>`, with the values written in (a variable stays a variable), so it's ordinary
+  GraphQL and the same values always give the same text and hash. Each copy counts toward the router's token and depth
+  limits like any other text. Normalisation walks the same copies.
+- **Reading.** There's still one artifact per fragment, and one `FragmentRefs<"Thumb">` type, whatever the values.
+  Each spread carries its arguments (`arguments` on the spread selection), and the reference it produces carries a
+  scope with them, so `useFragment(Thumb, data.small)` and `useFragment(Thumb, data.large)` read their own sizes. The
+  store keeps both values on the one record, under their own arguments (`Image({"Size":64})`, `Image({"Size":512})`).
+  Garbage collection and live holdings read through the same scopes. A `@batch` relation inside such a fragment sends
+  none of them: they aren't GraphQL variable names.
+- **Conditions.** `@include(if: $arg)` or `@skip(if: $arg)` on one of the fragment's arguments is written into each copy
+  with the spread's value (a literal, or the operation variable it passed), and readers, garbage collection and live
+  holdings evaluate it in the spread's scope ([conditional selections](#conditional-selections)). Two fields of one
+  response key read as one object, so the same fragment with different values in both is refused like two spreads on one
+  object. A conditional spread of a fragment with arguments (`...Thumb @arguments(size: 5) @include(if: $show)`) is typed
+  as maybe absent, as any conditional spread.
+- **Live.** A `@live` fragment with arguments works under the default stream projection: fields with arguments stay out
+  of the stream, as for any field with arguments, and the queries holding the record read them again with their own
+  values. Under `liveSelection: "as-written"` the stream spreads the fragment, so it can't carry one spread's values, and
+  generation fails.
+- **Refetching.** A `@refetchable` fragment can't declare arguments: its refetch query couldn't know the values a spread
+  passed, and generation fails saying so. A `@refetchable` fragment can pass literal values on to a fragment it spreads.
+
+### Conditional selections
 
 `@skip` and `@include` on fields, fragment spreads and inline fragments are evaluated with the operation's
 variables (R27 in [the requirements](requirements.md)). The directive stays in the operation text, and the compiler records
@@ -297,7 +353,8 @@ that 16 accepted, so a snapshot can fail `generate` on 17 alone; that is a schem
 `compile` and `generate` from `graphql-orm-client/compiler`, and emits one typed module with an
 artifact per root:
 
-- **Query text.** The flattened operation, sent as is.
+- **Query text.** The flattened operation, sent as is. A fragment with arguments is in it once per argument set
+  ([fragment arguments](#fragment-arguments-r28)).
 - **Hash.** sha256 of the text. Proposed: registering it with a router allow-list and sending the
   hash instead of the text. `createHttpNetwork` sends the text today.
 - **Normalisation map.** Where each record sits in the response, its type and its key fields,

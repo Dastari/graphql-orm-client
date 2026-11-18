@@ -255,7 +255,7 @@ are recorded separately. Server rendering stays a non-goal, but
 document how the client behaves inside a framework that renders a shell on the server.
 *Built:* `client.loadQuery` and `useLoadedQuery` share a retained read across loader and mount,
 with abort, unused-load timeout and StrictMode replay cleanup. `useSuspenseLoadedQuery` is the suspending read (R29). Conditional selections
-are evaluated (R27); fragment arguments are rejected. Node server shells return idle without starting queries; no data streaming or store
+are evaluated (R27); fragment arguments are built (R28). Node server shells return idle without starting queries; no data streaming or store
 handoff. See [route loading](design.md#route-loading-r18) for lifecycle and migration.
 
 **R19. Several windows.** An application with pop-out windows or several tabs opens one socket and
@@ -286,13 +286,24 @@ conditionally stays out of the stream and its fragments re-read their holders. `
 in a later release. Limit: whether an event re-reads a query is decided per operation, not per value of the variable.
 See [conditional selections](design.md#conditional-selections-and-fragment-arguments).
 
-**R28. Fragment arguments. Proposed, not built** ([#101](https://github.com/Dastari/graphql-orm-client/issues/101), from
+**R28. Fragment arguments.** ([#101](https://github.com/Dastari/graphql-orm-client/issues/101), from
 [#84](https://github.com/Dastari/graphql-orm-client/issues/84)). A fragment declares local arguments with types and defaults (`@argumentDefinitions`), and a
 spread passes values (`@arguments`). Each argument set has its own fragment reference identity and reader scope.
 Fields with arguments stay out of streams, as R2 already requires.
 *Acceptance:* one query spreads a fragment twice with different values under two aliases, and each reader gets its own
 values, with exact generated types. A spread missing a required argument fails `generate`, naming the fragment and the
 argument.
+*Built:* Relay's directive syntax, which graphql 16 and 17 both parse. The text sent has a copy of the fragment per
+argument set, with the values written in, so the router gets ordinary GraphQL; an argument with no value and no default is
+left out, as an unset variable is, so the schema's default applies. Each spread carries its values and each
+reference a scope with them; the store keeps every value under its own arguments. `generate` also fails for an undeclared
+argument, a value or variable of the wrong type, a declared type that doesn't fit where it's used, and one fragment
+spread twice on one object with different arguments. A `@live` fragment with arguments works under the default stream
+projection, and its fields with arguments refresh through holder re-reads; under `liveSelection: "as-written"` it fails
+generation. A `@refetchable` fragment can't declare arguments, and fails generation saying why. Tested against the mock
+network with graphql-js executing the sent text, with graphql 16 and 17. A conformance case sends a fragment with
+arguments through the real router; the service has no entity field with arguments, so the two-alias case is mock-only. See
+[fragment arguments](design.md#fragment-arguments-r28).
 
 **R29. Suspense** ([#102](https://github.com/Dastari/graphql-orm-client/issues/102), from [#84](https://github.com/Dastari/graphql-orm-client/issues/84)). A React read of a
 `loadQuery` handle that suspends until it has data and sends errors to an error boundary. The loader still starts the
