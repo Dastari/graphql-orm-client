@@ -9,7 +9,7 @@ Status: partly built. Implemented and tested:
 - transport: `createHttpNetwork` (GraphQL over HTTP) and `graphqlWsTransport` (a graphql-ws
   client for the live layer);
 - `readFragment`;
-- React: `ClientProvider`, `useQuery`, `useLoadedQuery`, `usePagedQuery`, `useFragment`, `useFragmentList`,
+- React: `ClientProvider`, `useQuery`, `useLoadedQuery`, `useSuspenseLoadedQuery`, `usePagedQuery`, `useFragment`, `useFragmentList`,
   `useMutation` and `useSubscription`;
 - the live layer: `compile(...).live`, `LiveManager`, `createClient({ live })`, and opt-in back-off for refused streams;
 - the generator: `graphql-orm-client generate` with `--check`. It emits typed artifacts, masked
@@ -18,10 +18,11 @@ Status: partly built. Implemented and tested:
 - pagination: `@connection` (keyset or offset), `loadMore`, `hasMore` and `loadingMore`;
 - page-number navigation: `@paged`, `watchPagedQuery` and `usePagedQuery`;
 - optimistic mutations, `no-store` mutations, interval polling, and the live polling fallback;
-- `@refetchable` fragments: `client.refetchFragment` and `useRefetchableFragment`.
+- `@refetchable` fragments: `client.refetchFragment` and `useRefetchableFragment`;
+- a development store inspector: `inspect` from `graphql-orm-client/inspector` (see [Store inspector](#store-inspector-r31));
+- per-type freshness for `store-or-network` reads: `installFreshness` from `graphql-orm-client/freshness` (see [Freshness](#freshness-r30)).
 
-Proposed, not built: per-type
-`staleMs` policy ([R30](requirements.md)), a store inspector ([R31](requirements.md)), Suspense ([R29](requirements.md)), the `scope` store option, sending operations by persisted hash,
+Proposed, not built: a Suspense read for a query started at render, the `scope` store option, sending operations by persisted hash,
 batching writes per tick, refetching a parent on a `PROPAGATED` event, and marking records stale after a failed lookup. Sections below label these. What the client still
 needs is in [requirements.md](requirements.md).
 
@@ -111,25 +112,168 @@ Migration is opt-in per route: replace `preload` plus `useQuery` with `loadQuery
 `useLoadedQuery`, forward cancellation, and handle `idle`, `loading` and `error` states. The old
 `preload` remains an awaitable warm-up that closes on completion. A subsequent default `useQuery`
 uses `store-and-network` and may read again. Its legacy StrictMode effect replay can restart a request;
-the loader hook avoids that. Suspense is not implemented; R29 in [the requirements](requirements.md) records it.
+the loader hook avoids that.
 
-### Conditional selections and fragment arguments
+#### Suspending read (R29)
 
-Fragment-local `@argumentDefinitions`/`@arguments` are not implemented and fail compilation with a
-specific error. Route operations already own their variables and build-time composition; introducing
-local defaults and argument substitution would require distinct fragment reference identities and
-reader variable scopes. Use operation variables rather than silently losing those scopes.
+`useSuspenseLoadedQuery(handle)` reads the same handle and suspends until it has data, so the route's
+`<Suspense>` fallback shows while the loader's read is in flight. It returns `QueryState` with `data` always set. It
+sends no request: the loader started the read, so suspending only waits on it, and StrictMode's double render
+waits on the same promise. While suspended it calls `handle.suspend()`, which returns one promise per pending read.
+The promise resolves when the state leaves `loading`, when the handle is disposed with its client alive, or when the
+handle closes. The handle keeps it as `handle.waiting` after it settles, marked `status: "fulfilled"`, and the hook
+passes that same promise to `use` on every later render, as React expects of a component that suspended. A
+fulfilled promise returns at once.
 
-`@skip` and `@include` are rejected at build time by default, on fields, spreads and inline fragments,
-including live fragments. Previously the wire query preserved the directive, but normalisation and
-read selections did not represent its condition: an omitted field read as missing, generated types
-required it, and flattened live projections could select it unconditionally. This is unsafe and is
-not conditional-selection support. `conditionalDirectives: "legacy"` in generator config (or compile
-options) temporarily preserves that previous behaviour for migration. Split conditional selections
-into separate route roots, remove the setting and regenerate. Proper variable-aware conditional
-readers, optional generated fields and stream projections remain proposed (R27 in [the requirements](requirements.md));
-fragment arguments are R28. The hook's `skip` option
-skips a whole operation and is unaffected.
+`suspend()` opens an expired handle again, as `mount` does, which sends the request from render. Otherwise nothing
+is retained per render: the handle is already open. While a wait is pending the handle stays open for up to twice
+`timeoutMs`, even when the read takes longer than `timeoutMs`. Then it closes and the wait settles, so a render that
+never commits (an abandoned navigation without an abort signal, on a read that never settles) still releases the
+handle. A render still waiting opens it again with a new request, so keep `timeoutMs` above the slowest read. When
+the read settles first, the usual deadline starts again and mount, after the commit, cancels it as with
+`useLoadedQuery`. The deadline is per handle. With two handles under one boundary, the faster one's deadline starts
+when its read settles, while React still waits on the slower one. If that takes longer than `timeoutMs`, the faster
+handle closes and its records follow store retention, and mounting opens it again, reading again if they were
+collected.
+
+A first read that fails throws its error to the nearest error boundary. To retry, `await handle.refetch()` and then
+reset the boundary. The handle's status stays `error` until that read settles, so resetting first would throw the
+same error again. After the first data the hook never suspends again for that handle: a refetch shows
+`refreshing` with the data, live updates re-render, and a refetch that fails keeps the data and sets `error`. A
+new handle (a navigation, or other variables) suspends again. Set it inside `startTransition`, as routers do for
+navigation, to keep the previous screen until the new handle has data; outside a transition the boundary shows
+its fallback.
+
+Disposing the client re-renders each mounted reader at once, through the store's disposal notice. That render is
+urgent, so it happens even when the next identity's client arrives inside a transition. A reader with data throws
+to its error boundary, so none of the old identity's rows stay in the document, not even hidden behind a fallback.
+A read still suspended stays suspended for good: its wait never resolves once the client is disposed, and a render
+of that handle suspends on the same wait. It never shows the old identity's data, never throws into the next
+identity's boundary, and holds no listener or retention. A boundary showing only its fallback lets the next
+identity's transition commit. Any other render of a disposed client's handle throws. The next identity's loader
+supplies a new handle. A handle disposed or aborted while its client is alive throws `route load was
+disposed`, as `useLoadedQuery`'s mount does, and a handle from another live client throws as well.
+
+The hook suspends with React's `use`, so React 19 is required (as the peer range says). In tests, render inside
+`await act(async () => render(...))`; with a synchronous `act` React can't wait on the read and never retries it.
+
+Server rendering is a non-goal here too. On the server the hook throws before reading anything, so React
+renders the nearest `<Suspense>` fallback in the server HTML and renders that subtree in the browser. React logs
+that error on the server, and at hydration reports a recoverable "switched to client rendering" error
+(`onRecoverableError`), which error monitors will see; filter it there or keep the hook out of server-rendered
+trees. A `useSuspenseQuery` for a query started at render is not built: it would start a request from render,
+which the loader pattern avoids.
+
+### Fragment arguments (R28)
+
+A fragment can declare arguments of its own, so one fragment is spread with different values in one query: two
+image sizes, two page sizes. The syntax is Relay's, which graphql 16 and 17 both parse with default options (graphql
+16 parses variables on a fragment definition only behind `allowLegacyFragmentVariables`, with no way to pass them, and
+graphql 17's fragment arguments are behind an experimental parser option):
+
+```graphql
+fragment Thumb on Widget @argumentDefinitions(size: {type: "Int!", defaultValue: 64}) {
+  Name
+  Image(Size: $size)
+}
+
+query WidgetPage($Id: String!, $Big: Int!) {
+  small: Widget(Id: $Id) { ...Thumb }
+  large: Widget(Id: $Id) { ...Thumb @arguments(size: $Big) }
+}
+```
+
+- **Declaring.** Each argument is `name: {type: "<GraphQL type>", defaultValue: <value>}`, with `defaultValue`
+  optional. Inside the fragment, `$name` is the argument; any other variable is the operation's, as before. An argument
+  of the same name as an operation variable hides it inside that fragment only.
+- **Passing.** `@arguments(name: value)` on a spread passes a literal or a variable of the spreading scope: the
+  operation's, or the spreading fragment's own argument. An argument not passed takes its default. One with no default
+  is unbound, and behaves as an unset variable does: a field argument given it is left out, so the schema's default
+  applies; a field of an input object given it is left out (`Where: {Name: {Eq: $name}}` is sent as `{Name: {}}`, which
+  filters nothing, not as "name is null"); a list item given it is `null`. Passing on the spreading fragment's own
+  argument when it's unbound counts as not passing it, so the spread fragment's default applies. An operation variable
+  that's passed and not set is sent as the variable, so the server applies the field's schema default, not the fragment's
+  default: the text has no way to say "this default unless the variable is set". The store keys such a field as it keys
+  any field given an unset operation variable.
+- **Checks.** `generate` fails for a spread missing a required argument (non-null, no default), naming the fragment and
+  the argument, and for an argument the fragment doesn't declare, a value of the wrong type, a variable whose type
+  doesn't fit the declared one, `@arguments` on a fragment that declares none, a malformed declaration, or a declared
+  type that doesn't fit where the argument is used. It also refuses one fragment spread twice on one object with different
+  arguments: the object's reference holds one set of values per fragment, so the spreads go under separate aliases. Spreads
+  under type conditions that can't both match one object (`... on Widget` and `... on Vendor` of a union) are allowed. A
+  fragment that spreads itself fails, naming the cycle, as does a fragment of the application named like a copy.
+- **What's sent.** The directives are client-only. The operation text has one copy of the fragment per argument set,
+  named `<Fragment>_<hash of the values>`, with the values written in (a variable stays a variable), so it's ordinary
+  GraphQL and the same values always give the same text and hash. Each copy counts toward the router's token and depth
+  limits like any other text. Normalisation walks the same copies.
+- **Reading.** There's still one artifact per fragment, and one `FragmentRefs<"Thumb">` type, whatever the values.
+  Each spread carries its arguments (`arguments` on the spread selection), and the reference it produces carries a
+  scope with them, so `useFragment(Thumb, data.small)` and `useFragment(Thumb, data.large)` read their own sizes. The
+  store keeps both values on the one record, under their own arguments (`Image({"Size":64})`, `Image({"Size":512})`).
+  Garbage collection and live holdings read through the same scopes. A `@batch` relation inside such a fragment sends
+  none of them: they aren't GraphQL variable names.
+- **Conditions.** `@include(if: $arg)` or `@skip(if: $arg)` on one of the fragment's arguments is written into each copy
+  with the spread's value (a literal, or the operation variable it passed), and readers, garbage collection and live
+  holdings evaluate it in the spread's scope ([conditional selections](#conditional-selections)). Two fields of one
+  response key read as one object, so the same fragment with different values in both is refused like two spreads on one
+  object. A conditional spread of a fragment with arguments (`...Thumb @arguments(size: 5) @include(if: $show)`) is typed
+  as maybe absent, as any conditional spread.
+- **Live.** A `@live` fragment with arguments works under the default stream projection: fields with arguments stay out
+  of the stream, as for any field with arguments, and the queries holding the record read them again with their own
+  values. Under `liveSelection: "as-written"` the stream spreads the fragment, so it can't carry one spread's values, and
+  generation fails.
+- **Refetching.** A `@refetchable` fragment can't declare arguments: its refetch query couldn't know the values a spread
+  passed, and generation fails saying so. A `@refetchable` fragment can pass literal values on to a fragment it spreads.
+
+### Conditional selections
+
+`@skip` and `@include` on fields, fragment spreads and inline fragments are evaluated with the operation's
+variables (R27 in [the requirements](requirements.md)). The directive stays in the operation text, and the compiler records
+it on the selection as `conditions`: each one is `@skip` or `@include` with a literal `if`, or a variable with the default the
+operation declares for it. The reader and the normaliser evaluate them with the selector's variables:
+
+- A selection its condition leaves out isn't read and isn't written. It's absent from the data, it doesn't make the read
+  `missing`, and it isn't a reason to read again. A write to a field only a skipped selection reads doesn't change the
+  snapshot, so it doesn't notify. `missingFields` reports a field whose condition keeps it and the response leaves out, and
+  never one it skips.
+- A change of the variable is a different query instance, as with any variable. It reads the store under the new value:
+  complete when the store holds what that value selects, otherwise it reads from the network. Neither value makes the other
+  look incomplete.
+- Garbage collection marks only what the retained selectors' conditions keep, so a record reached only through a skipped
+  selection is collected.
+- A variable left out takes the default its operation declares. A fragment is compiled once, so the operations that spread it
+  must agree on that default; when two give different defaults, the build fails naming the fragment, the variable and the
+  operations. An explicit null is null, not the default, as on the server. A variable with no default and no value, or a null,
+  counts as false; the server refuses such a request anyway.
+- A link selected more than once under one parent, side by side or through an inline fragment without a type condition, is
+  merged into one link in the read selections, as GraphQL merges it in the response, so the reader builds one object from all
+  of them. A part under `@skip`/`@include` keeps its conditions on an inline fragment inside the merged link. The merged link is
+  conditional only when every part is: under the same conditions, or under `anyOf`, which holds when any part's do. The
+  normaliser needs no merge, since each part writes into the same stored record, and the operation text is unchanged.
+  Selections of one link in inline fragments that narrow an interface or union to different types aren't merged.
+
+Generated types make a selection optional (`readonly Note?: ...`) when a condition can leave it out. A response key selected
+both with and without a condition stays required, and the fields only its conditional selection adds are optional. A
+conditional spread is typed `({} | FragmentRefs<"Name">)`: the reference is there or it isn't. Narrow it with
+`hasFragment(fragment, ref)` before `readFragment` or `useFragment`. A literal `@include(if: true)` or `@skip(if: false)`
+doesn't make anything optional.
+
+A stream has no variables to evaluate a condition with. A field that live fragments select only under `@skip` or `@include`
+stays out of the full stream projection, the generator warns that the stream excludes it, and the fragments that select it
+re-read their holders on an event, with each holder's own variables. A field another live fragment of the type selects
+unconditionally rides the stream as before, and the conditional fragment then needs no re-read for it. A literal condition
+that always skips a field leaves it out without a re-read. The `@live` holders a query reports come from the spreads its
+conditions keep. One limit: whether an event re-reads a query is decided per operation, not per value of the variable, so a
+query whose condition currently skips the field still re-reads on an event for its type. It costs a read, never stale data.
+
+`conditionalDirectives` (generator config or compile options) chooses the behaviour. `"evaluate"` is the default. `"reject"`
+fails the build on `@skip` and `@include`, as 0.1.0-alpha.13 and earlier did by default. `"legacy"` is deprecated and warns
+at each build: the directive stays on the wire only, so a skipped field reads as missing, generated types require it and the
+stream selects it unconditionally, as before. Selections compiled with it are marked `conditional` and `missingFields` doesn't
+check them. To move off it, remove the setting, regenerate, and handle each conditional field as optional and each
+conditional spread with `hasFragment`.
+
+The hook's `skip` option skips a whole operation and is unaffected.
 
 ### Framework server shells
 
@@ -209,7 +353,8 @@ that 16 accepted, so a snapshot can fail `generate` on 17 alone; that is a schem
 `compile` and `generate` from `graphql-orm-client/compiler`, and emits one typed module with an
 artifact per root:
 
-- **Query text.** The flattened operation, sent as is.
+- **Query text.** The flattened operation, sent as is. A fragment with arguments is in it once per argument set
+  ([fragment arguments](#fragment-arguments-r28)).
 - **Hash.** sha256 of the text. Proposed: registering it with a router allow-list and sending the
   hash instead of the text. `createHttpNetwork` sends the text today.
 - **Normalisation map.** Where each record sits in the response, its type and its key fields,
@@ -314,9 +459,9 @@ them, so going back within that period needs no request.
 
 ### Cache policy
 
-`store.retainMs` controls retention. Lifetime and persistence are opt-in; see the R17 sections
+`store.retainMs` controls retention. Lifetime, freshness and persistence are opt-in; see the R17 and R30 sections
 below. One client belongs to one identity: dispose it before exposing a new identity's client.
-Per-type `staleMs` (R30 in [the requirements](requirements.md)) and automatic `store.scope` switching remain proposed.
+Automatic `store.scope` switching remains proposed.
 
 ### Query states
 
@@ -950,6 +1095,8 @@ fragments.
 - Opt-in persistence is keyed by an explicit identity and deleted by `clear()`, which an application calls on
   sign-out. Disposing a client doesn't delete it. It does not encrypt storage; use a storage adapter appropriate
   to the data and threat model.
+- The development inspector (`graphql-orm-client/inspector`) never attaches where `NODE_ENV` is `production`, never sees a
+  response, and drops what it holds when its client is disposed. See [Store inspector](#store-inspector-r31).
 - The client does not authorise anything. A denied field or record arrives as the server
   decides (null or error), and the client stores exactly that.
 - A record lookup can fail with "not current" or "unavailable" (a stale row, or a source that
@@ -982,10 +1129,10 @@ those runs; each timing in each run is itself the median of five samples.
 | One event, 1,000-row list (ms) | 0.151 | 1.2 |
 | One event, 10,000-row list (ms) | 1.255 | 8 |
 | 45,000-line schema + 250 documents (ms) | 694 | 5,000 |
-| Main standalone raw bundle (bytes) | 84,561 | 85,500 |
-| Main standalone gzip bundle (bytes) | 27,168 | 27,500 |
-| React standalone raw bundle (bytes) | 6,969 | 10,000 |
-| React standalone gzip bundle (bytes) | 2,836 | 4,000 |
+| Main standalone raw bundle (bytes) | 86,265 | 87,300 |
+| Main standalone gzip bundle (bytes) | 27,809 | 28,100 |
+| React standalone raw bundle (bytes) | 9,986 | 11,000 |
+| React standalone gzip bundle (bytes) | 3,907 | 4,300 |
 
 Bundles come from the actual built ESM entries, bundled and minified with esbuild; raw means
 uncompressed bundle bytes, gzip uses level 9. React and GraphQL peers are external.
@@ -1025,7 +1172,12 @@ names the router sends as codes; stopping and resuming live delivery on an authe
 about 4.5 KB; and several `@connection` lists per query, restarting a list on a refused cursor and batched `refetchFragment`
 ([#83](https://github.com/Dastari/graphql-orm-client/issues/83), [#55](https://github.com/Dastari/graphql-orm-client/issues/55),
 [#82](https://github.com/Dastari/graphql-orm-client/issues/82)), about 8 KB. With the rest of this release it is 84,561 bytes
-(gzip 27,168); the limits are that plus about 1,000 bytes (gzip 300): 85,500 (gzip 27,500).
+(gzip 27,168); the limits are that plus about 1,000 bytes (gzip 300): 85,500 (gzip 27,500). On 2026-11-18 the suspending read
+([#102](https://github.com/Dastari/graphql-orm-client/issues/102)) and conditional selections
+([#100](https://github.com/Dastari/graphql-orm-client/issues/100)), which sit on the read path, took it to 85,447 (gzip 27,501). Fragment arguments
+([#101](https://github.com/Dastari/graphql-orm-client/issues/101)) took it to 85,814 (gzip 27,650), and the calls into per-type
+freshness ([#103](https://github.com/Dastari/graphql-orm-client/issues/103)), whose logic is in its own entry point, to 86,265
+(gzip 27,809). The limits are 87,300 (gzip 28,100).
 
 It includes page/runtime, query snapshots and store allocations; it excludes native renderer
 memory, browser RSS, GPU memory and server cost. It does not establish a bound on a full
@@ -1245,8 +1397,9 @@ path (list indices count as one path), naming the operation, the type, the recor
 `createClient({ missingFields: "error" })` adds an error at that path to the result's `errors` instead, with `extensions.code`
 `RESPONSE_FIELD_MISSING` (`classifyError` kind `unknown`), so `errorsAtPath` finds it; the query is still `ready` with partial data,
 as with a GraphQL error at a path. `missingFields: "off"` says nothing. A null is a value, so a null at a nullable field is never
-reported. Nor is a field under `@skip` or `@include` compiled with `conditionalDirectives: "legacy"` (the compiler marks those
-selections `conditional`; a module generated before this skips the check for documents using them), a `@batch` relation, or a field
+reported. Nor is a field its `@skip` or `@include` leaves out under the operation's variables, a field under `@skip` or `@include` compiled with
+`conditionalDirectives: "legacy"` (the compiler marks those selections `conditional`; a module generated before this skips the check
+for documents using them), a `@batch` relation, or a field
 at or below a path an error names. It applies to every operation's response, mutations included, but not to subscription events.
 The warning causes no read: a query showing an incomplete record reads again only when a write to that record leaves it missing, as before.
 
@@ -1490,6 +1643,93 @@ its timer clock isn't `Date.now()`) finds the record still valid and arms again.
 Expiry does not delete records or synthesize Changed events; normal version ordering and retention
 still apply. Disposal clears the timer and records. Browser clock correctness is a consumer dependency.
 
+## Freshness (R30)
+
+Without it, `store-or-network` answers from complete stored data however old it is. `installFreshness` gives types a period
+after which their records count as stale:
+
+```ts
+import { installFreshness } from "graphql-orm-client/freshness"
+
+const client = createClient({ network, live })
+installFreshness(client, { staleMs: { Ticket: 60_000, Vendor: 10 * 60_000 } })
+```
+
+A `store-or-network` read (`client.query`, `loadQuery`, `watchQuery(..., "store-or-network")` when it opens, a `@paged` page with that
+policy) answers from the store only when its data is complete, not restored, and fresh: every record it reaches, through child
+fragments too, whose type has a setting was written whole by the server within that setting. Otherwise it reads. A watched query shows the
+stored data while it does, as it does for restored data. `store-and-network` and `network-only` don't change. A type left out never
+goes stale this way, and a client without `installFreshness` behaves as before. Install it right after `createClient` and before any
+read; a record written before then has no age and counts as stale. `0` makes every such read of the type go to the network, and
+`Infinity` keeps a record fresh once a response in this client has written it. A negative or non-numeric value throws.
+
+**Where the setting lives.** It is a runtime setting of one client, not generator configuration. Lifetimes are in the generator
+because the compiler has to select the lifetime field; freshness selects nothing, so it needs no regeneration and adds nothing to
+the artifacts. It is the application's tolerance for old data, not a fact about the schema, and a test can set it per client. The
+cost is that a misspelled type name isn't caught at build time: it is simply never matched. It is its own entry point because the
+main bundle is watched for growth: main carries only the calls into it (451 bytes, 159 gzip, measured at 86,265 / 27,809), and
+the entry is 7,761 / 3,179 bytes standalone, much of it the store reader and argument keys that main already has, which a
+bundler shares.
+
+**What restarts a record's age.** A write the store accepts from a query or refetch response, a mutation's response, a `@batch`
+relation's read, or a live event, when it wrote every field the store holds for the record. Each argument-keyed field
+(`Label({"Locale":"en"})`) counts on its own, so a fragment spread with other argument values writes other fields. A field that
+`@skip` or `@include` left out of the request isn't written, even when the response carries it, and so doesn't count. A record
+read under several argument values or conditions is restarted only by a write that carries all of them, which is coarse but never
+too fresh. A write that carries fewer fields keeps the earlier deadline: a summary polled every
+50 seconds writes `Title` and leaves a detail's `Body` as old as it was, so the detail is read once its age passes. A partial write
+can never move a deadline later, and gives none to a record that has none. Not an optimistic write, which is a guess; not a
+response the store refused because it carried an older record version, which says nothing about the newer one; not a restore;
+not a direct `store.setField`. A response with the same version as the stored one is a confirmation and restarts it. Ages are
+per record, not per field: a per-field age would cost a map entry for every field of every record. A deleted or collected record
+forgets its age. Comparing what was written costs a set of storage keys per write of a record with a setting: 5 to 10% more time
+to write a 10,000-row list whose row type has one.
+
+**Lists.** A list's membership is not a field of its rows: an event that keeps every row fresh says nothing about rows created
+since. So a record without a key that holds a list able to reach a type with a setting (a connection, or an embedded object with a
+plural field) gets an age of its own: the smallest setting it can reach, from when a response last replaced all of its rows. A
+`loadMore` page doesn't restart it, nor does a first page that keeps the pages loaded after it, nor a write under a parent the
+store refused as older; the loaded-range read that a `store-or-network` open sends does, because it replaces every loaded row. An
+empty list ages too, and a list with no age (written before `installFreshness`) counts as stale. Other records without a key
+(edges, an embedded object with only singular links) take no age: they are written with the record or list above them. A plural
+field held directly by a record with a key isn't aged apart from its rows; graphql-orm serves lists as connections, so this
+affects only a hand-built schema. A singular link on a record (`Ticket.Assignee`) is a field of that record and shares its age.
+
+**Query fields.** A field of the query root that returns a type with a setting, or a list that can hold one, has an age of its own,
+from the last response that wrote it. While it points at a record, that record's age decides, so an event on the record keeps a
+lookup by key (`Ticket(Id:)`) fresh. When it answered null, or is a list, its own age decides: a `Ticket(Id:)` that found nothing
+is asked again once the period passes.
+
+**Streams don't keep a record fresh.** A record covered by an open stream that has sent nothing is not fresh: only what a stream
+delivers restarts an age. There is no subscribe acknowledgement (graphql-orm#341), so a quiet stream looks the same as one the
+server never admitted; graphql-orm-router before 0.9.0 can drop frames with no signal (graphql-orm#359); and a write made around
+the ORM sends no event. Counting coverage as freshness would make live delivery the only path to correct data for a covered type,
+which the client never allows. An event that says a record changed without carrying what its readers need makes the record stale
+at once, whatever its age: a keys-only event (after the server refused the full selection), a `DELETED` with change kind
+`PROPAGATED`, any event of a type whose stream leaves out fields some fragment reads (`rereadFragments`), and an event for a
+stored record that no open query holds, which the client doesn't write. Open holders read
+again as before, and that read restarts the age; a closed query reaching the record reads when it next opens. A reconnect's
+re-read restarts the age like any other read.
+
+**Persistence.** A restored record has no age until the network writes all of it, so a restored snapshot is never fresh, however recent
+its `savedAt`. `savedAt` is when the snapshot was last flushed, not when each record in it was last written by the server, so it
+can't prove any record's age; and restored data is already re-read (`QueryState.stale`). A partial write clears a record's
+restored mark but gives it no age, so a query reading the fields the write didn't carry still reads. Ages are not persisted.
+
+**When it is decided.** When a read starts. An open watched query doesn't read again when its records age: `@live` keeps it current,
+and `pollMs` reads on a timer. A second handle opening an already open query doesn't read either. Lifetime fields (R17) still decide
+expiry: an expired record reads as missing, and so is read, however fresh it is.
+
+**Cost.** Ages are kept in one `Map` from record id to deadline, only for records of a type with a setting and for the lists
+described above, and in one from query field to deadline, so a type without a setting costs nothing. A deadline is stored as an
+offset from when freshness was installed, which keeps it a small integer that V8 holds in the map entry for about twelve days of a
+client's life. Measured with Node 24 on a 10,000-row connection whose row type has a setting: 476 to 488 KB more heap (about 49
+bytes a row, 5% of that store). Whether a query can reach a type with a setting, through its fragments too, is worked out once per
+query, following conditional parts whatever the variables; one that can't is answered with no further work. A query field inside
+an inline part or a spread is keyed with the spread's argument values, and one the variables leave out needs no age. One that can is read once more with fragments inlined: 5 to 7 ms for those
+10,000 rows. The ages use the store clock (`store.now`); `createTestClock().store` carries it, so tests drive ages and lifetime
+expiry with the clock.
+
 ## Persistence (R17)
 
 Import `persistClient` and optionally `indexedDBAdapter` from `graphql-orm-client/persistence`.
@@ -1702,6 +1942,63 @@ count as subscribe failures. `hasLiveLayer` explicitly reports configuration. Th
 measured and none. Take two health samples and divide count differences by elapsed minutes.
 Counter and read-time changes alone do not notify health listeners. Event timing follows
 the existing at-most-once-per-second notification path; state changes still notify promptly.
+
+## Store inspector (R31)
+
+`inspect(client)`, from `graphql-orm-client/inspector`, is a development view of one client's store. It is an object API with
+no UI:
+
+| Call | Returns |
+| --- | --- |
+| `records()` | Each stored record: `id`, `typename`, a copy of its `fields` (links as `{ __ref }` and `{ __refs }`), `heldBy` (the keys of the queries whose reads reach it) and `coveredBy` (the ids of the streams that write its events), with `lifetime` and `restored` where they apply |
+| `queries()` | Each query keeping records: `key`, `operation`, `variables`, `state` (`open`, or `released` and waiting out `retainMs`), a watched query's `status` and `pollMs`, and the `records` its read reaches |
+| `streams()` | Each open generated `Changed` stream: `id`, `typename`, `operation`, `scope` (`all`, `key` or `keys`), `thin` (keys only, after the full selection was refused) and the held `records` it covers |
+| `reads()` | The most recent query reads (`maxReads`, default 200), oldest first: `operation`, `variables`, the `query` key, `cause` and `at` |
+| `subscribe(listener)` | Each read as it starts (`{ type: "read", read }`), each batch the store publishes (`{ type: "write", ids }`), and `{ type: "dispose" }` |
+| `dispose()` | Detaches. The client is unaffected |
+
+Everything but `reads()` is worked out from the client when it is called, so it is current and the inspector keeps no copy of
+the store. `heldBy` comes from what collection uses: the reads of the store's retained queries. A record with none is deleted
+by the next collection, unless it is the root record (`client:root`) or, with `@batch` relation batching installed, a mounted
+fragment or query reaches it, since collection then keeps what subscribed views read too. A read's `query` is the key of the
+retained query under those variables, a watched query's before a `client.query` read's, or null when none is retained, as for
+a `loadMore` or `readAll` page.
+
+A read's `cause` is a `ReadCause` from [read and stream counters](#read-and-stream-counters), with the client's `stale` split in two
+where an event was behind it. `event` means an event for a record the query holds carried something it couldn't use (a keys-only
+stream, a child deleted below the record, a field the stream can't carry). `list` means an event for the type of a list the query
+shows. Both name the event's `typename`. `stale` alone now means a record the query shows was deleted or collected. Events that
+coalesce into one read give it the first one's cause. The mark an event leaves is used by the re-read it asked for, even when a
+refetch or poll is read first, and dropped when the query closes, since closing cancels that re-read. A re-read that goes out
+under another cause that came first, such as a burst repair, uses the mark up and keeps that cause. A refresh that reads several
+pages of a list is one read; `liveHealth().reads` counts its requests.
+
+What it never receives:
+
+- An `@sensitive` result or a `no-store` mutation result. Neither enters the store ([sensitive operations](#sensitive-operations-r9)),
+  and the inspector sees reads only as they start: the operation, its variables and the cause, never a response. Mutations and
+  `@sensitive` queries aren't recorded at all. Nothing wraps the network.
+- Another identity's data. It shows only its client's store, and when that client is disposed it drops its reads, removes what it
+  attached to the client and its listeners, and lets go of the client, inside `client.dispose()`. Its listeners hear `dispose` first.
+
+How it can't be on in production:
+
+- It is its own entry point, so it is in a bundle only if the application imports it. Import it behind a development check, such as
+  `if (import.meta.env.DEV) void import("graphql-orm-client/inspector").then(({ inspect }) => inspect(client, { enabled: import.meta.env.DEV }))`.
+- Where the bundle's `process.env.NODE_ENV` is `production`, `inspect` returns an inert inspector (`active: false`, every list
+  empty) and attaches nothing, whatever `enabled` says. Left out, `enabled` is on only where `NODE_ENV` is set and isn't
+  `production`, as in development and tests. Where nothing sets `NODE_ENV`, pass `enabled: import.meta.env.DEV` or your bundler's
+  equivalent, not `true`.
+- It puts nothing on `window` or any other global.
+
+It attaches by wrapping the client's `executeResponse` on the instance, to see each query read start, the live layer's event
+handler, to see which queries an event marked, and a marked query's `cancelRereads`, to see it close. On dispose it puts back
+each client member that is still its own wrapper; one that something else wrapped afterwards, such as a second copy of this
+module, stays and passes every call straight through. The main entry point has no hook for it and is the same bytes with or
+without it. It reads the client's internals, so it works only with a client from the same installed package.
+
+There is one inspector per client. While one is attached, `inspect(client, options)` returns it and ignores `options`, and
+`dispose()` from any caller ends it for all of them. `maxReads` that isn't a finite positive number is the default, 200.
 
 ## Zero keyed subscription cap
 

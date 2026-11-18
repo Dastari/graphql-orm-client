@@ -25,11 +25,11 @@ CI installs Chromium and never uses this escape.
 - Compiler: generate exactly 45,000 nonblank SDL lines at runtime (500 neutral entity types, Where
   inputs, connections, Changed events), and 250 documents: 125 live fragments plus 125 root queries.
   Time schema parsing/construction and the real compile together; validate artifact counts.
-- Bundle: esbuild minifies each actual `pnpm build` entry (`dist/index.js` and
-  `dist/react/index.js`) and follows its imports, then gzip level 9. React and GraphQL peers remain
+- Bundle: esbuild minifies each actual `pnpm build` entry (`dist/index.js`,
+  `dist/react/index.js` and the development inspector, `dist/inspector.js`) and follows its imports, then gzip level 9. React and GraphQL peers remain
   external, as in an application that supplies them. Every reachable package module is counted
-  once per standalone entry; shared modules are counted in **both** reported standalone totals.
-  Do not add the two totals to estimate an app importing both; there are no split chunks in this
+  once per standalone entry; shared modules are counted in **each** reported standalone total.
+  Do not add the totals to estimate an app importing several; there are no split chunks in this
   measurement. Declarations and compiler/test subpaths are excluded.
 - Windows: serve a real page on loopback ports 43000–43099. Open the first page and use its
   `window.open` to open 2, then 5 pop-out tool windows (1, 3, 6 total).

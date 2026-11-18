@@ -16,6 +16,7 @@ import {
   print,
   specifiedRules,
   validate,
+  valueFromASTUntyped,
   visit,
   type ArgumentNode,
   type DocumentNode,
@@ -32,13 +33,18 @@ import {
 import type {
   ArgumentSpec,
   ConnectionSpec,
+  FragmentArgumentSpec,
   FragmentArtifact,
+  InlineFragmentSelection,
+  LinkSelection,
   LiveArtifact,
   LiveMode,
   OperationArtifact,
   PagedSpec,
   Selection,
+  SelectionCondition,
 } from "../artifact.js"
+import { applyFragmentArguments, declaredArguments, scopedName, spreadArguments, usesFragmentArguments, type SpreadArgument } from "./fragment-arguments.js"
 import { hasDefault, printStable } from "./print.js"
 
 /** Severity of a project policy diagnostic. */
@@ -61,8 +67,14 @@ export interface CompileOptions {
   readonly subscriptionPaths?: readonly string[]
   /** Source text to all declaring files, relative to the config directory. CLI supplies this. */
   readonly documentPaths?: Readonly<Record<string, readonly string[]>>
-  /** Reject unsupported conditional selections. legacy preserves the previous unsafe behaviour for migration only. */
-  readonly conditionalDirectives?: "reject" | "legacy"
+  /**
+   * How `@skip` and `@include` on fields, spreads and inline fragments compile. Default `"evaluate"`: readers and
+   * normalisation evaluate them with the operation's variables, generated types make the selection optional, and streams
+   * leave out a field that live fragments select only conditionally. `"reject"` fails the build on them, as 0.1.0-alpha.13
+   * and earlier did by default. `"legacy"` is deprecated: it keeps the directive on the wire only, so a skipped field reads
+   * as missing and its type is required, as before; it warns at each build.
+   */
+  readonly conditionalDirectives?: "evaluate" | "reject" | "legacy"
 
   /** Stream projection; as-written preserves legacy fragment spreading. */
   readonly liveSelection?: "full" | "as-written"
@@ -181,7 +193,7 @@ function clientSchemaOf(schema: GraphQLSchema): GraphQLSchema {
   return extended
 }
 
-const CLIENT_DIRECTIVE_NAMES = new Set(["live", "poll", "connection", "refetchable", "paged", "sensitive", "batch"])
+const CLIENT_DIRECTIVE_NAMES = new Set(["live", "poll", "connection", "refetchable", "paged", "sensitive", "batch", "argumentDefinitions", "arguments"])
 
 /** graphql-orm's connection and keyset field names. */
 const DEFAULT_CONNECTION = {
@@ -234,6 +246,152 @@ function stripClientDirectives<T extends import("graphql").ASTNode>(node: T): T 
  * `readSelection`: the selection data is read through, which leaves out the identity fields the document didn't select.
  */
 type ProjectionOptions = CompileOptions & { readonly streamProjection?: boolean; readonly readSelection?: boolean }
+
+/** A Boolean variable's default, or "conflict" when the operations spreading a fragment declare different ones. */
+type ConditionDefault = { readonly value: boolean | "conflict"; readonly operations: readonly string[] }
+/** What `convert` needs to compile `@skip`/`@include`: the defaults of the variables, and where they are, for errors. */
+type ConvertOptions = CompileOptions & { readonly conditionScope?: string; readonly conditionDefaults?: ReadonlyMap<string, ConditionDefault>; readonly locals?: Locals }
+
+/** Whether a selection's literal `@skip(if: true)` or `@include(if: false)` always leaves it out. */
+function never(conditions: readonly SelectionCondition[] | undefined): boolean {
+  return conditions?.some((condition) => "anyOf" in condition
+    ? condition.anyOf.every(never)
+    : typeof condition.if === "boolean" && condition.if !== (condition.directive === "include")) === true
+}
+
+/** Whether a selection's `@skip`/`@include` can leave it out: not when every condition is a literal that keeps it. */
+export function mayLeaveOut(conditions: readonly SelectionCondition[] | undefined): boolean {
+  return conditions?.some((condition) => "anyOf" in condition
+    ? condition.anyOf.every(mayLeaveOut)
+    : typeof condition.if !== "boolean" || condition.if !== (condition.directive === "include")) === true
+}
+
+/** An inline fragment that narrows nothing under a parent of these types: its selections apply to every record, under its conditions. */
+function transparent(selection: Selection, parentTypes: readonly string[]): selection is InlineFragmentSelection {
+  return selection.kind === "inline" && (selection.possibleTypes === null || parentTypes.every((type) => selection.possibleTypes!.includes(type)))
+}
+
+/** Whether a link response key is selected more than once, side by side or through inline fragments that narrow nothing. */
+function repeatsLink(selections: readonly Selection[], parentTypes: readonly string[], seen = new Set<string>()): boolean {
+  for (const selection of selections) {
+    if (selection.kind === "link" && !selection.batch) {
+      if (seen.has(selection.responseKey)) return true
+      seen.add(selection.responseKey)
+    } else if (transparent(selection, parentTypes) && repeatsLink(selection.selections, parentTypes, seen)) return true
+  }
+  return false
+}
+
+/** The selections of inline fragments that narrow nothing, lifted into their parent with the fragment's conditions added. */
+function lift(selections: readonly Selection[], parentTypes: readonly string[], outer: readonly SelectionCondition[] = []): Selection[] {
+  return selections.flatMap((selection): Selection[] => {
+    const conditions = [...outer, ...(selection.conditions ?? [])]
+    if (transparent(selection, parentTypes)) return lift(selection.selections, parentTypes, conditions)
+    return [conditions.length ? { ...selection, conditions } : selection]
+  })
+}
+
+/**
+ * One link from every selection of a response key under one parent. GraphQL merges them into one field in the response; the
+ * reader builds one object per key, so the compiler merges them too. A part its conditions can leave out keeps them on an
+ * inline fragment inside the merged link, and the link is conditional only when every part is. Only read selections are
+ * merged: the normaliser already writes each part into the same stored record. Selections that repeat no link are returned
+ * as they are, so their artifacts don't change.
+ */
+function mergeLinks(selections: Selection[], parentTypes: readonly string[], options: CompileOptions): Selection[] {
+  if (!repeatsLink(selections, parentTypes)) return selections
+  const flat = lift(selections, parentTypes)
+  const groups = new Map<string, LinkSelection[]>()
+  for (const selection of flat) {
+    if (selection.kind !== "link" || selection.batch) continue
+    groups.set(selection.responseKey, [...(groups.get(selection.responseKey) ?? []), selection])
+  }
+  const merged: Selection[] = []
+  for (const selection of flat) {
+    if (selection.kind !== "link" || selection.batch) {
+      merged.push(selection)
+      continue
+    }
+    const parts = groups.get(selection.responseKey)!
+    if (parts[0] !== selection) continue
+    if (parts.length === 1) {
+      merged.push(selection)
+      continue
+    }
+    const conditional = parts.filter((part) => mayLeaveOut(part.conditions))
+    const same = conditional.length === parts.length && parts.every((part) => JSON.stringify(part.conditions) === JSON.stringify(parts[0]!.conditions))
+    // A field every part selects without a condition of its own is there whenever the link is: it needn't be wrapped.
+    const common = conditional.length === parts.length && !same
+      ? parts[0]!.selections.filter((child) => child.kind === "scalar" && !child.conditions &&
+        parts.every((part) => part.selections.some((other) => JSON.stringify(other) === JSON.stringify(child))))
+      : []
+    const shared = new Set(common.map((child) => JSON.stringify(child)))
+    const children = [...common, ...parts.flatMap((part): Selection[] => same || !mayLeaveOut(part.conditions)
+      ? [...part.selections]
+      : [{ kind: "inline", typeCondition: null, possibleTypes: null, selections: part.selections.filter((child) => !shared.has(JSON.stringify(child))), conditions: part.conditions! }])]
+    const { conditions: _conditions, conditional: _legacy, ...first } = parts[0]!
+    const connection = parts.find((part) => part.connection)?.connection
+    const listNode = parts.find((part) => part.listNode)?.listNode
+    merged.push({
+      ...first,
+      ...(connection ? { connection } : {}),
+      ...(listNode ? { listNode } : {}),
+      selections: mergeLinks(children, first.types, options),
+      // Under the deprecated legacy setting a link is marked conditional only when every part was.
+      ...(options.conditionalDirectives === "legacy" && parts.every((part) => part.conditional) ? { conditional: true as const } : {}),
+      ...(conditional.length < parts.length ? {} : same ? { conditions: parts[0]!.conditions! } : { conditions: [{ anyOf: parts.map((part) => part.conditions!) }] }),
+    })
+  }
+  return merged
+}
+
+/** The Boolean literal defaults an operation declares for its variables. */
+function booleanDefaults(node: OperationDefinitionNode): Map<string, ConditionDefault> {
+  const found = new Map<string, ConditionDefault>()
+  for (const definition of node.variableDefinitions ?? []) {
+    if (definition.defaultValue?.kind === Kind.BOOLEAN)
+      found.set(definition.variable.name.value, { value: definition.defaultValue.value, operations: [node.name?.value ?? "<anonymous>"] })
+  }
+  return found
+}
+
+/** Whether `@skip`/`@include` directives always keep a selection ("always"), always leave it out ("never"), or depend on variables. */
+function conditionOf(directives: readonly import("graphql").DirectiveNode[] | undefined, options: CompileOptions): "always" | "never" | "variable" {
+  // Under the deprecated legacy setting a stream selects conditional fields as if they were unconditional, as it did.
+  if (options.conditionalDirectives === "legacy") return "always"
+  let result: "always" | "variable" = "always"
+  for (const directive of directives ?? []) {
+    const name = directive.name.value
+    if (name !== "skip" && name !== "include") continue
+    const value = directive.arguments?.find((argument) => argument.name.value === "if")?.value
+    if (value?.kind === Kind.BOOLEAN) {
+      if (value.value !== (name === "include")) return "never"
+    } else result = "variable"
+  }
+  return result
+}
+
+/** The artifact form of a selection's `@skip`/`@include`: evaluated conditions, or the legacy `conditional` mark. */
+function conditionsOf(directives: readonly import("graphql").DirectiveNode[] | undefined, options: ConvertOptions): { conditional?: true; conditions?: SelectionCondition[] } {
+  const found = (directives ?? []).filter((directive) => directive.name.value === "skip" || directive.name.value === "include")
+  if (!found.length) return {}
+  // Only `conditionalDirectives: "legacy"` marks these this way, so a response that leaves one out isn't reported.
+  if (options.conditionalDirectives === "legacy") return { conditional: true }
+  const conditions = found.map((directive): SelectionCondition => {
+    const kind = directive.name.value as "skip" | "include"
+    const value = directive.arguments?.find((argument) => argument.name.value === "if")?.value
+    if (value?.kind === Kind.BOOLEAN) return { directive: kind, if: value.value }
+    if (value?.kind !== Kind.VARIABLE) throw new CompileError([`${options.conditionScope ?? "A document"}: @${kind} needs a Boolean literal or variable for if`])
+    const variable = value.name.value
+    // One of the fragment's own arguments: its value, with any default, comes from each spread's scope.
+    if (options.locals?.names.has(variable)) return { directive: kind, if: { variable: scopedName(options.locals.fragment, variable) } }
+    const fallback = options.conditionDefaults?.get(variable)
+    if (fallback?.value === "conflict")
+      throw new CompileError([`${options.conditionScope ?? "A fragment"}: @${kind} uses $${variable}, which operations ${[...new Set(fallback.operations)].sort().join(", ")} give different defaults. A fragment is compiled once, so give $${variable} the same default in each of them, or none.`])
+    return { directive: kind, if: fallback === undefined ? { variable } : { variable, default: fallback.value } }
+  })
+  return { conditions }
+}
 
 const NODE_ID = "NodeId"
 
@@ -364,18 +522,33 @@ function compileDocuments(
     operationNames.add(name)
   }
 
+  // A fragment with arguments is sent as a copy per argument set, with the values written in: those copies are what's validated
+  // and sent. Readers read the fragments as written, and resolve their arguments from each spread.
+  let wireOperations: ReadonlyMap<OperationDefinitionNode, OperationDefinitionNode> = new Map()
+  let wireFragmentNodes: ReadonlyMap<string, FragmentDefinitionNode> = fragmentNodes
+  if (usesFragmentArguments([...operationNodes, ...fragmentNodes.values()])) {
+    const applied = applyFragmentArguments(schema, operationNodes, fragmentNodes)
+    if (applied.problems.length) throw new CompileError([...problems, ...applied.problems])
+    wireOperations = applied.operations
+    wireFragmentNodes = applied.fragments
+  }
+  const wireOf = (operation: OperationDefinitionNode): OperationDefinitionNode => wireOperations.get(operation) ?? operation
+
   // Validate the whole set as one document so cross-file fragment spreads resolve.
   const combined: DocumentNode = {
     kind: Kind.DOCUMENT,
-    definitions: [...operationNodes, ...fragmentNodes.values()],
+    definitions: [...operationNodes.map(wireOf), ...wireFragmentNodes.values()],
   }
+  const conditionMode = options.conditionalDirectives ?? "evaluate"
+  if (conditionMode !== "evaluate" && conditionMode !== "reject" && conditionMode !== "legacy")
+    throw new CompileError([`conditionalDirectives must be "evaluate", "reject" or "legacy"`])
+  if (conditionMode === "legacy" && !nested)
+    (options.onWarning ?? console.warn)(`conditionalDirectives: "legacy" is deprecated and will be removed: @skip and @include are now evaluated with the operation's variables. Remove the setting, regenerate, and treat each conditional field as optional (a conditional spread with hasFragment).`)
   visit(combined, {
     Directive(node) {
       const name = node.name.value
-      if ((name === "skip" || name === "include") && options.conditionalDirectives !== "legacy")
-        problems.push(`@${name} is unsupported: conditional reads, generated optional types and live projections are not implemented. Split the route query; conditionalDirectives: "legacy" temporarily restores unsafe previous compilation.`)
-      if (name === "argumentDefinitions" || name === "arguments")
-        problems.push(`@${name}: fragment arguments are unsupported; declare variables on the route operation instead`)
+      if ((name === "skip" || name === "include") && conditionMode === "reject")
+        problems.push(`@${name} is rejected by conditionalDirectives: "reject". Remove that setting to evaluate it with the operation's variables, or split the route query.`)
     },
   })
   // Fragments may be compiled without an operation that uses them.
@@ -413,10 +586,25 @@ function compileDocuments(
   const augment = (selectionSet: SelectionSetNode, parent: GraphQLCompositeType): SelectionSetNode =>
     augmentSelectionSet(schema, selectionSet, parent, options)
 
+  // The Boolean defaults each operation declares, and those of every operation that spreads a fragment, for its conditions.
+  const operationDefaults = new Map(operationNodes.map((node) => [node, booleanDefaults(node)]))
+  const fragmentDefaults = new Map<string, Map<string, ConditionDefault>>()
+  for (const node of operationNodes) {
+    for (const fragment of usedFragments(node.selectionSet, fragmentNodes)) {
+      const merged = fragmentDefaults.get(fragment) ?? new Map<string, ConditionDefault>()
+      for (const [variable, value] of operationDefaults.get(node)!) {
+        const known = merged.get(variable)
+        merged.set(variable, known === undefined || known.value === value.value ? { value: value.value, operations: [...(known?.operations ?? []), ...value.operations] } : { value: "conflict", operations: [...known.operations, ...value.operations] })
+      }
+      fragmentDefaults.set(fragment, merged)
+    }
+  }
+
   const fragments: Record<string, FragmentArtifact> = {}
+  // As sent, by name: with fragment arguments, a copy per argument set.
   const augmentedFragments = new Map<string, FragmentDefinitionNode>()
   const readFragments = new Map<string, FragmentDefinitionNode>()
-  for (const [name, node] of fragmentNodes) {
+  for (const [name, node] of wireFragmentNodes) {
     const parent = schema.getType(node.typeCondition.name.value) as GraphQLCompositeType
     const augmented: FragmentDefinitionNode = {
       ...node,
@@ -424,14 +612,17 @@ function compileDocuments(
       selectionSet: augment(node.selectionSet, parent),
     }
     augmentedFragments.set(name, augmented)
-    const read: FragmentDefinitionNode = readOptions === options ? augmented : { ...augmented, selectionSet: augmentSelectionSet(schema, node.selectionSet, parent, readOptions) }
-    readFragments.set(name, read)
+    readFragments.set(name, readOptions === options ? augmented : { ...augmented, selectionSet: augmentSelectionSet(schema, node.selectionSet, parent, readOptions) })
+  }
+  for (const [name, node] of fragmentNodes) {
+    const parent = schema.getType(node.typeCondition.name.value) as GraphQLCompositeType
+    const read = wireFragmentNodes === fragmentNodes ? readFragments.get(name)!.selectionSet : augmentSelectionSet(schema, node.selectionSet, parent, readOptions)
     fragments[name] = {
       kind: "fragment",
       ...(pollReason(node) ? { pollReason: pollReason(node) } : {}),
       name,
       typeCondition: parent.name,
-      selections: convert(schema, read.selectionSet, parent, fragmentNodes, false, options),
+      selections: convert(schema, read, parent, fragmentNodes, false, { ...options, conditionScope: `Fragment ${name}`, conditionDefaults: fragmentDefaults.get(name) ?? new Map(), locals: localsOf(node) } as ConvertOptions),
       live: (() => {
         const directive = node.directives?.find((d) => d.name.value === "live")
         const enabled = directive?.arguments?.find((a) => a.name.value === "enabled")?.value
@@ -458,13 +649,16 @@ function compileDocuments(
     const name = node.name!.value
     const rootType = schema.getRootType(node.operation)
     if (!rootType) throw new CompileError([`The schema has no ${node.operation} root`])
+    const wireNode = wireOf(node)
     const augmented: OperationDefinitionNode = {
-      ...node,
-      selectionSet: augmentSelectionSet(schema, node.selectionSet, rootType, options, false),
+      ...wireNode,
+      selectionSet: augmentSelectionSet(schema, wireNode.selectionSet, rootType, options, false),
     }
-    const readSelectionSet = readOptions === options ? augmented.selectionSet : augmentSelectionSet(schema, node.selectionSet, rootType, readOptions, false)
-    const used = usedFragments(augmented.selectionSet, fragmentNodes)
     const sensitive = node.directives?.some(d => d.name.value === "sensitive") === true
+    // A @sensitive result is read with its fragments inlined, so through the copies sent; any other through the fragments as written.
+    const readNode = sensitive ? wireNode : node
+    const readSelectionSet = readOptions === options && readNode === wireNode ? augmented.selectionSet : augmentSelectionSet(schema, readNode.selectionSet, rootType, readOptions, false)
+    const used = usedFragments(node.selectionSet, fragmentNodes)
     if (sensitive && (hasDirective(node.selectionSet, "batch") || [...used].some(name => hasDirective(fragmentNodes.get(name)!.selectionSet, "batch"))))
       throw new CompileError([`${name}: @sensitive cannot use @batch relations`])
     if (sensitive && [...used].some(name => fragments[name]?.live))
@@ -474,7 +668,8 @@ function compileDocuments(
     const wireUsed = usedFragments(wireOperation.selectionSet, wireFragments)
     const text = [wireOperation, ...[...wireUsed].sort().map(fragment => wireFragments.get(fragment)!)]
       .map(definition => printStable(definition)).join("\n\n")
-    const normalization = convert(schema, augmented.selectionSet, rootType, augmentedFragments, true, options)
+    const convertOptions = { ...options, conditionScope: `Operation ${name}`, conditionDefaults: operationDefaults.get(node)! } as ConvertOptions
+    const normalization = convert(schema, augmented.selectionSet, rootType, augmentedFragments, true, convertOptions)
     const reachable = reachableTypes(normalization)
     const paged = pagedSpecOf(schema, node, rootType, options)
     operations[name] = {
@@ -490,7 +685,7 @@ function compileDocuments(
       text,
       hash: createHash("sha256").update(text).digest("hex"),
       rootType: rootType.name,
-      selections: convert(schema, readSelectionSet, rootType, sensitive ? readFragments : fragmentNodes, sensitive, options),
+      selections: convert(schema, readSelectionSet, rootType, sensitive ? readFragments : fragmentNodes, sensitive, convertOptions),
       normalization,
       fragments: Object.fromEntries([...used].sort().map((fragment) => [fragment, fragments[fragment]!])),
       ...(paged ? { paged } : {}),
@@ -604,6 +799,7 @@ function compileDocuments(
       const compare = (selections: readonly Selection[], typename: string) => {
         const carried = carries.get(typename)
         for (const selection of selections) {
+          if (never(selection.conditions)) continue
           if (selection.kind === "inline") compare(selection.selections, typename)
           if (selection.kind === "scalar" && carried && selection.fieldName !== NODE_ID &&
             (selection.args.length || !carried.has(selection.fieldName))) stale.add(typename)
@@ -643,6 +839,11 @@ function compileRefetch(
   for (const [name, node] of fragmentNodes) {
     const directive = (node.directives ?? []).find((entry) => entry.name.value === "refetchable")
     if (!directive) continue
+    if (declaredArguments(node)) {
+      problems.push(`Fragment ${name} is @refetchable and declares arguments, but its refetch query can't know the values each spread passed. ` +
+        `Make a fragment without arguments @refetchable, or read the route query again (refetchQueries)`)
+      continue
+    }
     const nameArg = directive.arguments?.find((arg) => arg.name.value === "queryName")
     const queryName = nameArg?.value.kind === Kind.STRING ? nameArg.value.value : `${name}Refetch`
     const nodeField = schema.getQueryType()?.getFields()["node"]
@@ -725,6 +926,10 @@ function compileLive(
     }
     const { fieldName, entity, action, changeKind, arg, mode } = stream
     if (options.liveSelection === "as-written") {
+      const withArguments = names.filter((name) => declaredArguments(fragmentNodes.get(name)!))
+      if (withArguments.length) throw new CompileError(withArguments.map((name) =>
+        `Fragment ${name} is live and declares arguments. With liveSelection: "as-written" the ${typename} stream spreads ${name}, and one stream is shared by every query that holds a ${typename}, so it can't carry one spread's arguments. ` +
+        `Remove liveSelection: "as-written" (the default stream projection leaves fields with arguments out, and the queries holding the record read them again), or mark ${name} @live(enabled: false)`))
       const problems = names.flatMap((name) => variableUses(schema, fragmentNodes, name).map(({ site, verb, fragment, variable }) =>
         `Fragment ${name} is live, but ${site}${fragment === name ? "" : ` (in fragment ${fragment})`} ${verb} the operation variable $${variable}. ` +
         `With liveSelection: "as-written" the ${typename} stream spreads ${name}, and one stream is shared by every query that holds a ${typename}, so it can't carry one query's variables. ` +
@@ -752,15 +957,22 @@ function compileLive(
       const type = schema.getType(typename) as GraphQLObjectType
       const version = versionFieldOf(type, options)
       if (version) carried.add(version)
-      const inspect = (set: SelectionSetNode, fragment: string, stack = new Set<string>()) => {
+      // A field a live fragment selects only under `@skip`/`@include` stays out of the stream: the stream has no variables to
+      // evaluate the condition with. Its holders read it again with their own.
+      const inspect = (set: SelectionSetNode, fragment: string, stack = new Set<string>(), conditional = false) => {
         for (const selection of set.selections) {
+          const condition = conditionOf(selection.directives, options)
+          if (condition === "never") continue
+          const under = conditional || condition === "variable"
           if (selection.kind === Kind.FRAGMENT_SPREAD) {
             if (!stack.has(selection.name.value)) {
               const next = new Set(stack).add(selection.name.value)
-              inspect(fragmentNodes.get(selection.name.value)!.selectionSet, fragment, next)
+              inspect(fragmentNodes.get(selection.name.value)!.selectionSet, fragment, next, under)
             }
-          } else if (selection.kind === Kind.INLINE_FRAGMENT) inspect(selection.selectionSet, fragment, stack)
-          else {
+          } else if (selection.kind === Kind.INLINE_FRAGMENT) inspect(selection.selectionSet, fragment, stack, under)
+          else if (under) {
+            if (selection.name.value !== "__typename") conditionalOnly.push([fragment, selection.name.value])
+          } else {
             const name = selection.name.value
             const def = type.getFields()[name]
             const batch = selection.directives?.find(d => d.name.value === "batch")
@@ -777,10 +989,18 @@ function compileLive(
           }
         }
       }
+      const conditionalOnly: [fragment: string, field: string][] = []
       for (const name of names) inspect(fragmentNodes.get(name)!.selectionSet, name)
+      // One the stream carries for another fragment, which selects it unconditionally, needs no re-read.
+      for (const [fragment, field] of conditionalOnly) {
+        if (carried.has(field)) continue
+        rereadFragments.push(fragment)
+        options.onWarning?.(`Fragment ${fragment}: stream excludes ${typename}.${field}, selected under @skip or @include`)
+      }
       // Other fragments on a held record may ask for fields absent from the live union.
       const compare = (set: SelectionSetNode, fragment: string, seen = new Set<string>()) => {
         for (const selection of set.selections) {
+          if (conditionOf(selection.directives, options) === "never") continue
           if (selection.kind === Kind.FRAGMENT_SPREAD) {
             if (!seen.has(selection.name.value)) compare(fragmentNodes.get(selection.name.value)!.selectionSet, fragment, new Set(seen).add(selection.name.value))
           } else if (selection.kind === Kind.INLINE_FRAGMENT) compare(selection.selectionSet, fragment, seen)
@@ -857,7 +1077,9 @@ function variableUses(
   const uses: { site: string; verb: "takes" | "uses"; fragment: string; variable: string }[] = []
   const note = (node: import("graphql").ASTNode, site: string, verb: "takes" | "uses", fragment: string) => {
     const variables = new Set<string>()
-    visit(node, { Variable(variable) { variables.add(variable.name.value) } })
+    // A fragment's own argument isn't an operation variable: a spread passes it.
+    const locals = localsOf(fragmentNodes.get(fragment)!)
+    visit(node, { Variable(variable) { if (!locals?.names.has(variable.name.value)) variables.add(variable.name.value) } })
     for (const variable of variables) uses.push({ site, verb, fragment, variable })
   }
   const seen = new Set<string>()
@@ -1191,18 +1413,28 @@ function isPlural(type: GraphQLOutputType): boolean {
   return isListType(inner)
 }
 
-function argumentSpec(name: string, value: ValueNode): ArgumentSpec {
+/** The fragment whose selections are being converted, when it declares arguments: a variable of one of those names is its own. */
+type Locals = { readonly fragment: string; readonly names: ReadonlySet<string> } | undefined
+
+function localsOf(node: FragmentDefinitionNode): Locals {
+  const declared = declaredArguments(node)
+  return declared ? { fragment: node.name.value, names: new Set(declared.map((argument) => argument.name)) } : undefined
+}
+
+function argumentSpec(name: string, value: ValueNode, locals?: Locals): ArgumentSpec {
   switch (value.kind) {
-    case Kind.VARIABLE:
-      return { kind: "variable", name, variable: value.name.value }
+    case Kind.VARIABLE: {
+      const variable = value.name.value
+      return { kind: "variable", name, variable: locals?.names.has(variable) ? scopedName(locals.fragment, variable) : variable }
+    }
     case Kind.OBJECT:
       return {
         kind: "object",
         name,
-        fields: value.fields.map((entry) => argumentSpec(entry.name.value, entry.value)),
+        fields: value.fields.map((entry) => argumentSpec(entry.name.value, entry.value, locals)),
       }
     case Kind.LIST:
-      return { kind: "list", name, items: value.values.map((item, index) => argumentSpec(String(index), item)) }
+      return { kind: "list", name, items: value.values.map((item, index) => argumentSpec(String(index), item, locals)) }
     case Kind.NULL:
       return { kind: "literal", name, value: null }
     case Kind.INT:
@@ -1216,26 +1448,35 @@ function argumentSpec(name: string, value: ValueNode): ArgumentSpec {
   }
 }
 
-function argumentsOf(nodes: readonly ArgumentNode[] | undefined): ArgumentSpec[] {
-  return (nodes ?? []).map((node) => argumentSpec(node.name.value, node.value))
+function fragmentArgumentSpec(argument: SpreadArgument, locals: Locals): FragmentArgumentSpec {
+  return {
+    name: argument.name,
+    ...(argument.passed ? { value: argumentSpec(argument.name, argument.passed, locals) } : {}),
+    ...(argument.defaultValue ? { defaultValue: valueFromASTUntyped(argument.defaultValue) } : {}),
+  }
 }
 
+function argumentsOf(nodes: readonly ArgumentNode[] | undefined, locals?: Locals): ArgumentSpec[] {
+  return (nodes ?? []).map((node) => argumentSpec(node.name.value, node.value, locals))
+}
+
+/** `options.locals`: the fragment being read, when it declares arguments. Inlined spreads are always of copies with their values written in. */
 function convert(
   schema: GraphQLSchema,
   selectionSet: SelectionSetNode,
   parent: GraphQLCompositeType,
   fragments: ReadonlyMap<string, FragmentDefinitionNode>,
   inlineSpreads: boolean,
-  options: CompileOptions = {}
+  options: ConvertOptions = {}
 ): Selection[] {
+  const locals = options.locals
   const result: Selection[] = []
   for (const selection of selectionSet.selections) {
-    // Only `conditionalDirectives: "legacy"` lets these through: mark them, so a response that leaves one out isn't reported.
-    const conditional = selection.directives?.some((d) => d.name.value === "skip" || d.name.value === "include") ? { conditional: true as const } : {}
+    const conditional = conditionsOf(selection.directives, options)
     if (selection.kind === Kind.FIELD) {
       const name = selection.name.value
       const responseKey = selection.alias?.value ?? name
-      const args = argumentsOf(selection.arguments)
+      const args = argumentsOf(selection.arguments, locals)
       if (!selection.selectionSet && selection.directives?.some(d => d.name.value === "batch"))
         throw new CompileError([`${parent.name}.${name}: @batch requires a singular relation selection`])
       if (name === "__typename" || !selection.selectionSet) {
@@ -1282,22 +1523,25 @@ function convert(
           kind: "inline",
           typeCondition,
           possibleTypes: possibleTypes(schema, target),
-          selections: convert(schema, definition.selectionSet, target, fragments, true, options),
+          selections: convert(schema, definition.selectionSet, target, fragments, true, { ...options, locals: undefined }),
           ...conditional,
         })
       } else {
         const target = schema.getType(typeCondition) as GraphQLCompositeType
+        const args = spreadArguments(definition, selection)
         result.push({
           kind: "spread",
           name: selection.name.value,
           typeCondition,
           possibleTypes: possibleTypes(schema, target),
+          ...(args ? { arguments: args.map((argument) => fragmentArgumentSpec(argument, locals)) } : {}),
           ...conditional,
         })
       }
     }
   }
-  return result
+  // The reader builds one object per response key: a link selected more than once under one parent is read as one.
+  return inlineSpreads ? result : mergeLinks(result, possibleTypes(schema, parent), options)
 }
 
 /** Read connection identity from schema structure, even when the document selects only totals. */

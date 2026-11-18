@@ -35,10 +35,19 @@ export interface OptimisticLayer {
   readonly written: Map<string, Map<string, StoredValue>>
 }
 
+/** @internal What `installFreshness` gives the store, so the main bundle carries only the calls into it. */
+export interface StoreFreshness {
+  wrote(record: StoredRecord, selections: readonly Selection[], value: Record<string, unknown>, variables: Variables, unkeyed: boolean): void
+  /** The record changed on the server and the store doesn't hold the change. */
+  outdate(id: string): void
+  /** Whether everything `selector` reaches is fresh enough to answer from the store. */
+  fresh(selector: Selector): boolean
+}
+
 export interface StoreOptions {
   /** Explicit per-type expiry policies; also carried by generated artifacts. */
   readonly lifetimes?: Readonly<Record<string, LifetimePolicy>>
-  /** Clock for lifetime evaluation. */
+  /** Clock for lifetime evaluation and for record ages under `installFreshness`. Default `Date.now`. */
   readonly now?: () => number
   /** Reports values with unknown lifetime. */
   readonly onDiagnostic?: (diagnostic: { code: string; message: string }) => void
@@ -132,10 +141,23 @@ export class Store {
     this.configureLifetimes(options.lifetimes)
   }
 
+  /** Ages records for `store-or-network` reads; installed by the optional freshness entry point. */
+  freshness?: StoreFreshness
+
+  /**
+   * Note a server write the store accepted, after its fields were written: a response or a live event, never an optimistic layer.
+   * `selections` and `value` are what was written to `record`; `unkeyed` when it is stored under a path (a list, an edge, an
+   * embedded object).
+   */
+  wrote(record: StoredRecord, selections: readonly Selection[], value: Record<string, unknown>, variables: Variables, unkeyed: boolean): void {
+    if (!this.journal) this.freshness?.wrote(record, selections, value, variables, unkeyed)
+  }
+
   private readonly policies = new Map<string, LifetimePolicy>()
   private readonly lifetimeStates = new Map<string, LifetimeState>()
   private expiryTimer: unknown = null
-  private readonly now: () => number
+  /** The store clock: lifetime evaluation and record ages. */
+  readonly now: () => number
   private readonly diagnostic?: StoreOptions["onDiagnostic"]
 
   /** Register generator-declared policies before normalisation. */
@@ -204,7 +226,7 @@ export class Store {
   private readonly restored = new Set<string>()
   private readonly layers = new Set<OptimisticLayer>()
 
-  /** Observe published batches and identity disposal; used by optional persistence. `write` gets the ids the batch
+  /** Observe published batches and identity disposal; used by optional persistence and the suspending React read. `write` gets the ids the batch
    * wrote, in a set that is only valid during the call. */
   observeWrites(write: (changed: ReadonlySet<string>) => void, dispose: () => void): () => void {
     this.assertLive()
@@ -524,6 +546,7 @@ export class Store {
     if (this.expiryTimer !== null) this.clearTimer(this.expiryTimer)
     this.expiryTimer = null
     this.lifetimeStates.clear()
+    this.freshness = undefined
     for (const retention of this.retained.values()) {
       if (retention.timer !== null) this.clearTimer(retention.timer)
     }

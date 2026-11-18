@@ -1,6 +1,6 @@
 ---
 name: graphql-orm-client-data
-description: Write components and data flows with graphql-orm-client. Use whenever a component shows or changes server data: fragments and route roots (loadQuery), pagination (@paged, @connection), refetching records (@refetchable), mutations and write outcomes, secrets (@sensitive), batched relations (@batch), readAll, deleted rows, persistence, porting from Apollo, and testing with graphql-orm-client/test.
+description: Data flows with graphql-orm-client. Use whenever a component shows or changes server data: fragments and route roots (loadQuery), fragment arguments, @skip/@include, pagination (@paged, @connection), refetching (@refetchable), mutations, write outcomes, secrets (@sensitive), @batch relations, readAll, deleted rows, freshness (installFreshness), persistence, porting from Apollo, and tests.
 ---
 
 # Fragments, roots, pagination and mutations
@@ -66,11 +66,50 @@ function Page({ loaded }: { loaded: LoadedQuery<TicketsPageQuery> }) {
 - Never fetch inside a child component to fill in missing data. Add the field to the child's
   fragment instead, so the root's query includes it.
 - Start the root in the browser route loader (`client.loadQuery`) and consume its handle with
-  `useLoadedQuery`; forward the router abort signal and dispose abandoned handles. It does not suspend.
-- `@skip`/`@include` selections and fragment arguments (`@argumentDefinitions`/`@arguments`) are
-  unsupported build errors. Use separate roots and operation variables. For existing conditional
-  documents, `conditionalDirectives: "legacy"` temporarily keeps unsafe old behaviour while migrating;
-  remove it after splitting roots. Whole-query hook `skip` is still supported.
+  `useLoadedQuery`; forward the router abort signal and dispose abandoned handles. `useLoadedQuery` does not
+  suspend. `useSuspenseLoadedQuery(handle)` reads the same handle and suspends until it has data (no extra
+  request); a first-read error goes to the error boundary (`await handle.refetch()` before resetting it). It
+  suspends again only for a new handle: set that in `startTransition` to keep the previous screen. Disposing the
+  client makes a reader showing data throw to its error boundary. Browser only; the server renders the Suspense
+  fallback, and React reports a recoverable error at hydration. In tests, render it inside `await act(async () => ...)`: React waits on
+  the suspended read inside an awaited `act`.
+- `@skip`/`@include` on fields, spreads and inline fragments are evaluated with the operation's
+  variables: a skipped field is absent, not missing, and its generated type is optional. A conditional
+  spread is typed as maybe absent; check `hasFragment(Fragment, ref)` before `useFragment`. A variable's
+  default must be the same in every operation that spreads the fragment. A field a `@live` fragment
+  selects only conditionally isn't carried by the stream; its holders read it again on an event.
+  `conditionalDirectives: "legacy"` is deprecated: remove it and regenerate. `"reject"` keeps the
+  old build error. Whole-query hook `skip` is still supported.
+
+## Fragment arguments
+
+When one component is shown twice with different field arguments (two image sizes, two note limits),
+give its fragment arguments instead of writing a second fragment:
+
+```graphql
+fragment Thumb on Widget @argumentDefinitions(size: {type: "Int!", defaultValue: 64}) {
+  Name
+  Image(Size: $size)
+}
+query WidgetPage($Id: String!, $Big: Int!) {
+  small: Widget(Id: $Id) { ...Thumb }
+  large: Widget(Id: $Id) { ...Thumb @arguments(size: $Big) }
+}
+```
+
+- Declare each as `name: {type: "<GraphQL type>", defaultValue: <value>}` (default optional). Inside the
+  fragment `$name` is the argument; other variables are the operation's.
+- Pass a literal or a variable with `@arguments`. One not passed takes its default; without one it acts as an unset
+  variable: the field argument is left out and the schema's default applies. A passed operation variable that isn't set
+  gets the schema's default too, not the fragment's.
+  `generate` fails for a missing required argument, an undeclared one, or a wrong type.
+- Each spread's reference carries its own values: `useFragment(Thumb, data.small)` and
+  `useFragment(Thumb, data.large)` read different sizes. Spread one fragment twice with different values
+  under separate aliases, never twice on one object (a build error).
+- `@include(if: $arg)` and `@skip(if: $arg)` on one of the fragment's arguments are evaluated with each spread's value.
+- `@live` fragments with arguments work: fields with arguments refresh through the holding query's re-read,
+  not the stream. Not under `liveSelection: "as-written"`, and a `@refetchable` fragment can't declare
+  arguments (both are build errors).
 
 ## Filters and lists
 
@@ -185,6 +224,11 @@ expect(client.live.status().Ticket.subscriptions).toBe(1)
   socket drop the transport recovers from by itself, where nothing ends: use it with `onReconnect`.
 - `clock.advance(ms)` fires timers without letting promises settle; use `clock.tick(ms)` when a request is
   involved.
+- `clock.store` carries the clock's `now`, so lifetime expiry and freshness ages follow it. To keep `Date.now` for those, pass
+  `store: { ...clock.store, now: Date.now }`. The clock starts at 1,000,000 ms, in January 1970, so a lifetime value from a real
+  date (`1_700_000_000` seconds) is in the future and reads as valid: give expiries relative to `clock.now()`, or start the clock
+  later (`createTestClock(Date.parse("2026-01-01"))`). Such an expiry is decades away on the clock, so `clock.pending()` shows
+  its timer capped at `ms: 2147483647`.
 
 ## Secrets, write outcomes and partial results
 
@@ -234,6 +278,28 @@ A query passed `pollMs` declares why: `query Name @poll(reason: "...") { ... }`.
 Declare generator `lifetimes` only when the service guarantees the field's meaning and format.
 Regenerate to adopt. Handle `QueryState.lifetime` (`expired` or `unknown`); unknown time values
 are not proved valid. Formats and diagnostics are in the installed design.
+
+## Freshness
+
+`store-or-network` (what `loadQuery` and `client.query` use) answers from complete stored data however old it is. To read again
+once a type's records are older than some period, install freshness once, right after `createClient` and before any read:
+
+```ts
+import { installFreshness } from "graphql-orm-client/freshness"
+installFreshness(client, { staleMs: { Ticket: 60_000 } })
+```
+
+- A `store-or-network` read then answers from the store only while every `Ticket` it reaches, and every list that can hold
+  one, was written whole by a response or an event within the last minute. Otherwise it reads, showing the stored data meanwhile.
+  A query field that answered null (`Ticket(Id:)` with no such ticket) is asked again after the minute too.
+- A watched query decides when it opens. An open query doesn't read again when its records age: use `@live` or `pollMs` for that.
+- Types left out behave as without it. `store-and-network` and `network-only` are unchanged.
+- An optimistic write, a restored record, and a stream with no event don't make a record fresh. A keys-only event, a
+  `PROPAGATED` delete, or an event for a record no open query holds makes it stale. A lifetime field still expires a fresh record.
+- A response, mutation response or event restarts a record's age only when it carries every field stored for the record. One that
+  carries fewer, such as a polled summary or a mutation selecting two fields, leaves the age as it was, so the detail that read the
+  other fields is read again on time. Select the fields a detail shows in the mutation's response if it should count.
+- In tests, `store: clock.store` from `createTestClock()` drives the ages.
 
 ## Persistence
 

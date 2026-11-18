@@ -42,7 +42,7 @@ The client only works against graphql-orm services and their router.
 5. **Provider.** Wrap the application in `ClientProvider` from `graphql-orm-client/react`.
 6. **Routes.** Each route that shows data owns one root query. Start it in the route loader
    with `client.loadQuery(Query, variables, { signal })`, return the handle and read it with
-   `useLoadedQuery(handle)`. Forward router cancellation; dispose abandoned handles. An unused
+   `useLoadedQuery(handle)`, or `useSuspenseLoadedQuery(handle)` under a `<Suspense>` boundary. Forward router cancellation; dispose abandoned handles. An unused
    handle expires after 30 seconds (`timeoutMs` adjusts this). Mount under the same identity client.
    Server shells render idle; run loaders in the browser. No server data/store handoff is supported.
    To migrate, replace the paired `preload`/`useQuery` calls; keeping them retains the older warm-up

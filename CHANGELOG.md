@@ -14,6 +14,121 @@ Migration: if generation now fails naming a `documents` entry, replace a glob wi
 (`"src/**/*.ts"` becomes `"src"`; `extensions` picks the file types), or remove an entry for a directory that's gone. The
 module generated before was missing those documents.
 
+### Fixed: graphql 17 printed a long list value over several lines
+
+0.1.0-alpha.13 printed object values in operation text as graphql 16 does, but not list values: graphql 17 breaks a list longer
+than 80 characters over several lines, without commas, where 16 keeps it on one line. An operation with a long list argument,
+such as `Where: {And: [...]}`, got different text and a different hash on 17, so `generate --check` failed after moving to it
+and a team on mixed versions disagreed ([#110](https://github.com/Dastari/graphql-orm-client/issues/110)). The compiler now
+prints list values as graphql 16 does too, in operation text and in schema snapshot defaults.
+
+Nothing changes on graphql 16. On graphql 17, run `graphql-orm-client generate` once; the output then matches what graphql 16
+generates.
+
+### Added: a development store inspector
+
+`inspect(client)`, from the new `graphql-orm-client/inspector` entry point, shows in development the records in a client's store,
+the queries holding each, the streams covering each, and why each query was read: `records()`, `queries()`, `streams()`,
+`reads()` and `subscribe(listener)`. A read's cause is one of `liveHealth().reads`' causes, with `event` and `list` where an event
+made the query read again. It never sees a response, so an `@sensitive` result or a `no-store` mutation result can't reach it,
+and it drops everything when its client is disposed. It doesn't attach where `NODE_ENV` is `production`; import it behind a
+development check so it isn't bundled. See "Store inspector" in `docs/design.md`.
+
+Nothing changes for an application that doesn't import it: the main entry point is the same bytes.
+
+### Added: `useSuspenseLoadedQuery`, a suspending read of a loader handle
+
+`useSuspenseLoadedQuery(handle)` from `graphql-orm-client/react` reads a `client.loadQuery` handle and suspends until it
+has data, so a route's `<Suspense>` fallback shows while the loader's read is in flight. It sends no request of its own,
+StrictMode included. A first read that fails throws to the nearest error boundary; `await handle.refetch()` before
+resetting the boundary. After the first data it doesn't suspend again for that handle; a new handle does, and keeps the
+previous screen when set inside `startTransition`. Disposing the client re-renders a reader showing data at once, even
+when the next client arrives in a transition, and it throws to its error boundary, so the old identity's data leaves the
+page. A read still suspended stays suspended: it never shows data or throws under the next identity, and retains nothing.
+On the server it throws, so React renders the fallback there and reports a recoverable error at hydration.
+`LoadedQuery` gains `suspend()`, which the hook uses while it waits, and `waiting`, the promise it last returned. A pending
+wait holds the handle open for up to twice `timeoutMs`, then closes it. Nothing changes for `useLoadedQuery`. No
+migration.
+
+### Added: `@skip` and `@include` are evaluated with the operation's variables
+
+`@skip` and `@include` on fields, fragment spreads and inline fragments now compile by default
+([#100](https://github.com/Dastari/graphql-orm-client/issues/100)). The directive stays in the operation text, and readers and
+normalisation evaluate it with the operation's variables: a field the condition leaves out is absent from the data, not missing, and
+causes no read. `missingFields` reports a field the condition keeps and the response leaves out. Generated types make a conditional
+field optional, and type a conditional spread as maybe absent; narrow it with the new `hasFragment(fragment, ref)` before
+`readFragment` or `useFragment`. A field `@live` fragments select only conditionally stays out of the stream (the generator warns
+that the stream excludes it), and the fragments selecting it re-read their holders on an event with their own variables. A variable's
+declared default applies when it's left out; operations that spread one fragment must give its variable the same default, or the
+build fails naming them.
+
+Nothing changes for a working application: until now these directives failed the build unless `conditionalDirectives: "legacy"` was set.
+
+- **Without `conditionalDirectives`:** nothing to do. Documents that failed the build with `@skip` or `@include` now build. To keep
+  that build error, set `conditionalDirectives: "reject"`.
+- **With `conditionalDirectives: "legacy"`:** it still works as before (a skipped field reads as missing, its type is required, and
+  the stream selects it), and it now warns at each build that it's deprecated and will be removed. To move off it: remove the
+  setting and regenerate; fix what the type checker reports by handling each conditional field as possibly `undefined`, and wrapping
+  each read through a conditional spread in `if (hasFragment(Fragment, ref))`. A fragment whose condition variable has different
+  defaults in the operations that spread it fails the build: give it the same default in each, or none.
+- **With any other `conditionalDirectives` value:** generation now fails with `conditionalDirectives must be "evaluate", "reject"
+  or "legacy"`. An unknown value used to act as `"reject"`; set `"reject"` to keep that, or remove the setting.
+
+### Fixed: a link selected twice under one parent read only its last selection
+
+A link field selected more than once under one parent, such as `Vendor { Id } Vendor { Name }`, or once beside an inline fragment
+without a type condition that selects it again, read as the last selection alone: fields and fragment references from the others
+were absent from the data although the response and the store held them. The compiler now merges those selections into one link
+in the read selections, so the data holds all of them; a part under `@skip`/`@include` keeps its condition inside the merged link.
+The operation sent to the server is unchanged, and so are the artifacts of documents that select no link twice. Regenerate to get
+the fix. Selections of one link in inline fragments that narrow an interface or union to different types are still read separately.
+
+### Added: fragment arguments
+
+A fragment can declare arguments with `@argumentDefinitions(size: {type: "Int!", defaultValue: 64})`, and a spread passes them
+with `@arguments(size: 512)` or `@arguments(size: $Big)`, so one fragment can be spread twice in a query with different values
+under two aliases. Each spread's reference reads the fragment with its own values, the store keeps each value under its own
+arguments, and the generated types are the fragment's own, as for any fragment. The directives aren't sent: the operation text
+has one copy of the fragment per argument set, named `<Fragment>_<hash>`, with the values written in. An argument with no value
+and no default acts as an unset variable: a field argument given it is left out, so the schema's default applies. A passed
+operation variable that isn't set gets the schema's default, not the fragment's. `generate` fails for a spread missing a
+required argument (naming the fragment and the argument), an undeclared argument, a value or variable of the wrong type, a
+fragment that spreads itself, and one fragment spread twice on one object with different arguments. A `@live` fragment with
+arguments keeps its fields with arguments out of the stream and refreshes them through the holding query's re-read; under
+`liveSelection: "as-written"` it fails generation. A `@refetchable` fragment can't declare arguments. See
+[fragment arguments](docs/design.md#fragment-arguments-r28).
+
+Migration: none. Documents that used these directives failed generation before. Documents without them compile to the same
+text and hashes. `FragmentSpreadSelection` gains an optional `arguments`.
+
+### Added: per-type freshness for `store-or-network` reads
+
+`installFreshness(client, { staleMs: { Ticket: 60_000 } })`, from the new `graphql-orm-client/freshness` entry point, gives types a
+period after which their stored records are read again ([#103](https://github.com/Dastari/graphql-orm-client/issues/103)). A
+`store-or-network` read (`client.query`, `loadQuery`, a watched query when it opens) then answers from the store only while every
+record it reaches with a setting, and every list that can hold one, was written whole by a response or an event within that period;
+otherwise it reads, showing the stored data meanwhile. A write that carries fewer fields than the store holds for a record, such as a
+polled summary, doesn't restart its age. A query field that answered null is asked again after the period. An optimistic write, a
+write refused as older, a restore and a stream with no event don't make a record fresh. A lifetime field still expires a record.
+Install it right after `createClient`, before any read.
+
+Nothing changes without it, and types left out of `staleMs` read as before. The main bundle grows by 451 bytes (159 gzip) for the calls
+into it.
+
+### Changed: the test clock's `store` carries `now`
+
+`createTestClock().store` now includes `now`, so a client built with `store: clock.store` evaluates lifetime expiry, and freshness
+ages, on the test clock instead of `Date.now`. A test that already passed its own `now` is unaffected. What a test can notice:
+
+- The clock starts at 1,000,000 ms, in January 1970. A lifetime value from a real date, such as `1_700_000_000` unix seconds, was in
+  the past on `Date.now` and expired; on the test clock it is in the future and reads as valid. Give expiries relative to
+  `clock.now()`, or start the clock at a real date: `createTestClock(Date.parse("2026-01-01"))`.
+- The store's lifetime expiry timer is measured from the test clock too. An expiry at a real date is then decades away, so
+  `clock.pending()` shows that timer capped at `{ ms: 2147483647, ... }` where it showed the real delay, or none for an expiry
+  already past.
+
+To keep the earlier behaviour, pass `store: { ...clock.store, now: Date.now }`.
+
 ### Fixed: a record could stay valid after its lifetime ran out
 
 The store read the clock twice when it checked a record's lifetime: once for whether it had expired, and again for whether to

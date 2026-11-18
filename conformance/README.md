@@ -124,6 +124,10 @@ health, and that a keyless value type (the real PageInfo) stays out of it and do
 ## Bounded reads, aggregates and deleted references
 
 R14 checks bounded and complete `readAll` traversal against the generated offset connection.
+R28 sends a fragment with arguments, one passed as an operation variable and one left to its default, through the router,
+which gets a copy of the fragment with the values written in, and reads the fragment with those values. Two spreads of one
+fragment with different values under aliases are covered by mock tests, which execute the sent text with graphql-js: the
+service has no entity field that takes arguments.
 A keyset `@connection` loaded in three pages, the last partly filled, refreshes with one `{limit: 6}`
 request on `refetch()` and on each live re-read, and a row created inside the range appears.
 R15 holds two aliased count roots (including an aliased total) and a generated aggregate,

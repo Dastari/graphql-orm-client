@@ -155,7 +155,7 @@ extracted.
 
 ## 3. What real applications need beyond records
 
-**R9. Sensitive results.** *Built:* operation-level `@sensitive`, plain results without fragment references; queries use `client.query`, live combinations fail compilation. R17 must exclude these results.
+**R9. Sensitive results.** *Built:* operation-level `@sensitive`, plain results without fragment references; queries use `client.query`, live combinations fail compilation. R17 must exclude these results. The store inspector (R31) never receives them, nor `no-store` mutation results.
 
  Mutations have `policy: "no-store"` (0.1.0-alpha.6). What remains: a way to
 declare this in the document so it can't be forgotten at a call site, the same for query results, and
@@ -254,9 +254,8 @@ loader can avoid a waterfall. Suspense is optional (R29). Fragment arguments (R2
 are recorded separately. Server rendering stays a non-goal, but
 document how the client behaves inside a framework that renders a shell on the server.
 *Built:* `client.loadQuery` and `useLoadedQuery` share a retained read across loader and mount,
-with abort, unused-load timeout and StrictMode replay cleanup. Non-Suspense. Conditional selections
-are rejected by default (`conditionalDirectives: "legacy"` is migration only); fragment arguments
-are rejected. Node server shells return idle without starting queries; no data streaming or store
+with abort, unused-load timeout and StrictMode replay cleanup. `useSuspenseLoadedQuery` is the suspending read (R29). Conditional selections
+are evaluated (R27); fragment arguments are built (R28). Node server shells return idle without starting queries; no data streaming or store
 handoff. See [route loading](design.md#route-loading-r18) for lifecycle and migration.
 
 **R19. Several windows.** An application with pop-out windows or several tabs opens one socket and
@@ -270,7 +269,7 @@ and the router's codes to an `ErrorKind`, with `unknown` for anything else. Miss
 `Success: false` carries only free text (`Error: "Entity not found"`); requested as
 [graphql-orm#385](https://github.com/Dastari/graphql-orm/issues/385).
 
-**R27. Conditional selections. Proposed, not built** ([#100](https://github.com/Dastari/graphql-orm-client/issues/100), from
+**R27. Conditional selections** ([#100](https://github.com/Dastari/graphql-orm-client/issues/100), from
 [#84](https://github.com/Dastari/graphql-orm-client/issues/84)). `@skip` and `@include` on fields, spreads and inline fragments are evaluated with the
 operation's variables in readers and normalisation, so a skipped field is neither missing nor a cause of a re-read.
 Generated types make conditional selections optional. A live projection never selects a field unconditionally that a
@@ -278,24 +277,49 @@ holder selects conditionally. `conditionalDirectives: "legacy"` goes away afterw
 *Acceptance:* a query with `@include(if: $detail)` on a field and `@skip` on a spread reads complete for both values,
 has optional generated types for both, and re-reads on a change of the variable without treating the record as
 missing. No stream selects a field that a holder includes only conditionally.
+*Built:* selections carry `conditions` (literal, or variable with the operations' declared default), evaluated by the reader,
+the normaliser, `missingFields` and garbage collection; a link selected more than once under one parent is merged into one
+read selection, each conditional part keeping its conditions. Generated types make a conditional field optional and type a
+conditional spread `({} | FragmentRefs<"Name">)`, narrowed with `hasFragment`. A field live fragments select only
+conditionally stays out of the stream and its fragments re-read their holders. `conditionalDirectives` defaults to
+`"evaluate"`; `"reject"` keeps the build error; `"legacy"` still works, is deprecated and warns at each build, and is removed
+in a later release. Limit: whether an event re-reads a query is decided per operation, not per value of the variable.
+See [conditional selections](design.md#conditional-selections-and-fragment-arguments).
 
-**R28. Fragment arguments. Proposed, not built** ([#101](https://github.com/Dastari/graphql-orm-client/issues/101), from
+**R28. Fragment arguments.** ([#101](https://github.com/Dastari/graphql-orm-client/issues/101), from
 [#84](https://github.com/Dastari/graphql-orm-client/issues/84)). A fragment declares local arguments with types and defaults (`@argumentDefinitions`), and a
 spread passes values (`@arguments`). Each argument set has its own fragment reference identity and reader scope.
 Fields with arguments stay out of streams, as R2 already requires.
 *Acceptance:* one query spreads a fragment twice with different values under two aliases, and each reader gets its own
 values, with exact generated types. A spread missing a required argument fails `generate`, naming the fragment and the
 argument.
+*Built:* Relay's directive syntax, which graphql 16 and 17 both parse. The text sent has a copy of the fragment per
+argument set, with the values written in, so the router gets ordinary GraphQL; an argument with no value and no default is
+left out, as an unset variable is, so the schema's default applies. Each spread carries its values and each
+reference a scope with them; the store keeps every value under its own arguments. `generate` also fails for an undeclared
+argument, a value or variable of the wrong type, a declared type that doesn't fit where it's used, and one fragment
+spread twice on one object with different arguments. A `@live` fragment with arguments works under the default stream
+projection, and its fields with arguments refresh through holder re-reads; under `liveSelection: "as-written"` it fails
+generation. A `@refetchable` fragment can't declare arguments, and fails generation saying why. Tested against the mock
+network with graphql-js executing the sent text, with graphql 16 and 17. A conformance case sends a fragment with
+arguments through the real router; the service has no entity field with arguments, so the two-alias case is mock-only. See
+[fragment arguments](design.md#fragment-arguments-r28).
 
-**R29. Suspense. Proposed, not built** ([#102](https://github.com/Dastari/graphql-orm-client/issues/102), from [#84](https://github.com/Dastari/graphql-orm-client/issues/84)). A React read of a
+**R29. Suspense** ([#102](https://github.com/Dastari/graphql-orm-client/issues/102), from [#84](https://github.com/Dastari/graphql-orm-client/issues/84)). A React read of a
 `loadQuery` handle that suspends until it has data and sends errors to an error boundary. The loader still starts the
 request, so suspending adds no waterfall. Disposing the client releases a suspended read and never resolves it into
 another identity's tree. Server rendering stays a non-goal.
 *Acceptance:* a route loaded in its loader and read with the suspending hook shows its fallback, then its data, with one
 request under StrictMode; an error reaches an error boundary; disposing the client while suspended leaves nothing
 retained and nothing rendered under the next identity.
+*Built:* `useSuspenseLoadedQuery(handle)` in `graphql-orm-client/react`, with `LoadedQuery.suspend()` for the wait.
+After the first data a refetch or live update doesn't suspend again; a new handle does, and keeps the previous screen
+when set in a transition. Disposing the client re-renders a reader showing data at once, outside any transition, and it
+throws to its error boundary; a read still suspended stays suspended without showing data or an error. A pending wait
+holds the handle open for at most twice `timeoutMs`. On the server it throws, so the Suspense fallback is rendered there. A `useSuspenseQuery` for a query started at render is not built.
+See [suspending read](design.md#suspending-read-r29).
 
-**R30. Per-type freshness. Proposed, not built** ([#103](https://github.com/Dastari/graphql-orm-client/issues/103), from [#85](https://github.com/Dastari/graphql-orm-client/issues/85)). A per-type
+**R30. Per-type freshness.** ([#103](https://github.com/Dastari/graphql-orm-client/issues/103), from [#85](https://github.com/Dastari/graphql-orm-client/issues/85)). A per-type
 `staleMs`: how long a record counts as fresh after a server write. A `store-or-network` read answers from the store
 only when every record it reaches is complete and fresh. A type with no setting behaves as today, and lifetime fields
 (R17) still decide expiry. Whether a stream's coverage keeps a record fresh is decided while building, since live
@@ -303,14 +327,30 @@ delivery is never the only path to correct data.
 *Acceptance:* with one minute for a type, on the test clock, a `store-or-network` read within a minute of the last write
 sends no request and one after a minute sends one; a type with no setting is unchanged; an event's write restarts the
 age.
+*Built after 0.1.0-alpha.13:* `installFreshness(client, { staleMs })` from its own entry point,
+`graphql-orm-client/freshness`, so the main bundle carries only the calls into it. A response, a re-read or an event that
+the store accepts restarts a record's age only when it wrote every field the store holds for the record; a partial write, an
+optimistic write, a write refused as older, and a restore don't. A list (a record without a key that holds one) able to
+reach a type with a setting takes the smallest such setting from when a response last replaced all its rows, so a list is
+aged by when it was read, not by its rows, and an empty list ages too. A query field that answered null ages on its own.
+A stream's coverage doesn't keep a record fresh, and a keys-only event, a `PROPAGATED` delete, an event whose stream leaves
+out fields some fragment reads, or an event for a record no open query holds makes it stale. The decision is made when a
+read starts, and skipped for a query that can't reach a type with a setting; an open query doesn't read again when its
+records age. `createTestClock().store` now carries `now`, so the test clock drives ages and lifetime expiry. See
+[freshness](design.md#freshness-r30).
 
-**R31. A store inspector. Proposed, not built** ([#104](https://github.com/Dastari/graphql-orm-client/issues/104), from [#85](https://github.com/Dastari/graphql-orm-client/issues/85)). A
+**R31. A store inspector.** ([#104](https://github.com/Dastari/graphql-orm-client/issues/104), from [#85](https://github.com/Dastari/graphql-orm-client/issues/85)). A
 development-only inspector, in its own entry point, shows the records in a client's store, the queries holding each,
 the streams covering it, and why a query re-read. It never receives an R9 (`@sensitive`) result or a `no-store`
 mutation result, from the store or the network layer, and it drops everything when its client is disposed.
 *Acceptance:* in a test it lists a record with its holders and covering stream and records a re-read's cause; nothing
 it was given contains a value from an `@sensitive` query or a `no-store` mutation; it holds nothing after dispose; the
 main bundle is unchanged.
+*Built:* `inspect(client)` from `graphql-orm-client/inspector`, an object API (`records`, `queries`, `streams`, `reads`,
+`subscribe`, `dispose`) with no UI. It sees reads only as they start, never a response, and skips mutations and `@sensitive`
+queries; it detaches and drops everything inside `client.dispose()`. It never attaches where `NODE_ENV` is `production`, and by
+default only where `NODE_ENV` says development or tests. The main bundle is byte-for-byte the same (84,561 raw, 27,168 gzip);
+the inspector's own closure is 8,369 raw, 3,494 gzip.
 
 **R32. Both current graphql versions.** An application can use graphql 16 or 17 as the single copy of `graphql`, and
 the generated output, operation hashes and schema snapshot are the same text with either
@@ -347,7 +387,7 @@ the previous errors. *Built.*
 **R37. A left-out field is reported.** A response that omits a selected field (a non-conformant server, a gateway that drops a
 field, a schema changed under the client) is reported, not silently `ready`: a development warning naming the operation, type,
 record and response key, once per operation and path, and an opt-in mode that reports it as an error at that path. No warning for
-a null at a nullable field or a legacy `@skip`/`@include` field, and no read loop
+a null at a nullable field, a field `@skip`/`@include` leaves out, or a legacy `@skip`/`@include` field, and no read loop
 ([#66](https://github.com/Dastari/graphql-orm-client/issues/66)).
 *Acceptance:* a test shows the warning once, its absence for nulls and conditional fields, the strict error at the path, and a
 bounded number of reads. *Built:* `missingFields: "warn" | "error" | "off"`.
