@@ -15,7 +15,9 @@ permissions:
 jobs:
   router:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # A run takes 15-25 minutes, but a slow runner has taken 19 minutes just to install the browsers and their system packages,
+    # and 30 cancelled two runs on 2026-11-18 with no test failing.
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
