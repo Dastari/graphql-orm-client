@@ -305,12 +305,14 @@ sends no request and one after a minute sends one; a type with no setting is unc
 age.
 *Built after 0.1.0-alpha.13:* `installFreshness(client, { staleMs })` from its own entry point,
 `graphql-orm-client/freshness`, so the main bundle carries only the calls into it. A response, a re-read or an event that
-the store accepts restarts a record's age; an optimistic write, a write refused as older, and a restore don't. A record
-without a key (a list, an edge, an embedded object) that can reach a type with a setting takes the smallest such setting
-from its own last write, so a list is aged by when it was read, not by its rows, and an empty list ages too. A stream's
-coverage doesn't keep a record fresh, and a keys-only event, a `PROPAGATED` delete or an event whose stream leaves out
-fields some fragment reads makes it stale. The decision is made when a read starts; an open query doesn't read again when
-its records age. `createTestClock().store` now carries `now`, so the test clock drives ages and lifetime expiry. See
+the store accepts restarts a record's age only when it wrote every field the store holds for the record; a partial write, an
+optimistic write, a write refused as older, and a restore don't. A list (a record without a key that holds one) able to
+reach a type with a setting takes the smallest such setting from when a response last replaced all its rows, so a list is
+aged by when it was read, not by its rows, and an empty list ages too. A query field that answered null ages on its own.
+A stream's coverage doesn't keep a record fresh, and a keys-only event, a `PROPAGATED` delete, an event whose stream leaves
+out fields some fragment reads, or an event for a record no open query holds makes it stale. The decision is made when a
+read starts, and skipped for a query that can't reach a type with a setting; an open query doesn't read again when its
+records age. `createTestClock().store` now carries `now`, so the test clock drives ages and lifetime expiry. See
 [freshness](design.md#freshness-r30).
 
 **R31. A store inspector. Proposed, not built** ([#104](https://github.com/Dastari/graphql-orm-client/issues/104), from [#85](https://github.com/Dastari/graphql-orm-client/issues/85)). A

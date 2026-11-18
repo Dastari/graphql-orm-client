@@ -37,7 +37,7 @@ export interface OptimisticLayer {
 
 /** @internal What `installFreshness` gives the store, so the main bundle carries only the calls into it. */
 export interface StoreFreshness {
-  wrote(id: string, typename: string, selections?: readonly Selection[]): void
+  wrote(record: StoredRecord, selections: readonly Selection[], value: Record<string, unknown>, variables: Variables, unkeyed: boolean): void
   /** The record changed on the server and the store doesn't hold the change. */
   outdate(id: string): void
   /** Whether everything `selector` reaches is fresh enough to answer from the store. */
@@ -145,11 +145,12 @@ export class Store {
   freshness?: StoreFreshness
 
   /**
-   * Note a server write of a record: a response or a live event, never an optimistic layer. `selections` are given for a record
-   * without a key (a list, an edge, an embedded object).
+   * Note a server write the store accepted, after its fields were written: a response or a live event, never an optimistic layer.
+   * `selections` and `value` are what was written to `record`; `unkeyed` when it is stored under a path (a list, an edge, an
+   * embedded object).
    */
-  wrote(id: string, typename: string, selections?: readonly Selection[]): void {
-    if (!this.journal) this.freshness?.wrote(id, typename, selections)
+  wrote(record: StoredRecord, selections: readonly Selection[], value: Record<string, unknown>, variables: Variables, unkeyed: boolean): void {
+    if (!this.journal) this.freshness?.wrote(record, selections, value, variables, unkeyed)
   }
 
   private readonly policies = new Map<string, LifetimePolicy>()

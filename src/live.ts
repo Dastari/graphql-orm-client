@@ -1017,6 +1017,8 @@ export class LiveManager {
     this.noteBurst(artifact.typename)
     const listHolders = new Set(this.listHolders(artifact.typename))
     if (!this.holds(artifact.typename, id)) {
+      // Not written, so a stored copy is behind the server (`installFreshness`).
+      this.store.freshness?.outdate(id)
       this.onEvent(listHolders, artifact.typename, thin, artifact.rereadFragments ?? [])
       return
     }

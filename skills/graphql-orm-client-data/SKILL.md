@@ -186,7 +186,10 @@ expect(client.live.status().Ticket.subscriptions).toBe(1)
 - `clock.advance(ms)` fires timers without letting promises settle; use `clock.tick(ms)` when a request is
   involved.
 - `clock.store` carries the clock's `now`, so lifetime expiry and freshness ages follow it. To keep `Date.now` for those, pass
-  `store: { ...clock.store, now: Date.now }`.
+  `store: { ...clock.store, now: Date.now }`. The clock starts at 1,000,000 ms, in January 1970, so a lifetime value from a real
+  date (`1_700_000_000` seconds) is in the future and reads as valid: give expiries relative to `clock.now()`, or start the clock
+  later (`createTestClock(Date.parse("2026-01-01"))`). Such an expiry is decades away on the clock, so `clock.pending()` shows
+  its timer capped at `ms: 2147483647`.
 
 ## Secrets, write outcomes and partial results
 
@@ -248,13 +251,15 @@ installFreshness(client, { staleMs: { Ticket: 60_000 } })
 ```
 
 - A `store-or-network` read then answers from the store only while every `Ticket` it reaches, and every list that can hold
-  one, was written by a response or an event within the last minute. Otherwise it reads, showing the stored data meanwhile.
+  one, was written whole by a response or an event within the last minute. Otherwise it reads, showing the stored data meanwhile.
+  A query field that answered null (`Ticket(Id:)` with no such ticket) is asked again after the minute too.
 - A watched query decides when it opens. An open query doesn't read again when its records age: use `@live` or `pollMs` for that.
 - Types left out behave as without it. `store-and-network` and `network-only` are unchanged.
-- An optimistic write, a restored record, and a stream with no event don't make a record fresh. A keys-only event or a
-  `PROPAGATED` delete makes it stale. A lifetime field still expires a fresh record.
-- An event or a mutation response restarts the age of the record it writes even when it carries only some of the fields a query
-  reads. Leave out a type whose events often carry less than its queries show.
+- An optimistic write, a restored record, and a stream with no event don't make a record fresh. A keys-only event, a
+  `PROPAGATED` delete, or an event for a record no open query holds makes it stale. A lifetime field still expires a fresh record.
+- A response, mutation response or event restarts a record's age only when it carries every field stored for the record. One that
+  carries fewer, such as a polled summary or a mutation selecting two fields, leaves the age as it was, so the detail that read the
+  other fields is read again on time. Select the fields a detail shows in the mutation's response if it should count.
 - In tests, `store: clock.store` from `createTestClock()` drives the ages.
 
 ## Persistence

@@ -19,18 +19,28 @@ module generated before was missing those documents.
 `installFreshness(client, { staleMs: { Ticket: 60_000 } })`, from the new `graphql-orm-client/freshness` entry point, gives types a
 period after which their stored records are read again ([#103](https://github.com/Dastari/graphql-orm-client/issues/103)). A
 `store-or-network` read (`client.query`, `loadQuery`, a watched query when it opens) then answers from the store only while every
-record it reaches with a setting, and every list that can hold one, was written by a response or an event within that period;
-otherwise it reads, showing the stored data meanwhile. An optimistic write, a write refused as older, a restore and a stream with no
-event don't make a record fresh. A lifetime field still expires a record. Install it right after `createClient`, before any read.
+record it reaches with a setting, and every list that can hold one, was written whole by a response or an event within that period;
+otherwise it reads, showing the stored data meanwhile. A write that carries fewer fields than the store holds for a record, such as a
+polled summary, doesn't restart its age. A query field that answered null is asked again after the period. An optimistic write, a
+write refused as older, a restore and a stream with no event don't make a record fresh. A lifetime field still expires a record.
+Install it right after `createClient`, before any read.
 
-Nothing changes without it, and types left out of `staleMs` read as before. The main bundle grows by 332 bytes (124 gzip) for the
-calls into it.
+Nothing changes without it, and types left out of `staleMs` read as before. The main bundle grows by MAIN_GROWTH for the calls
+into it.
 
 ### Changed: the test clock's `store` carries `now`
 
 `createTestClock().store` now includes `now`, so a client built with `store: clock.store` evaluates lifetime expiry, and freshness
-ages, on the test clock instead of `Date.now`. A test that relied on lifetimes following the real clock while timers followed the
-test clock: pass `store: { ...clock.store, now: Date.now }`. A test that already passed its own `now` is unaffected.
+ages, on the test clock instead of `Date.now`. A test that already passed its own `now` is unaffected. What a test can notice:
+
+- The clock starts at 1,000,000 ms, in January 1970. A lifetime value from a real date, such as `1_700_000_000` unix seconds, was in
+  the past on `Date.now` and expired; on the test clock it is in the future and reads as valid. Give expiries relative to
+  `clock.now()`, or start the clock at a real date: `createTestClock(Date.parse("2026-01-01"))`.
+- The store's lifetime expiry timer is measured from the test clock too. An expiry at a real date is then decades away, so
+  `clock.pending()` shows that timer capped at `{ ms: 2147483647, ... }` where it showed the real delay, or none for an expiry
+  already past.
+
+To keep the earlier behaviour, pass `store: { ...clock.store, now: Date.now }`.
 
 ## 0.1.0-alpha.13 (2026-11-17)
 
