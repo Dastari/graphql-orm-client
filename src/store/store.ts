@@ -220,7 +220,7 @@ export class Store {
   private readonly restored = new Set<string>()
   private readonly layers = new Set<OptimisticLayer>()
 
-  /** Observe published batches and identity disposal; used by optional persistence. `write` gets the ids the batch
+  /** Observe published batches and identity disposal; used by optional persistence and the suspending React read. `write` gets the ids the batch
    * wrote, in a set that is only valid during the call. */
   observeWrites(write: (changed: ReadonlySet<string>) => void, dispose: () => void): () => void {
     this.assertLive()

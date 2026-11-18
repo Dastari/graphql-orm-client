@@ -574,3 +574,86 @@ describe("installFreshness and events that don't carry the record", () => {
     context.client.dispose()
   })
 })
+
+describe("installFreshness with conditional selections and fragment arguments", () => {
+  // Compiled apart: a fragment on Ticket with a field argument isn't carried by its stream, which would make every event stale.
+  const extra = compile(schema, [
+    `query TicketMaybeBody($Id: ID!, $WithBody: Boolean!) { Ticket(Id: $Id) { Title Body @include(if: $WithBody) } }`,
+    `fragment TicketLabel on Ticket @argumentDefinitions(locale: {type: "String", defaultValue: "en"}) { Title Label(Locale: $locale) }`,
+    `query TicketFrench($Id: ID!) { Ticket(Id: $Id) { ...TicketLabel @arguments(locale: "fr") } }`,
+    `query TicketEnglish($Id: ID!) { Ticket(Id: $Id) { ...TicketLabel } }`,
+    `fragment TicketById on Query @argumentDefinitions(id: {type: "ID!"}) { Ticket(Id: $id) { Title } }`,
+    `query RootFragment { ...TicketById @arguments(id: "missing") }`,
+    `query MaybeTicket($Id: ID!, $WithTicket: Boolean!) { Ticket(Id: $Id) @include(if: $WithTicket) { Title } Person(Id: "p") { Name } }`,
+  ]).operations
+  function setupExtra() {
+    const clock = createTestClock()
+    const network = createMockNetwork({
+      respond: (request) => {
+        if (request.name === "RootFragment") return { data: { Ticket: null } }
+        const Id = request.variables.Id as string
+        // Body and every label are always sent, so only the request's conditions and arguments decide what is written.
+        const Ticket = { ...ticket(Id), Body: "body", Label: `label ${request.name}` }
+        return { data: { Ticket, Person: { __typename: "Person", Id: "p", Name: "someone" } } }
+      },
+    })
+    const client = createClient({ network, store: { ...clock.store, retainMs: 60 * MINUTE } })
+    installFreshness(client, { staleMs: { Ticket: MINUTE } })
+    return { client, clock, reads: (name: string) => network.calls(name).length }
+  }
+
+  it("doesn't restart the age with a write that @include left a stored field out of", async () => {
+    const context = setupExtra()
+    await context.client.query(extra.TicketMaybeBody!, { Id: "a", WithBody: true })
+    await context.clock.tick(50_000)
+    await context.client.query(extra.TicketMaybeBody!, { Id: "a", WithBody: false }, { policy: "network-only" })
+    await context.clock.tick(20_000)
+    await context.client.query(extra.TicketMaybeBody!, { Id: "a", WithBody: true })
+    expect(context.reads("TicketMaybeBody")).toBe(3)
+    // With the field included, the write is whole and restarts it.
+    await context.clock.tick(20_000)
+    await context.client.query(extra.TicketMaybeBody!, { Id: "a", WithBody: true })
+    expect(context.reads("TicketMaybeBody")).toBe(3)
+    context.client.dispose()
+  })
+
+  it("counts each argument value of a fragment's field as a field of its own", async () => {
+    const context = setupExtra()
+    await context.client.query(extra.TicketFrench!, { Id: "a" })
+    const stored = [...context.client.store.get(encodeNodeId("Ticket", ["a"]))!.fields.keys()]
+    expect(stored).toContain('Label({"Locale":"fr"})')
+    await context.clock.tick(50_000)
+    // Writes the English label, not the French one.
+    await context.client.query(extra.TicketEnglish!, { Id: "a" })
+    await context.clock.tick(20_000)
+    await context.client.query(extra.TicketFrench!, { Id: "a" })
+    expect(context.reads("TicketFrench")).toBe(2)
+    context.client.dispose()
+  })
+
+  it("keys a query field inside a fragment by the arguments its spread passes", async () => {
+    const context = setupExtra()
+    await context.client.query(extra.RootFragment!, {})
+    expect(context.client.store.get("client:root")?.fields.has('Ticket({"Id":"missing"})')).toBe(true)
+    await context.clock.tick(MINUTE - 1)
+    await context.client.query(extra.RootFragment!, {})
+    expect(context.reads("RootFragment")).toBe(1)
+    await context.clock.tick(1)
+    await context.client.query(extra.RootFragment!, {})
+    expect(context.reads("RootFragment")).toBe(2)
+    context.client.dispose()
+  })
+
+  it("doesn't need an age for a query field the variables leave out", async () => {
+    const context = setupExtra()
+    await context.client.query(extra.MaybeTicket!, { Id: "a", WithTicket: false })
+    await context.clock.tick(30 * MINUTE)
+    await context.client.query(extra.MaybeTicket!, { Id: "a", WithTicket: false })
+    expect(context.reads("MaybeTicket")).toBe(1)
+    await context.client.query(extra.MaybeTicket!, { Id: "a", WithTicket: true })
+    await context.clock.tick(MINUTE)
+    await context.client.query(extra.MaybeTicket!, { Id: "a", WithTicket: true })
+    expect(context.reads("MaybeTicket")).toBe(3)
+    context.client.dispose()
+  })
+})

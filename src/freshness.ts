@@ -1,6 +1,6 @@
-import type { LinkSelection, Selection } from "./artifact.js"
+import type { FragmentSpreadSelection, InlineFragmentSelection, LinkSelection, Selection } from "./artifact.js"
 import type { Client } from "./client.js"
-import { fieldStorageKey, storageKey, type Variables } from "./store/arguments.js"
+import { fieldStorageKey, fragmentScope, included, storageKey, type Variables } from "./store/arguments.js"
 import { HEAD_LENGTH } from "./store/normalize.js"
 import { readSelections } from "./store/read.js"
 import { ROOT_ID } from "./store/store.js"
@@ -22,7 +22,7 @@ interface Reach {
   /** Types of records without a key, below it, that hold a list able to reach a type with a setting. */
   readonly lists: ReadonlySet<string>
   /** Query fields with their own age: those returning a type with a setting, or a list that can reach one. */
-  readonly roots: readonly LinkSelection[]
+  readonly roots: readonly RootField[]
 }
 
 /**
@@ -109,24 +109,28 @@ export function installFreshness(client: Client, options: FreshnessOptions): voi
     let found = reaches.get(selections)
     if (found) return found
     const lists = new Set<string>()
-    const roots: LinkSelection[] = []
+    const roots: RootField[] = []
     const seen = new Set<readonly Selection[]>()
-    const walk = (set: readonly Selection[], root: boolean) => {
-      if (seen.has(set)) return
-      seen.add(set)
+    // Every part is followed whatever its conditions, which only makes more queries checked. A query field keeps the inline
+    // parts and spreads it sits in, to be keyed and tested with the variables of a read.
+    const walk = (set: readonly Selection[], path: readonly (InlineFragmentSelection | FragmentSpreadSelection)[] | null) => {
+      if (path === null) {
+        if (seen.has(set)) return
+        seen.add(set)
+      }
       for (const selection of set) {
-        if (selection.kind === "inline") walk(selection.selections, root)
+        if (selection.kind === "inline") walk(selection.selections, path && [...path, selection])
         else if (selection.kind === "spread") {
           const fragment = fragments[selection.name]
-          if (fragment) walk(fragment.selections, root)
+          if (fragment) walk(fragment.selections, path && [...path, selection])
         } else if (selection.kind === "link") {
-          if (root && rootMs(selection, fragments) >= 0) roots.push(selection)
+          if (path && rootMs(selection, fragments) >= 0) roots.push({ selection, path })
           if (holds(selection.selections, fragments) >= 0) for (const type of selection.types) lists.add(type)
-          walk(selection.selections, false)
+          walk(selection.selections, null)
         }
       }
     }
-    walk(selections, true)
+    walk(selections, [])
     found = { checked: reach(selections, fragments) >= 0, lists, roots }
     reaches.set(selections, found)
     return found
@@ -135,6 +139,8 @@ export function installFreshness(client: Client, options: FreshnessOptions): voi
   // The storage keys a write of `value` through `selections` set on a record of `typename`, as normalisation writes them.
   const written = (selections: readonly Selection[], value: Record<string, unknown>, typename: string, variables: Variables, keys: Set<string>) => {
     for (const selection of selections) {
+      // What `@skip`/`@include` left out isn't written, as in normalisation.
+      if (!included(selection.conditions, variables)) continue
       if (selection.kind === "inline") {
         if (selection.possibleTypes === null || selection.possibleTypes.includes(typename)) written(selection.selections, value, typename, variables, keys)
       } else if (selection.kind === "scalar") {
@@ -165,6 +171,7 @@ export function installFreshness(client: Client, options: FreshnessOptions): voi
         // Each query field ages on its own, from the response that wrote it.
         const visit = (set: readonly Selection[]) => {
           for (const selection of set) {
+            if (!included(selection.conditions, variables)) continue
             if (selection.kind === "inline") visit(selection.selections)
             else if (selection.kind === "link" && !selection.batch && selection.responseKey in value) {
               const ms = rootMs(selection)
@@ -192,8 +199,15 @@ export function installFreshness(client: Client, options: FreshnessOptions): voi
       const time = now()
       if (selector.id === ROOT_ID) {
         const root = store.get(ROOT_ID)
-        for (const selection of found.roots) {
-          const key = fieldStorageKey(selection, selector.variables)
+        roots: for (const { selection, path } of found.roots) {
+          let scope = selector.variables
+          for (const part of path) {
+            if (!included(part.conditions, scope)) continue roots
+            if (part.kind === "spread" && part.arguments) scope = fragmentScope(part.name, part.arguments, scope)
+          }
+          // A field the variables leave out isn't read, so it needs no age.
+          if (!included(selection.conditions, scope)) continue
+          const key = fieldStorageKey(selection, scope)
           const value = root?.fields.get(key)
           // A field that found a record is as fresh as that record, so an event on it keeps a lookup by key fresh. One that
           // answered null, or a list, has nothing else to age it.
@@ -227,6 +241,12 @@ export function installFreshness(client: Client, options: FreshnessOptions): voi
       return true
     },
   }
+}
+
+/** A query field with an age of its own, and the inline parts and spreads it sits in. */
+interface RootField {
+  readonly selection: LinkSelection
+  readonly path: readonly (InlineFragmentSelection | FragmentSpreadSelection)[]
 }
 
 type FragmentMap = Readonly<Record<string, { readonly selections: readonly Selection[] }>>

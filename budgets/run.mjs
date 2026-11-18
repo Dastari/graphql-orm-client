@@ -120,7 +120,7 @@ await measure("compileMs", () => {
   assert.equal(Object.keys(output.fragments).length, 125)
   return performance.now() - start
 })
-for (const [name, entry] of [["main", "dist/index.js"], ["react", "dist/react/index.js"]]) {
+for (const [name, entry] of [["main", "dist/index.js"], ["react", "dist/react/index.js"], ["inspector", "dist/inspector.js"]]) {
   const bundle = await build({ entryPoints: [entry], bundle: true, write: false, minify: true,
     platform: "browser", format: "esm", external: ["react", "react/*", "graphql", "graphql/*"] })
   const bytes = bundle.outputFiles[0].contents

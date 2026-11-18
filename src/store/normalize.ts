@@ -1,6 +1,6 @@
 import type { LinkSelection, OperationArtifact, Selection } from "../artifact.js"
 import { decodeNodeId, encodeNodeId, type KeyPart } from "../node-id.js"
-import { argumentValue, fieldStorageKey, storageKey, type Variables } from "./arguments.js"
+import { argumentValue, fieldStorageKey, included, storageKey, type Variables } from "./arguments.js"
 import { ROOT_ID, type Store, type StoredRecord } from "./store.js"
 
 export interface NormalizeContext {
@@ -102,6 +102,8 @@ function writeFields(
   write: boolean
 ): void {
   for (const selection of selections) {
+    // What `@skip`/`@include` left out of the request isn't written, even if the response carries that key.
+    if (!included(selection.conditions, context.variables)) continue
     switch (selection.kind) {
       case "scalar": {
         if (selection.fieldName === "__typename" || !(selection.responseKey in value)) break

@@ -1,6 +1,6 @@
 ---
 name: graphql-orm-client-data
-description: Data flows with graphql-orm-client. Use whenever a component shows or changes server data: fragments and route roots (loadQuery), pagination (@paged, @connection), refetching (@refetchable), mutations, write outcomes, secrets (@sensitive), batched relations (@batch), readAll, deleted rows, freshness (installFreshness), persistence, porting from Apollo, and testing (graphql-orm-client/test).
+description: Data flows with graphql-orm-client. Use whenever a component shows or changes server data: fragments and route roots (loadQuery), fragment arguments, @skip/@include, pagination (@paged, @connection), refetching (@refetchable), mutations, write outcomes, secrets (@sensitive), @batch relations, readAll, deleted rows, freshness (installFreshness), persistence, porting from Apollo, and tests.
 ---
 
 # Fragments, roots, pagination and mutations
@@ -66,11 +66,50 @@ function Page({ loaded }: { loaded: LoadedQuery<TicketsPageQuery> }) {
 - Never fetch inside a child component to fill in missing data. Add the field to the child's
   fragment instead, so the root's query includes it.
 - Start the root in the browser route loader (`client.loadQuery`) and consume its handle with
-  `useLoadedQuery`; forward the router abort signal and dispose abandoned handles. It does not suspend.
-- `@skip`/`@include` selections and fragment arguments (`@argumentDefinitions`/`@arguments`) are
-  unsupported build errors. Use separate roots and operation variables. For existing conditional
-  documents, `conditionalDirectives: "legacy"` temporarily keeps unsafe old behaviour while migrating;
-  remove it after splitting roots. Whole-query hook `skip` is still supported.
+  `useLoadedQuery`; forward the router abort signal and dispose abandoned handles. `useLoadedQuery` does not
+  suspend. `useSuspenseLoadedQuery(handle)` reads the same handle and suspends until it has data (no extra
+  request); a first-read error goes to the error boundary (`await handle.refetch()` before resetting it). It
+  suspends again only for a new handle: set that in `startTransition` to keep the previous screen. Disposing the
+  client makes a reader showing data throw to its error boundary. Browser only; the server renders the Suspense
+  fallback, and React reports a recoverable error at hydration. In tests, render it inside `await act(async () => ...)`: React waits on
+  the suspended read inside an awaited `act`.
+- `@skip`/`@include` on fields, spreads and inline fragments are evaluated with the operation's
+  variables: a skipped field is absent, not missing, and its generated type is optional. A conditional
+  spread is typed as maybe absent; check `hasFragment(Fragment, ref)` before `useFragment`. A variable's
+  default must be the same in every operation that spreads the fragment. A field a `@live` fragment
+  selects only conditionally isn't carried by the stream; its holders read it again on an event.
+  `conditionalDirectives: "legacy"` is deprecated: remove it and regenerate. `"reject"` keeps the
+  old build error. Whole-query hook `skip` is still supported.
+
+## Fragment arguments
+
+When one component is shown twice with different field arguments (two image sizes, two note limits),
+give its fragment arguments instead of writing a second fragment:
+
+```graphql
+fragment Thumb on Widget @argumentDefinitions(size: {type: "Int!", defaultValue: 64}) {
+  Name
+  Image(Size: $size)
+}
+query WidgetPage($Id: String!, $Big: Int!) {
+  small: Widget(Id: $Id) { ...Thumb }
+  large: Widget(Id: $Id) { ...Thumb @arguments(size: $Big) }
+}
+```
+
+- Declare each as `name: {type: "<GraphQL type>", defaultValue: <value>}` (default optional). Inside the
+  fragment `$name` is the argument; other variables are the operation's.
+- Pass a literal or a variable with `@arguments`. One not passed takes its default; without one it acts as an unset
+  variable: the field argument is left out and the schema's default applies. A passed operation variable that isn't set
+  gets the schema's default too, not the fragment's.
+  `generate` fails for a missing required argument, an undeclared one, or a wrong type.
+- Each spread's reference carries its own values: `useFragment(Thumb, data.small)` and
+  `useFragment(Thumb, data.large)` read different sizes. Spread one fragment twice with different values
+  under separate aliases, never twice on one object (a build error).
+- `@include(if: $arg)` and `@skip(if: $arg)` on one of the fragment's arguments are evaluated with each spread's value.
+- `@live` fragments with arguments work: fields with arguments refresh through the holding query's re-read,
+  not the stream. Not under `liveSelection: "as-written"`, and a `@refetchable` fragment can't declare
+  arguments (both are build errors).
 
 ## Filters and lists
 
