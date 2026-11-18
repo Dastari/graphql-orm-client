@@ -66,7 +66,13 @@ function Page({ loaded }: { loaded: LoadedQuery<TicketsPageQuery> }) {
 - Never fetch inside a child component to fill in missing data. Add the field to the child's
   fragment instead, so the root's query includes it.
 - Start the root in the browser route loader (`client.loadQuery`) and consume its handle with
-  `useLoadedQuery`; forward the router abort signal and dispose abandoned handles. It does not suspend.
+  `useLoadedQuery`; forward the router abort signal and dispose abandoned handles. `useLoadedQuery` does not
+  suspend. `useSuspenseLoadedQuery(handle)` reads the same handle and suspends until it has data (no extra
+  request); a first-read error goes to the error boundary (`await handle.refetch()` before resetting it). It
+  suspends again only for a new handle: set that in `startTransition` to keep the previous screen. Disposing the
+  client makes a reader showing data throw to its error boundary. Browser only; the server renders the Suspense
+  fallback, and React reports a recoverable error at hydration. In tests, render it inside `await act(async () => ...)`: React waits on
+  the suspended read inside an awaited `act`.
 - `@skip`/`@include` on fields, spreads and inline fragments are evaluated with the operation's
   variables: a skipped field is absent, not missing, and its generated type is optional. A conditional
   spread is typed as maybe absent; check `hasFragment(Fragment, ref)` before `useFragment`. A variable's

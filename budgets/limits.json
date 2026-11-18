@@ -88,24 +88,34 @@
       "margin": "About seven times the local median, for shared CI runners. Was 30000: tightened after a nested compile re-extended the whole schema per live type, which took this from 7.6 s to about 24 s and stayed under the old limit."
     },
     "mainRawBytes": {
-      "max": 85500,
-      "measured": 84561,
-      "margin": "Minified standalone entry closure, external peers; streams and readAll have their own entries. Measured size plus about 1,000. Raised 2026-11-17 for write-outcome evidence (#60, #61, #62: mostly the validation rule names the router sends as codes), to 69821, for stopping live delivery on an authentication close and resuming it (#73), to 71869, for query reads (#63, #66, #67, #72: deadlines, retry, missing-field reports, refetch by variables), to 76437, and for several @connection lists per query, restarting a list on a refused cursor and batched refetchFragment (#83, #55, #82), to 84561. Growth past this needs a reason."
+      "max": 86500,
+      "measured": 85447,
+      "margin": "Minified standalone entry closure, external peers; streams and readAll have their own entries. Measured size plus about 1,000. Raised 2026-11-17 for write-outcome evidence (#60, #61, #62: mostly the validation rule names the router sends as codes), to 69821, for stopping live delivery on an authentication close and resuming it (#73), to 71869, for query reads (#63, #66, #67, #72: deadlines, retry, missing-field reports, refetch by variables), to 76437, and for several @connection lists per query, restarting a list on a refused cursor and batched refetchFragment (#83, #55, #82), to 84561. On 2026-11-18, 0.1.0-alpha.14's Suspense read (#102, 411) and conditional selections (#100, 475, on the read path) took it to 85447. Growth past this needs a reason."
     },
     "mainGzipBytes": {
-      "max": 27500,
-      "measured": 27168,
-      "margin": "Gzip of the same closure, plus about 300. Raised with the raw limit on 2026-11-17, four times (22574, 23101, 24705, then 27168)."
+      "max": 27800,
+      "measured": 27501,
+      "margin": "Gzip of the same closure, plus about 300. Raised with the raw limit on 2026-11-17, four times (22574, 23101, 24705, then 27168), and on 2026-11-18 to 27501 with the raw limit."
     },
     "reactRawBytes": {
-      "max": 10000,
-      "measured": 6969,
-      "margin": "Standalone React closure including shared client code; peers external."
+      "max": 11000,
+      "measured": 9986,
+      "margin": "Standalone React closure including shared client code; peers external. The measurement of 6969 was stale by 2026-11-17 (9317 on main, from useFragmentList and the hooks added since); re-measured at 9986 with useSuspenseLoadedQuery (#102), and the limit raised from 10000 to that plus about 1,000."
     },
     "reactGzipBytes": {
-      "max": 4000,
-      "measured": 2836,
-      "margin": "Level-9 gzip of the React closure."
+      "max": 4300,
+      "measured": 3907,
+      "margin": "Level-9 gzip of the React closure. Re-measured at 3907 with useSuspenseLoadedQuery (#102), and raised from 4000 to that plus about 300."
+    },
+    "inspectorRawBytes": {
+      "max": 9400,
+      "measured": 8369,
+      "margin": "Standalone development inspector closure (graphql-orm-client/inspector), with the store reader it shares with main. Measured size plus about 1,000. Added 2026-11-17 (#104); main is unchanged by it."
+    },
+    "inspectorGzipBytes": {
+      "max": 3800,
+      "measured": 3494,
+      "margin": "Level-9 gzip of the inspector closure, plus about 300."
     },
     "windows1HeapBytes": {
       "max": 25000000,

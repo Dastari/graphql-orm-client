@@ -9,7 +9,7 @@ Status: partly built. Implemented and tested:
 - transport: `createHttpNetwork` (GraphQL over HTTP) and `graphqlWsTransport` (a graphql-ws
   client for the live layer);
 - `readFragment`;
-- React: `ClientProvider`, `useQuery`, `useLoadedQuery`, `usePagedQuery`, `useFragment`, `useFragmentList`,
+- React: `ClientProvider`, `useQuery`, `useLoadedQuery`, `useSuspenseLoadedQuery`, `usePagedQuery`, `useFragment`, `useFragmentList`,
   `useMutation` and `useSubscription`;
 - the live layer: `compile(...).live`, `LiveManager`, `createClient({ live })`, and opt-in back-off for refused streams;
 - the generator: `graphql-orm-client generate` with `--check`. It emits typed artifacts, masked
@@ -18,10 +18,11 @@ Status: partly built. Implemented and tested:
 - pagination: `@connection` (keyset or offset), `loadMore`, `hasMore` and `loadingMore`;
 - page-number navigation: `@paged`, `watchPagedQuery` and `usePagedQuery`;
 - optimistic mutations, `no-store` mutations, interval polling, and the live polling fallback;
-- `@refetchable` fragments: `client.refetchFragment` and `useRefetchableFragment`.
+- `@refetchable` fragments: `client.refetchFragment` and `useRefetchableFragment`;
+- a development store inspector: `inspect` from `graphql-orm-client/inspector` (see [Store inspector](#store-inspector-r31)).
 
 Proposed, not built: per-type
-`staleMs` policy ([R30](requirements.md)), a store inspector ([R31](requirements.md)), Suspense ([R29](requirements.md)), the `scope` store option, sending operations by persisted hash,
+`staleMs` policy ([R30](requirements.md)), a Suspense read for a query started at render, the `scope` store option, sending operations by persisted hash,
 batching writes per tick, refetching a parent on a `PROPAGATED` event, and marking records stale after a failed lookup. Sections below label these. What the client still
 needs is in [requirements.md](requirements.md).
 
@@ -111,7 +112,57 @@ Migration is opt-in per route: replace `preload` plus `useQuery` with `loadQuery
 `useLoadedQuery`, forward cancellation, and handle `idle`, `loading` and `error` states. The old
 `preload` remains an awaitable warm-up that closes on completion. A subsequent default `useQuery`
 uses `store-and-network` and may read again. Its legacy StrictMode effect replay can restart a request;
-the loader hook avoids that. Suspense is not implemented; R29 in [the requirements](requirements.md) records it.
+the loader hook avoids that.
+
+#### Suspending read (R29)
+
+`useSuspenseLoadedQuery(handle)` reads the same handle and suspends until it has data, so the route's
+`<Suspense>` fallback shows while the loader's read is in flight. It returns `QueryState` with `data` always set. It
+sends no request: the loader started the read, so suspending only waits on it, and StrictMode's double render
+waits on the same promise. While suspended it calls `handle.suspend()`, which returns one promise per pending read.
+The promise resolves when the state leaves `loading`, when the handle is disposed with its client alive, or when the
+handle closes. The handle keeps it as `handle.waiting` after it settles, marked `status: "fulfilled"`, and the hook
+passes that same promise to `use` on every later render, as React expects of a component that suspended. A
+fulfilled promise returns at once.
+
+`suspend()` opens an expired handle again, as `mount` does, which sends the request from render. Otherwise nothing
+is retained per render: the handle is already open. While a wait is pending the handle stays open for up to twice
+`timeoutMs`, even when the read takes longer than `timeoutMs`. Then it closes and the wait settles, so a render that
+never commits (an abandoned navigation without an abort signal, on a read that never settles) still releases the
+handle. A render still waiting opens it again with a new request, so keep `timeoutMs` above the slowest read. When
+the read settles first, the usual deadline starts again and mount, after the commit, cancels it as with
+`useLoadedQuery`. The deadline is per handle. With two handles under one boundary, the faster one's deadline starts
+when its read settles, while React still waits on the slower one. If that takes longer than `timeoutMs`, the faster
+handle closes and its records follow store retention, and mounting opens it again, reading again if they were
+collected.
+
+A first read that fails throws its error to the nearest error boundary. To retry, `await handle.refetch()` and then
+reset the boundary. The handle's status stays `error` until that read settles, so resetting first would throw the
+same error again. After the first data the hook never suspends again for that handle: a refetch shows
+`refreshing` with the data, live updates re-render, and a refetch that fails keeps the data and sets `error`. A
+new handle (a navigation, or other variables) suspends again. Set it inside `startTransition`, as routers do for
+navigation, to keep the previous screen until the new handle has data; outside a transition the boundary shows
+its fallback.
+
+Disposing the client re-renders each mounted reader at once, through the store's disposal notice. That render is
+urgent, so it happens even when the next identity's client arrives inside a transition. A reader with data throws
+to its error boundary, so none of the old identity's rows stay in the document, not even hidden behind a fallback.
+A read still suspended stays suspended for good: its wait never resolves once the client is disposed, and a render
+of that handle suspends on the same wait. It never shows the old identity's data, never throws into the next
+identity's boundary, and holds no listener or retention. A boundary showing only its fallback lets the next
+identity's transition commit. Any other render of a disposed client's handle throws. The next identity's loader
+supplies a new handle. A handle disposed or aborted while its client is alive throws `route load was
+disposed`, as `useLoadedQuery`'s mount does, and a handle from another live client throws as well.
+
+The hook suspends with React's `use`, so React 19 is required (as the peer range says). In tests, render inside
+`await act(async () => render(...))`; with a synchronous `act` React can't wait on the read and never retries it.
+
+Server rendering is a non-goal here too. On the server the hook throws before reading anything, so React
+renders the nearest `<Suspense>` fallback in the server HTML and renders that subtree in the browser. React logs
+that error on the server, and at hydration reports a recoverable "switched to client rendering" error
+(`onRecoverableError`), which error monitors will see; filter it there or keep the hook out of server-rendered
+trees. A `useSuspenseQuery` for a query started at render is not built: it would start a request from render,
+which the loader pattern avoids.
 
 ### Conditional selections and fragment arguments
 
@@ -987,6 +1038,8 @@ fragments.
 - Opt-in persistence is keyed by an explicit identity and deleted by `clear()`, which an application calls on
   sign-out. Disposing a client doesn't delete it. It does not encrypt storage; use a storage adapter appropriate
   to the data and threat model.
+- The development inspector (`graphql-orm-client/inspector`) never attaches where `NODE_ENV` is `production`, never sees a
+  response, and drops what it holds when its client is disposed. See [Store inspector](#store-inspector-r31).
 - The client does not authorise anything. A denied field or record arrives as the server
   decides (null or error), and the client stores exactly that.
 - A record lookup can fail with "not current" or "unavailable" (a stale row, or a source that
@@ -1019,10 +1072,10 @@ those runs; each timing in each run is itself the median of five samples.
 | One event, 1,000-row list (ms) | 0.151 | 1.2 |
 | One event, 10,000-row list (ms) | 1.255 | 8 |
 | 45,000-line schema + 250 documents (ms) | 694 | 5,000 |
-| Main standalone raw bundle (bytes) | 84,561 | 85,500 |
-| Main standalone gzip bundle (bytes) | 27,168 | 27,500 |
-| React standalone raw bundle (bytes) | 6,969 | 10,000 |
-| React standalone gzip bundle (bytes) | 2,836 | 4,000 |
+| Main standalone raw bundle (bytes) | 85,447 | 86,500 |
+| Main standalone gzip bundle (bytes) | 27,501 | 27,800 |
+| React standalone raw bundle (bytes) | 9,986 | 11,000 |
+| React standalone gzip bundle (bytes) | 3,907 | 4,300 |
 
 Bundles come from the actual built ESM entries, bundled and minified with esbuild; raw means
 uncompressed bundle bytes, gzip uses level 9. React and GraphQL peers are external.
@@ -1062,7 +1115,10 @@ names the router sends as codes; stopping and resuming live delivery on an authe
 about 4.5 KB; and several `@connection` lists per query, restarting a list on a refused cursor and batched `refetchFragment`
 ([#83](https://github.com/Dastari/graphql-orm-client/issues/83), [#55](https://github.com/Dastari/graphql-orm-client/issues/55),
 [#82](https://github.com/Dastari/graphql-orm-client/issues/82)), about 8 KB. With the rest of this release it is 84,561 bytes
-(gzip 27,168); the limits are that plus about 1,000 bytes (gzip 300): 85,500 (gzip 27,500).
+(gzip 27,168); the limits are that plus about 1,000 bytes (gzip 300): 85,500 (gzip 27,500). On 2026-11-18 the suspending read
+([#102](https://github.com/Dastari/graphql-orm-client/issues/102)) and conditional selections
+([#100](https://github.com/Dastari/graphql-orm-client/issues/100)), which sit on the read path, took it to 85,447 (gzip 27,501), and the
+limits to 86,500 (gzip 27,800).
 
 It includes page/runtime, query snapshots and store allocations; it excludes native renderer
 memory, browser RSS, GPU memory and server cost. It does not establish a bound on a full
@@ -1737,6 +1793,63 @@ count as subscribe failures. `hasLiveLayer` explicitly reports configuration. Th
 measured and none. Take two health samples and divide count differences by elapsed minutes.
 Counter and read-time changes alone do not notify health listeners. Event timing follows
 the existing at-most-once-per-second notification path; state changes still notify promptly.
+
+## Store inspector (R31)
+
+`inspect(client)`, from `graphql-orm-client/inspector`, is a development view of one client's store. It is an object API with
+no UI:
+
+| Call | Returns |
+| --- | --- |
+| `records()` | Each stored record: `id`, `typename`, a copy of its `fields` (links as `{ __ref }` and `{ __refs }`), `heldBy` (the keys of the queries whose reads reach it) and `coveredBy` (the ids of the streams that write its events), with `lifetime` and `restored` where they apply |
+| `queries()` | Each query keeping records: `key`, `operation`, `variables`, `state` (`open`, or `released` and waiting out `retainMs`), a watched query's `status` and `pollMs`, and the `records` its read reaches |
+| `streams()` | Each open generated `Changed` stream: `id`, `typename`, `operation`, `scope` (`all`, `key` or `keys`), `thin` (keys only, after the full selection was refused) and the held `records` it covers |
+| `reads()` | The most recent query reads (`maxReads`, default 200), oldest first: `operation`, `variables`, the `query` key, `cause` and `at` |
+| `subscribe(listener)` | Each read as it starts (`{ type: "read", read }`), each batch the store publishes (`{ type: "write", ids }`), and `{ type: "dispose" }` |
+| `dispose()` | Detaches. The client is unaffected |
+
+Everything but `reads()` is worked out from the client when it is called, so it is current and the inspector keeps no copy of
+the store. `heldBy` comes from what collection uses: the reads of the store's retained queries. A record with none is deleted
+by the next collection, unless it is the root record (`client:root`) or, with `@batch` relation batching installed, a mounted
+fragment or query reaches it, since collection then keeps what subscribed views read too. A read's `query` is the key of the
+retained query under those variables, a watched query's before a `client.query` read's, or null when none is retained, as for
+a `loadMore` or `readAll` page.
+
+A read's `cause` is a `ReadCause` from [read and stream counters](#read-and-stream-counters), with the client's `stale` split in two
+where an event was behind it. `event` means an event for a record the query holds carried something it couldn't use (a keys-only
+stream, a child deleted below the record, a field the stream can't carry). `list` means an event for the type of a list the query
+shows. Both name the event's `typename`. `stale` alone now means a record the query shows was deleted or collected. Events that
+coalesce into one read give it the first one's cause. The mark an event leaves is used by the re-read it asked for, even when a
+refetch or poll is read first, and dropped when the query closes, since closing cancels that re-read. A re-read that goes out
+under another cause that came first, such as a burst repair, uses the mark up and keeps that cause. A refresh that reads several
+pages of a list is one read; `liveHealth().reads` counts its requests.
+
+What it never receives:
+
+- An `@sensitive` result or a `no-store` mutation result. Neither enters the store ([sensitive operations](#sensitive-operations-r9)),
+  and the inspector sees reads only as they start: the operation, its variables and the cause, never a response. Mutations and
+  `@sensitive` queries aren't recorded at all. Nothing wraps the network.
+- Another identity's data. It shows only its client's store, and when that client is disposed it drops its reads, removes what it
+  attached to the client and its listeners, and lets go of the client, inside `client.dispose()`. Its listeners hear `dispose` first.
+
+How it can't be on in production:
+
+- It is its own entry point, so it is in a bundle only if the application imports it. Import it behind a development check, such as
+  `if (import.meta.env.DEV) void import("graphql-orm-client/inspector").then(({ inspect }) => inspect(client, { enabled: import.meta.env.DEV }))`.
+- Where the bundle's `process.env.NODE_ENV` is `production`, `inspect` returns an inert inspector (`active: false`, every list
+  empty) and attaches nothing, whatever `enabled` says. Left out, `enabled` is on only where `NODE_ENV` is set and isn't
+  `production`, as in development and tests. Where nothing sets `NODE_ENV`, pass `enabled: import.meta.env.DEV` or your bundler's
+  equivalent, not `true`.
+- It puts nothing on `window` or any other global.
+
+It attaches by wrapping the client's `executeResponse` on the instance, to see each query read start, the live layer's event
+handler, to see which queries an event marked, and a marked query's `cancelRereads`, to see it close. On dispose it puts back
+each client member that is still its own wrapper; one that something else wrapped afterwards, such as a second copy of this
+module, stays and passes every call straight through. The main entry point has no hook for it and is the same bytes with or
+without it. It reads the client's internals, so it works only with a client from the same installed package.
+
+There is one inspector per client. While one is attached, `inspect(client, options)` returns it and ignores `options`, and
+`dispose()` from any caller ends it for all of them. `maxReads` that isn't a finite positive number is the default, 200.
 
 ## Zero keyed subscription cap
 

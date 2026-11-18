@@ -155,7 +155,7 @@ extracted.
 
 ## 3. What real applications need beyond records
 
-**R9. Sensitive results.** *Built:* operation-level `@sensitive`, plain results without fragment references; queries use `client.query`, live combinations fail compilation. R17 must exclude these results.
+**R9. Sensitive results.** *Built:* operation-level `@sensitive`, plain results without fragment references; queries use `client.query`, live combinations fail compilation. R17 must exclude these results. The store inspector (R31) never receives them, nor `no-store` mutation results.
 
  Mutations have `policy: "no-store"` (0.1.0-alpha.6). What remains: a way to
 declare this in the document so it can't be forgotten at a call site, the same for query results, and
@@ -254,7 +254,7 @@ loader can avoid a waterfall. Suspense is optional (R29). Fragment arguments (R2
 are recorded separately. Server rendering stays a non-goal, but
 document how the client behaves inside a framework that renders a shell on the server.
 *Built:* `client.loadQuery` and `useLoadedQuery` share a retained read across loader and mount,
-with abort, unused-load timeout and StrictMode replay cleanup. Non-Suspense. Conditional selections
+with abort, unused-load timeout and StrictMode replay cleanup. `useSuspenseLoadedQuery` is the suspending read (R29). Conditional selections
 are evaluated (R27); fragment arguments are rejected. Node server shells return idle without starting queries; no data streaming or store
 handoff. See [route loading](design.md#route-loading-r18) for lifecycle and migration.
 
@@ -294,13 +294,19 @@ Fields with arguments stay out of streams, as R2 already requires.
 values, with exact generated types. A spread missing a required argument fails `generate`, naming the fragment and the
 argument.
 
-**R29. Suspense. Proposed, not built** ([#102](https://github.com/Dastari/graphql-orm-client/issues/102), from [#84](https://github.com/Dastari/graphql-orm-client/issues/84)). A React read of a
+**R29. Suspense** ([#102](https://github.com/Dastari/graphql-orm-client/issues/102), from [#84](https://github.com/Dastari/graphql-orm-client/issues/84)). A React read of a
 `loadQuery` handle that suspends until it has data and sends errors to an error boundary. The loader still starts the
 request, so suspending adds no waterfall. Disposing the client releases a suspended read and never resolves it into
 another identity's tree. Server rendering stays a non-goal.
 *Acceptance:* a route loaded in its loader and read with the suspending hook shows its fallback, then its data, with one
 request under StrictMode; an error reaches an error boundary; disposing the client while suspended leaves nothing
 retained and nothing rendered under the next identity.
+*Built:* `useSuspenseLoadedQuery(handle)` in `graphql-orm-client/react`, with `LoadedQuery.suspend()` for the wait.
+After the first data a refetch or live update doesn't suspend again; a new handle does, and keeps the previous screen
+when set in a transition. Disposing the client re-renders a reader showing data at once, outside any transition, and it
+throws to its error boundary; a read still suspended stays suspended without showing data or an error. A pending wait
+holds the handle open for at most twice `timeoutMs`. On the server it throws, so the Suspense fallback is rendered there. A `useSuspenseQuery` for a query started at render is not built.
+See [suspending read](design.md#suspending-read-r29).
 
 **R30. Per-type freshness. Proposed, not built** ([#103](https://github.com/Dastari/graphql-orm-client/issues/103), from [#85](https://github.com/Dastari/graphql-orm-client/issues/85)). A per-type
 `staleMs`: how long a record counts as fresh after a server write. A `store-or-network` read answers from the store
@@ -311,13 +317,18 @@ delivery is never the only path to correct data.
 sends no request and one after a minute sends one; a type with no setting is unchanged; an event's write restarts the
 age.
 
-**R31. A store inspector. Proposed, not built** ([#104](https://github.com/Dastari/graphql-orm-client/issues/104), from [#85](https://github.com/Dastari/graphql-orm-client/issues/85)). A
+**R31. A store inspector.** ([#104](https://github.com/Dastari/graphql-orm-client/issues/104), from [#85](https://github.com/Dastari/graphql-orm-client/issues/85)). A
 development-only inspector, in its own entry point, shows the records in a client's store, the queries holding each,
 the streams covering it, and why a query re-read. It never receives an R9 (`@sensitive`) result or a `no-store`
 mutation result, from the store or the network layer, and it drops everything when its client is disposed.
 *Acceptance:* in a test it lists a record with its holders and covering stream and records a re-read's cause; nothing
 it was given contains a value from an `@sensitive` query or a `no-store` mutation; it holds nothing after dispose; the
 main bundle is unchanged.
+*Built:* `inspect(client)` from `graphql-orm-client/inspector`, an object API (`records`, `queries`, `streams`, `reads`,
+`subscribe`, `dispose`) with no UI. It sees reads only as they start, never a response, and skips mutations and `@sensitive`
+queries; it detaches and drops everything inside `client.dispose()`. It never attaches where `NODE_ENV` is `production`, and by
+default only where `NODE_ENV` says development or tests. The main bundle is byte-for-byte the same (84,561 raw, 27,168 gzip);
+the inspector's own closure is 8,369 raw, 3,494 gzip.
 
 **R32. Both current graphql versions.** An application can use graphql 16 or 17 as the single copy of `graphql`, and
 the generated output, operation hashes and schema snapshot are the same text with either
