@@ -107,6 +107,16 @@
       "measured": 2836,
       "margin": "Level-9 gzip of the React closure."
     },
+    "inspectorRawBytes": {
+      "max": 9400,
+      "measured": 8369,
+      "margin": "Standalone development inspector closure (graphql-orm-client/inspector), with the store reader it shares with main. Measured size plus about 1,000. Added 2026-11-17 (#104); main is unchanged by it."
+    },
+    "inspectorGzipBytes": {
+      "max": 3800,
+      "measured": 3494,
+      "margin": "Level-9 gzip of the inspector closure, plus about 300."
+    },
     "windows1HeapBytes": {
       "max": 25000000,
       "measured": 9048332,

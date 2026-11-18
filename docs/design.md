@@ -18,10 +18,11 @@ Status: partly built. Implemented and tested:
 - pagination: `@connection` (keyset or offset), `loadMore`, `hasMore` and `loadingMore`;
 - page-number navigation: `@paged`, `watchPagedQuery` and `usePagedQuery`;
 - optimistic mutations, `no-store` mutations, interval polling, and the live polling fallback;
-- `@refetchable` fragments: `client.refetchFragment` and `useRefetchableFragment`.
+- `@refetchable` fragments: `client.refetchFragment` and `useRefetchableFragment`;
+- a development store inspector: `inspect` from `graphql-orm-client/inspector` (see [Store inspector](#store-inspector-r31)).
 
 Proposed, not built: per-type
-`staleMs` policy ([R30](requirements.md)), a store inspector ([R31](requirements.md)), Suspense ([R29](requirements.md)), the `scope` store option, sending operations by persisted hash,
+`staleMs` policy ([R30](requirements.md)), Suspense ([R29](requirements.md)), the `scope` store option, sending operations by persisted hash,
 batching writes per tick, refetching a parent on a `PROPAGATED` event, and marking records stale after a failed lookup. Sections below label these. What the client still
 needs is in [requirements.md](requirements.md).
 
@@ -950,6 +951,8 @@ fragments.
 - Opt-in persistence is keyed by an explicit identity and deleted by `clear()`, which an application calls on
   sign-out. Disposing a client doesn't delete it. It does not encrypt storage; use a storage adapter appropriate
   to the data and threat model.
+- The development inspector (`graphql-orm-client/inspector`) never attaches where `NODE_ENV` is `production`, never sees a
+  response, and drops what it holds when its client is disposed. See [Store inspector](#store-inspector-r31).
 - The client does not authorise anything. A denied field or record arrives as the server
   decides (null or error), and the client stores exactly that.
 - A record lookup can fail with "not current" or "unavailable" (a stale row, or a source that
@@ -1699,6 +1702,63 @@ count as subscribe failures. `hasLiveLayer` explicitly reports configuration. Th
 measured and none. Take two health samples and divide count differences by elapsed minutes.
 Counter and read-time changes alone do not notify health listeners. Event timing follows
 the existing at-most-once-per-second notification path; state changes still notify promptly.
+
+## Store inspector (R31)
+
+`inspect(client)`, from `graphql-orm-client/inspector`, is a development view of one client's store. It is an object API with
+no UI:
+
+| Call | Returns |
+| --- | --- |
+| `records()` | Each stored record: `id`, `typename`, a copy of its `fields` (links as `{ __ref }` and `{ __refs }`), `heldBy` (the keys of the queries whose reads reach it) and `coveredBy` (the ids of the streams that write its events), with `lifetime` and `restored` where they apply |
+| `queries()` | Each query keeping records: `key`, `operation`, `variables`, `state` (`open`, or `released` and waiting out `retainMs`), a watched query's `status` and `pollMs`, and the `records` its read reaches |
+| `streams()` | Each open generated `Changed` stream: `id`, `typename`, `operation`, `scope` (`all`, `key` or `keys`), `thin` (keys only, after the full selection was refused) and the held `records` it covers |
+| `reads()` | The most recent query reads (`maxReads`, default 200), oldest first: `operation`, `variables`, the `query` key, `cause` and `at` |
+| `subscribe(listener)` | Each read as it starts (`{ type: "read", read }`), each batch the store publishes (`{ type: "write", ids }`), and `{ type: "dispose" }` |
+| `dispose()` | Detaches. The client is unaffected |
+
+Everything but `reads()` is worked out from the client when it is called, so it is current and the inspector keeps no copy of
+the store. `heldBy` comes from what collection uses: the reads of the store's retained queries. A record with none is deleted
+by the next collection, unless it is the root record (`client:root`) or, with `@batch` relation batching installed, a mounted
+fragment or query reaches it, since collection then keeps what subscribed views read too. A read's `query` is the key of the
+retained query under those variables, a watched query's before a `client.query` read's, or null when none is retained, as for
+a `loadMore` or `readAll` page.
+
+A read's `cause` is a `ReadCause` from [read and stream counters](#read-and-stream-counters), with the client's `stale` split in two
+where an event was behind it. `event` means an event for a record the query holds carried something it couldn't use (a keys-only
+stream, a child deleted below the record, a field the stream can't carry). `list` means an event for the type of a list the query
+shows. Both name the event's `typename`. `stale` alone now means a record the query shows was deleted or collected. Events that
+coalesce into one read give it the first one's cause. The mark an event leaves is used by the re-read it asked for, even when a
+refetch or poll is read first, and dropped when the query closes, since closing cancels that re-read. A re-read that goes out
+under another cause that came first, such as a burst repair, uses the mark up and keeps that cause. A refresh that reads several
+pages of a list is one read; `liveHealth().reads` counts its requests.
+
+What it never receives:
+
+- An `@sensitive` result or a `no-store` mutation result. Neither enters the store ([sensitive operations](#sensitive-operations-r9)),
+  and the inspector sees reads only as they start: the operation, its variables and the cause, never a response. Mutations and
+  `@sensitive` queries aren't recorded at all. Nothing wraps the network.
+- Another identity's data. It shows only its client's store, and when that client is disposed it drops its reads, removes what it
+  attached to the client and its listeners, and lets go of the client, inside `client.dispose()`. Its listeners hear `dispose` first.
+
+How it can't be on in production:
+
+- It is its own entry point, so it is in a bundle only if the application imports it. Import it behind a development check, such as
+  `if (import.meta.env.DEV) void import("graphql-orm-client/inspector").then(({ inspect }) => inspect(client, { enabled: import.meta.env.DEV }))`.
+- Where the bundle's `process.env.NODE_ENV` is `production`, `inspect` returns an inert inspector (`active: false`, every list
+  empty) and attaches nothing, whatever `enabled` says. Left out, `enabled` is on only where `NODE_ENV` is set and isn't
+  `production`, as in development and tests. Where nothing sets `NODE_ENV`, pass `enabled: import.meta.env.DEV` or your bundler's
+  equivalent, not `true`.
+- It puts nothing on `window` or any other global.
+
+It attaches by wrapping the client's `executeResponse` on the instance, to see each query read start, the live layer's event
+handler, to see which queries an event marked, and a marked query's `cancelRereads`, to see it close. On dispose it puts back
+each client member that is still its own wrapper; one that something else wrapped afterwards, such as a second copy of this
+module, stays and passes every call straight through. The main entry point has no hook for it and is the same bytes with or
+without it. It reads the client's internals, so it works only with a client from the same installed package.
+
+There is one inspector per client. While one is attached, `inspect(client, options)` returns it and ignores `options`, and
+`dispose()` from any caller ends it for all of them. `maxReads` that isn't a finite positive number is the default, 200.
 
 ## Zero keyed subscription cap
 

@@ -145,6 +145,7 @@ catalogue. This client is built on those guarantees.
 | One record's refresh | `@refetchable`, `useRefetchableFragment` | `/react` |
 | Reading again only the views showing some records | `refetchQueries([{ query, variables }])` | main |
 | Reads that survive a dropped connection | `reads: { retry }` on `createClient`; a default read deadline | main |
+| Seeing, in development, what the store holds, which queries and streams keep each record, and why a query read again | `inspect` | `/inspector` |
 | Testing freshness with no server | `createMockNetwork`, `createMockStreams`, `createTestClock` | `/test` |
 | Coming from Apollo | [the option map](docs/design.md#coming-from-apollo) | |
 

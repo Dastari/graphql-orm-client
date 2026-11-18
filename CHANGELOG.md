@@ -25,6 +25,17 @@ prints list values as graphql 16 does too, in operation text and in schema snaps
 Nothing changes on graphql 16. On graphql 17, run `graphql-orm-client generate` once; the output then matches what graphql 16
 generates.
 
+### Added: a development store inspector
+
+`inspect(client)`, from the new `graphql-orm-client/inspector` entry point, shows in development the records in a client's store,
+the queries holding each, the streams covering each, and why each query was read: `records()`, `queries()`, `streams()`,
+`reads()` and `subscribe(listener)`. A read's cause is one of `liveHealth().reads`' causes, with `event` and `list` where an event
+made the query read again. It never sees a response, so an `@sensitive` result or a `no-store` mutation result can't reach it,
+and it drops everything when its client is disposed. It doesn't attach where `NODE_ENV` is `production`; import it behind a
+development check so it isn't bundled. See "Store inspector" in `docs/design.md`.
+
+Nothing changes for an application that doesn't import it: the main entry point is the same bytes.
+
 ## 0.1.0-alpha.13 (2026-11-17)
 
 Install from the GitHub release archive:
