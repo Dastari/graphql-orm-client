@@ -98,14 +98,14 @@
       "margin": "Gzip of the same closure, plus about 300. Raised with the raw limit on 2026-11-17, four times (22574, 23101, 24705, then 27168)."
     },
     "reactRawBytes": {
-      "max": 10000,
-      "measured": 6969,
-      "margin": "Standalone React closure including shared client code; peers external."
+      "max": 11000,
+      "measured": 9986,
+      "margin": "Standalone React closure including shared client code; peers external. The measurement of 6969 was stale by 2026-11-17 (9317 on main, from useFragmentList and the hooks added since); re-measured at 9986 with useSuspenseLoadedQuery (#102), and the limit raised from 10000 to that plus about 1,000."
     },
     "reactGzipBytes": {
-      "max": 4000,
-      "measured": 2836,
-      "margin": "Level-9 gzip of the React closure."
+      "max": 4300,
+      "measured": 3907,
+      "margin": "Level-9 gzip of the React closure. Re-measured at 3907 with useSuspenseLoadedQuery (#102), and raised from 4000 to that plus about 300."
     },
     "inspectorRawBytes": {
       "max": 9400,

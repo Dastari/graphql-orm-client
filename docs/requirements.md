@@ -254,7 +254,7 @@ loader can avoid a waterfall. Suspense is optional (R29). Fragment arguments (R2
 are recorded separately. Server rendering stays a non-goal, but
 document how the client behaves inside a framework that renders a shell on the server.
 *Built:* `client.loadQuery` and `useLoadedQuery` share a retained read across loader and mount,
-with abort, unused-load timeout and StrictMode replay cleanup. Non-Suspense. Conditional selections
+with abort, unused-load timeout and StrictMode replay cleanup. `useSuspenseLoadedQuery` is the suspending read (R29). Conditional selections
 are rejected by default (`conditionalDirectives: "legacy"` is migration only); fragment arguments
 are rejected. Node server shells return idle without starting queries; no data streaming or store
 handoff. See [route loading](design.md#route-loading-r18) for lifecycle and migration.
@@ -287,13 +287,19 @@ Fields with arguments stay out of streams, as R2 already requires.
 values, with exact generated types. A spread missing a required argument fails `generate`, naming the fragment and the
 argument.
 
-**R29. Suspense. Proposed, not built** ([#102](https://github.com/Dastari/graphql-orm-client/issues/102), from [#84](https://github.com/Dastari/graphql-orm-client/issues/84)). A React read of a
+**R29. Suspense** ([#102](https://github.com/Dastari/graphql-orm-client/issues/102), from [#84](https://github.com/Dastari/graphql-orm-client/issues/84)). A React read of a
 `loadQuery` handle that suspends until it has data and sends errors to an error boundary. The loader still starts the
 request, so suspending adds no waterfall. Disposing the client releases a suspended read and never resolves it into
 another identity's tree. Server rendering stays a non-goal.
 *Acceptance:* a route loaded in its loader and read with the suspending hook shows its fallback, then its data, with one
 request under StrictMode; an error reaches an error boundary; disposing the client while suspended leaves nothing
 retained and nothing rendered under the next identity.
+*Built:* `useSuspenseLoadedQuery(handle)` in `graphql-orm-client/react`, with `LoadedQuery.suspend()` for the wait.
+After the first data a refetch or live update doesn't suspend again; a new handle does, and keeps the previous screen
+when set in a transition. Disposing the client re-renders a reader showing data at once, outside any transition, and it
+throws to its error boundary; a read still suspended stays suspended without showing data or an error. A pending wait
+holds the handle open for at most twice `timeoutMs`. On the server it throws, so the Suspense fallback is rendered there. A `useSuspenseQuery` for a query started at render is not built.
+See [suspending read](design.md#suspending-read-r29).
 
 **R30. Per-type freshness. Proposed, not built** ([#103](https://github.com/Dastari/graphql-orm-client/issues/103), from [#85](https://github.com/Dastari/graphql-orm-client/issues/85)). A per-type
 `staleMs`: how long a record counts as fresh after a server write. A `store-or-network` read answers from the store
