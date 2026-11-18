@@ -367,12 +367,16 @@ export interface LoadedQuery<T> extends WatchedQuery<T> {
   /** Retain while mounted, opening again if the load expired or its last user unmounted. The cleanup tolerates StrictMode effect replay. */
   mount(): () => void
   /**
-   * For a suspending read (`useSuspenseLoadedQuery`) before it mounts: a promise, the same one until it settles, that resolves when
-   * the read leaves `loading` (data or an error) or the load is disposed. Opens an expired load again, as `mount` does. The unused-load
-   * deadline waits while it is pending, then starts again, so a render that never commits still releases the load. Sends no request
-   * of its own. Throws once the load or its client is disposed.
+   * For a suspending read (`useSuspenseLoadedQuery`) before it mounts: a promise, the same one while it is pending, that resolves
+   * when the read leaves `loading` (data or an error), when the load is disposed with its client alive, or when the load closes.
+   * It never resolves once the client is disposed. Opens an expired load again, as `mount` does, which sends a request. While it
+   * is pending the load stays open for up to twice `timeoutMs`; then it closes, so a render that never commits releases it, and a
+   * render still waiting opens it again. When it settles the usual deadline starts again. Throws once the load or its client is
+   * disposed.
    */
   suspend(): Promise<void>
+  /** The promise `suspend()` last returned, kept after it settles (then with `status: "fulfilled"`, which React's `use` reads). */
+  readonly waiting: Promise<void> | null
   /** End this loader; it can't be mounted again. Idempotent. Without this, an unused loader only pauses. */
   dispose(): void
 }
@@ -1892,12 +1896,17 @@ export class Client {
     let timer: ReturnType<typeof setTimeout> | undefined
     // Nobody is using it for now: an expired load, or the last unmount. A later mount opens it again, because a handle can
     // outlive this, as when a slow route chunk takes longer than timeoutMs or a parent remounts.
+    // The wait of a render suspended on this load (`suspend`), while it is pending.
+    let wake: (() => void) | null = null
     const idle = () => {
       if (!open) return
       open = false
       clearTimeout(timer)
       this.subscriptions.delete(dispose)
       watched.close()
+      // After the caller's turn: a client being disposed has disposed its store by then, and that wait never resolves.
+      const pending = wake
+      if (pending) queueMicrotask(pending)
     }
     const dispose = () => {
       if (disposed) return
@@ -1916,32 +1925,37 @@ export class Client {
       clearTimeout(timer)
       if (!open) start()
     }
-    const unused = () => {
+    const unused = (ms = timeoutMs) => {
       clearTimeout(timer)
-      timer = setTimeout(idle, timeoutMs)
+      timer = setTimeout(idle, ms)
       timer.unref?.()
     }
-    let waiting: Promise<void> | null = null
+    let waiting: (Promise<void> & { status?: "fulfilled"; value?: undefined }) | null = null
     const loaded: LoadedQuery<T> = {
       ...watched, client: this,
       ready: Promise.resolve(),
       dispose,
+      get waiting() { return waiting },
       suspend: () => {
+        if (wake) return waiting!
         live()
-        return waiting ??= new Promise<void>(resolve => {
-          let off = () => {}, done = false
-          const settle = () => {
-            if (done) return
-            done = true
-            waiting = null
-            off()
-            if (open && mounts === 0) unused()
-            resolve()
-          }
-          off = watched.subscribe(() => { if (watched.getState().status !== "loading") settle() })
-          void cancelled.then(settle)
-          if (watched.getState().status !== "loading") queueMicrotask(settle)
-        })
+        // A waiting render holds the load for up to two deadlines; then it closes, and a render still waiting opens it again.
+        unused(2 * timeoutMs)
+        let off = () => {}, resolve!: () => void
+        const promise: NonNullable<typeof waiting> = new Promise<void>(done => { resolve = done })
+        const settle = wake = () => {
+          if (wake !== settle) return
+          wake = null
+          off()
+          if (open && mounts === 0) unused()
+          if (this.store.isDisposed) return
+          // As React's `use` reads it, so a render after this one doesn't suspend on a settled wait.
+          promise.status = "fulfilled"
+          resolve()
+        }
+        off = watched.subscribe(() => { if (watched.getState().status !== "loading") settle() })
+        if (watched.getState().status !== "loading") queueMicrotask(settle)
+        return waiting = promise
       },
       mount: () => {
         live()

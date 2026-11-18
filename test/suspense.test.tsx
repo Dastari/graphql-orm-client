@@ -1,12 +1,25 @@
 // @vitest-environment jsdom
-import { Component, StrictMode, Suspense, startTransition, useState, type ReactNode } from "react"
+import { Component, StrictMode, memo, Suspense, startTransition, useState, type ReactNode } from "react"
 import { act, cleanup, render, screen } from "@testing-library/react"
-import { afterEach, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, expect, it, vi } from "vitest"
 import { createClient, type Client, type LoadedQuery } from "../src/client.js"
 import { ClientProvider, useSuspenseLoadedQuery } from "../src/react/index.js"
 import { ops, widget, catalog, mockNetwork } from "./fixtures.js"
 
-afterEach(() => { cleanup(); vi.useRealTimers() })
+// Nothing may reach console.error but the errors a test sends to its boundary (React logs those it catches).
+let logged: string[] = []
+let expected: RegExp[] = []
+beforeEach(() => {
+  logged = []
+  expected = []
+  vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => { logged.push(args.map(String).join(" ")) })
+})
+afterEach(() => {
+  cleanup()
+  vi.useRealTimers()
+  vi.restoreAllMocks()
+  expect(logged.filter((line) => !expected.some((pattern) => pattern.test(line)))).toEqual([])
+})
 
 const deferred = () => {
   let resolve!: (value: any) => void, reject!: (error: unknown) => void
@@ -72,7 +85,7 @@ it("shows the fallback, then the data, with the loader's single request under St
   view.unmount(); await act(async () => {})
   loaded.dispose()
   expect(retainedCount(client)).toBe(0)
-  client.dispose()
+  cleanup(); client.dispose()
 })
 
 it("renders at once, without a fallback, when the store already has the data", async () => {
@@ -84,7 +97,7 @@ it("renders at once, without a fallback, when the store already has the data", a
   await show(app(client, <Route loaded={loaded}/>))
   expect(screen.getByText("rows 1 ready")).toBeTruthy()
   expect(requests).toHaveLength(1)
-  client.dispose()
+  cleanup(); client.dispose()
 })
 
 it("sends a first-read error to the error boundary, and reads again after a refetch the boundary awaits", async () => {
@@ -95,7 +108,7 @@ it("sends a first-read error to the error boundary, and reads again after a refe
   })
   const client = createClient({ network })
   const loaded = client.loadQuery(ops.CatalogPage, {}) as LoadedQuery<Catalog>
-  const quiet = vi.spyOn(console, "error").mockImplementation(() => {})
+  expected.push(/unreachable/)
   await show(app(client, <Route loaded={loaded}/>, async () => { fail = false; await loaded.refetch() }))
   await act(async () => { await loaded.ready })
   expect(screen.getByText("error: unreachable")).toBeTruthy()
@@ -103,8 +116,7 @@ it("sends a first-read error to the error boundary, and reads again after a refe
   await act(async () => {})
   expect(screen.getByText("rows 1 ready")).toBeTruthy()
   expect(requests).toHaveLength(2)
-  quiet.mockRestore()
-  client.dispose()
+  cleanup(); client.dispose()
 })
 
 it("keeps showing data through a refetch and a failed refetch; the failure is in the state, not thrown", async () => {
@@ -126,7 +138,7 @@ it("keeps showing data through a refetch and a failed refetch; the failure is in
   answer = () => Promise.reject(new Error("offline"))
   await act(async () => { await loaded.refetch() })
   expect(screen.getByText("rows 2 error failed: offline")).toBeTruthy()
-  client.dispose()
+  cleanup(); client.dispose()
 })
 
 it("suspends again for a new handle, and keeps the previous data when the new handle arrives in a transition", async () => {
@@ -158,7 +170,7 @@ it("suspends again for a new handle, and keeps the previous data when the new ha
   expect(screen.getByText("fallback")).toBeTruthy()
   await act(async () => { answers[2]!.resolve({ data: catalog([]) }); await third.ready })
   expect(screen.getByText("rows 0 ready")).toBeTruthy()
-  client.dispose()
+  cleanup(); client.dispose()
 })
 
 it("disposing the client while suspended releases the read and never renders it under the next identity", async () => {
@@ -193,7 +205,64 @@ it("disposing the client while suspended releases the read and never renders it 
   expect(screen.getByText("b 2 ready")).toBeTruthy()
   expect(renders.some((entry) => entry.startsWith("a:"))).toBe(false)
   expect(resourceA.listeners.size).toBe(0)
-  clientB.dispose()
+  cleanup(); clientB.dispose()
+})
+
+it("disposing the client under a committed reader removes its data, even when the next client arrives in a transition", async () => {
+  const a = mockNetwork(() => ({ data: catalog([widget("w1"), widget("w2"), widget("w3")]) }))
+  const b = mockNetwork(() => new Promise(() => {}))
+  const clientA = createClient({ network: a.network }), clientB = createClient({ network: b.network })
+  const loadedA = clientA.loadQuery(ops.CatalogPage, {}) as LoadedQuery<Catalog>
+  await loadedA.ready
+  let swap!: (client: Client) => void
+  function Identity() {
+    const [client, setClient] = useState(clientA)
+    swap = (next) => startTransition(() => setClient(next))
+    return app(client, <Route loaded={loadedA} label="a"/>)
+  }
+  await show(<Identity/>)
+  expect(screen.getByText("a 3 ready")).toBeTruthy()
+  expected.push(/client this load belongs to was disposed/)
+  await act(async () => { clientA.dispose(); swap(clientB) })
+  // The old identity's rows are gone from the document, not hidden behind a fallback.
+  expect(document.body.textContent).not.toContain("a 3")
+  expect(screen.getByText(/client this load belongs to was disposed/)).toBeTruthy()
+  cleanup(); clientB.dispose()
+})
+
+it("disposing the client re-renders a committed reader that nothing else re-renders, and removes its data", async () => {
+  const { network } = mockNetwork(() => ({ data: catalog([widget("w1"), widget("w2")]) }))
+  const client = createClient({ network })
+  const loaded = client.loadQuery(ops.CatalogPage, {}) as LoadedQuery<Catalog>
+  await loaded.ready
+  const Still = memo(function Still() { return <Route loaded={loaded} label="kept"/> })
+  await show(app(client, <Still/>))
+  expect(screen.getByText("kept 2 ready")).toBeTruthy()
+  expected.push(/client this load belongs to was disposed/)
+  await act(async () => { client.dispose() })
+  expect(document.body.textContent).not.toContain("kept 2")
+  expect(screen.getByText(/client this load belongs to was disposed/)).toBeTruthy()
+})
+
+it("a read suspended when its client is disposed lets the next identity's transition finish", async () => {
+  const a = mockNetwork(() => new Promise(() => {}))
+  const b = mockNetwork(() => ({ data: catalog([widget("w9")]) }))
+  const clientA = createClient({ network: a.network }), clientB = createClient({ network: b.network })
+  const loadedA = clientA.loadQuery(ops.CatalogPage, {}) as LoadedQuery<Catalog>
+  let swap!: (client: Client, loaded: LoadedQuery<Catalog>) => void
+  function Identity() {
+    const [current, setCurrent] = useState({ client: clientA, loaded: loadedA })
+    swap = (client, loaded) => startTransition(() => setCurrent({ client, loaded }))
+    return app(current.client, <Route loaded={current.loaded} label={current.client === clientA ? "a" : "b"}/>)
+  }
+  await show(<Identity/>)
+  expect(screen.getByText("fallback")).toBeTruthy()
+  await act(async () => { clientA.dispose() })
+  expect(screen.getByText("fallback")).toBeTruthy()
+  const loadedB = clientB.loadQuery(ops.CatalogPage, {}) as LoadedQuery<Catalog>
+  await act(async () => { swap(clientB, loadedB); await loadedB.ready })
+  expect(screen.getByText("b 1 ready")).toBeTruthy()
+  cleanup(); clientB.dispose()
 })
 
 it("a handle from another live client is an error, as with useLoadedQuery", async () => {
@@ -201,10 +270,9 @@ it("a handle from another live client is an error, as with useLoadedQuery", asyn
   const one = createClient({ network }), other = createClient({ network })
   const loaded = one.loadQuery(ops.CatalogPage, {}) as LoadedQuery<Catalog>
   await loaded.ready
-  const quiet = vi.spyOn(console, "error").mockImplementation(() => {})
+  expected.push(/different identity client/)
   await show(app(other, <Route loaded={loaded}/>))
   expect(screen.getByText(/different identity client/)).toBeTruthy()
-  quiet.mockRestore()
   one.dispose(); other.dispose()
 })
 
@@ -213,18 +281,17 @@ it("an aborted load reaches the error boundary instead of waiting forever", asyn
   const { network } = mockNetwork(() => pending.promise)
   const client = createClient({ network })
   const loaded = client.loadQuery(ops.CatalogPage, {}, { signal: abort.signal }) as LoadedQuery<Catalog>
-  const quiet = vi.spyOn(console, "error").mockImplementation(() => {})
+  expected.push(/route load was disposed/)
   await show(app(client, <Route loaded={loaded}/>))
   expect(resourceOf(client).listeners.size).toBe(1)
   const resource = resourceOf(client)
   await act(async () => { abort.abort(); await loaded.ready })
   expect(screen.getByText(/route load was disposed/)).toBeTruthy()
   expect(resource.listeners.size).toBe(0)
-  quiet.mockRestore()
-  client.dispose()
+  cleanup(); client.dispose()
 })
 
-it("the unused-load deadline waits for a read a suspended render is waiting on, then runs again if nothing mounts", async () => {
+it("a suspended wait holds the load past its deadline, and the deadline starts again when the read settles", async () => {
   vi.useFakeTimers()
   const pending = deferred()
   const { network, requests } = mockNetwork(() => pending.promise)
@@ -234,17 +301,44 @@ it("the unused-load deadline waits for a read a suspended render is waiting on, 
   // What the hook does while it suspends: wait on the handle.
   const waiting = loaded.suspend()
   expect(loaded.suspend()).toBe(waiting)
-  await vi.advanceTimersByTimeAsync(50)
+  expect(loaded.waiting).toBe(waiting)
+  await vi.advanceTimersByTimeAsync(15)
   expect(resource.users).toBe(1)
   pending.resolve({ data: catalog([widget("w1")]) })
   await waiting
   expect(loaded.getState().status).toBe("ready")
   expect(requests).toHaveLength(1)
+  // Settled, and kept so a render can read it again without suspending.
+  expect(loaded.waiting).toBe(waiting)
+  expect((waiting as { status?: string }).status).toBe("fulfilled")
   // The suspended render was abandoned: nothing mounted, so the load closes after its deadline.
   await vi.advanceTimersByTimeAsync(10)
   expect(resource.users).toBe(0)
   expect(resource.listeners.size).toBe(0)
-  client.dispose()
+  cleanup(); client.dispose()
+})
+
+it("a suspended wait on a read that never settles releases the load after twice the deadline", async () => {
+  vi.useFakeTimers()
+  const { network, requests } = mockNetwork(() => new Promise(() => {}))
+  const client = createClient({ network })
+  const loaded = client.loadQuery(ops.CatalogPage, {}, { timeoutMs: 10 }) as LoadedQuery<Catalog>
+  const resource = resourceOf(client)
+  const waiting = loaded.suspend()
+  await vi.advanceTimersByTimeAsync(19)
+  expect(resource.users).toBe(1)
+  await vi.advanceTimersByTimeAsync(1)
+  // An abandoned render no longer holds it: closed, with no listener left, and the wait settled.
+  expect(resource.users).toBe(0)
+  expect(resource.listeners.size).toBe(0)
+  await waiting
+  await vi.advanceTimersByTimeAsync(10 * 60_000)
+  expect(resource.users).toBe(0)
+  // A render still waiting opens it again, with a new request.
+  void loaded.suspend()
+  expect(resource.users).toBe(1)
+  expect(requests).toHaveLength(2)
+  cleanup(); client.dispose()
 })
 
 it("a suspended render opens an expired load again", async () => {
@@ -261,6 +355,6 @@ it("a suspended render opens an expired load again", async () => {
   answers[1]!.resolve({ data: catalog([widget("w1")]) })
   await waiting
   expect(loaded.getState().status).toBe("ready")
-  client.dispose()
+  cleanup(); client.dispose()
   expect(() => loaded.suspend()).toThrow(/disposed/)
 })

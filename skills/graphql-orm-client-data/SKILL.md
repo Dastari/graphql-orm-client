@@ -69,8 +69,9 @@ function Page({ loaded }: { loaded: LoadedQuery<TicketsPageQuery> }) {
   `useLoadedQuery`; forward the router abort signal and dispose abandoned handles. `useLoadedQuery` does not
   suspend. `useSuspenseLoadedQuery(handle)` reads the same handle and suspends until it has data (no extra
   request); a first-read error goes to the error boundary (`await handle.refetch()` before resetting it). It
-  suspends again only for a new handle: set that in `startTransition` to keep the previous screen. Browser only;
-  the server renders the Suspense fallback. In tests, render it inside `await act(async () => ...)`: React waits on
+  suspends again only for a new handle: set that in `startTransition` to keep the previous screen. Disposing the
+  client makes a reader showing data throw to its error boundary. Browser only; the server renders the Suspense
+  fallback, and React reports a recoverable error at hydration. In tests, render it inside `await act(async () => ...)`: React waits on
   the suspended read inside an awaited `act`.
 - `@skip`/`@include` selections and fragment arguments (`@argumentDefinitions`/`@arguments`) are
   unsupported build errors. Use separate roots and operation variables. For existing conditional

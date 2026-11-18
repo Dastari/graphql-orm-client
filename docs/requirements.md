@@ -296,8 +296,9 @@ request under StrictMode; an error reaches an error boundary; disposing the clie
 retained and nothing rendered under the next identity.
 *Built:* `useSuspenseLoadedQuery(handle)` in `graphql-orm-client/react`, with `LoadedQuery.suspend()` for the wait.
 After the first data a refetch or live update doesn't suspend again; a new handle does, and keeps the previous screen
-when set in a transition. A disposed identity's read suspends for good without showing data or an error. On the server
-it throws, so the Suspense fallback is rendered there. A `useSuspenseQuery` for a query started at render is not built.
+when set in a transition. Disposing the client re-renders a reader showing data at once, outside any transition, and it
+throws to its error boundary; a read still suspended stays suspended without showing data or an error. A pending wait
+holds the handle open for at most twice `timeoutMs`. On the server it throws, so the Suspense fallback is rendered there. A `useSuspenseQuery` for a query started at render is not built.
 See [suspending read](design.md#suspending-read-r29).
 
 **R30. Per-type freshness. Proposed, not built** ([#103](https://github.com/Dastari/graphql-orm-client/issues/103), from [#85](https://github.com/Dastari/graphql-orm-client/issues/85)). A per-type

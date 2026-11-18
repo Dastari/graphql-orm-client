@@ -8,10 +8,13 @@
 has data, so a route's `<Suspense>` fallback shows while the loader's read is in flight. It sends no request of its own,
 StrictMode included. A first read that fails throws to the nearest error boundary; `await handle.refetch()` before
 resetting the boundary. After the first data it doesn't suspend again for that handle; a new handle does, and keeps the
-previous screen when set inside `startTransition`. Once the client is disposed, a suspended read stays suspended: it never
-shows data or throws under the next identity, and retains nothing. On the server it throws, so React renders the
-fallback there. `LoadedQuery` gains `suspend()`, which the hook uses while it waits; the unused-load deadline waits for
-that read and starts again when it settles. Nothing changes for `useLoadedQuery`. No migration.
+previous screen when set inside `startTransition`. Disposing the client re-renders a reader showing data at once, even
+when the next client arrives in a transition, and it throws to its error boundary, so the old identity's data leaves the
+page. A read still suspended stays suspended: it never shows data or throws under the next identity, and retains nothing.
+On the server it throws, so React renders the fallback there and reports a recoverable error at hydration.
+`LoadedQuery` gains `suspend()`, which the hook uses while it waits, and `waiting`, the promise it last returned. A pending
+wait holds the handle open for up to twice `timeoutMs`, then closes it. Nothing changes for `useLoadedQuery`. No
+migration.
 
 ## 0.1.0-alpha.13 (2026-11-17)
 

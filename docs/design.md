@@ -118,35 +118,50 @@ the loader hook avoids that.
 `useSuspenseLoadedQuery(handle)` reads the same handle and suspends until it has data, so the route's
 `<Suspense>` fallback shows while the loader's read is in flight. It returns `QueryState` with `data` always set. It
 sends no request: the loader started the read, so suspending only waits on it, and StrictMode's double render
-waits on the same promise. While suspended it calls `handle.suspend()`, which returns one promise per pending read
-(resolving when the state leaves `loading` or the handle is disposed) and opens an expired handle again, as
-`mount` does. Nothing is retained per render: the handle is already open under its unused-load deadline, and that
-deadline waits while a suspended render waits, then starts again when the read settles. A render that never
-commits (an abandoned navigation without an abort signal) therefore releases the handle `timeoutMs` after the
-read settles. Mount, after the commit, cancels the deadline as with `useLoadedQuery`.
+waits on the same promise. While suspended it calls `handle.suspend()`, which returns one promise per pending read.
+The promise resolves when the state leaves `loading`, when the handle is disposed with its client alive, or when the
+handle closes. The handle keeps it as `handle.waiting` after it settles, marked `status: "fulfilled"`, and the hook
+passes that same promise to `use` on every later render, as React expects of a component that suspended. A
+fulfilled promise returns at once.
+
+`suspend()` opens an expired handle again, as `mount` does, which sends the request from render. Otherwise nothing
+is retained per render: the handle is already open. While a wait is pending the handle stays open for up to twice
+`timeoutMs`, even when the read takes longer than `timeoutMs`. Then it closes and the wait settles, so a render that
+never commits (an abandoned navigation without an abort signal, on a read that never settles) still releases the
+handle. A render still waiting opens it again with a new request, so keep `timeoutMs` above the slowest read. When
+the read settles first, the usual deadline starts again and mount, after the commit, cancels it as with
+`useLoadedQuery`. The deadline is per handle. With two handles under one boundary, the faster one's deadline starts
+when its read settles, while React still waits on the slower one. If that takes longer than `timeoutMs`, the faster
+handle closes and its records follow store retention, and mounting opens it again, reading again if they were
+collected.
 
 A first read that fails throws its error to the nearest error boundary. To retry, `await handle.refetch()` and then
-reset the boundary; the handle's status stays `error` until that read settles, so resetting first would throw the
+reset the boundary. The handle's status stays `error` until that read settles, so resetting first would throw the
 same error again. After the first data the hook never suspends again for that handle: a refetch shows
 `refreshing` with the data, live updates re-render, and a refetch that fails keeps the data and sets `error`. A
 new handle (a navigation, or other variables) suspends again. Set it inside `startTransition`, as routers do for
 navigation, to keep the previous screen until the new handle has data; outside a transition the boundary shows
 its fallback.
 
-Disposing the client while a read is suspended resolves the pending promise without data. The hook then
-suspends for good on a promise that never settles, cached weakly per disposed client, whatever provider is
-above it: it never shows the old identity's data, never throws into the next identity's error boundary, and
-holds no listener or retention. The next identity's loader supplies a new handle. A handle disposed or aborted
-while its client is alive throws `route load was disposed`, as `useLoadedQuery`'s mount does, and a handle
-from another live client throws as well.
+Disposing the client re-renders each mounted reader at once, through the store's disposal notice. That render is
+urgent, so it happens even when the next identity's client arrives inside a transition. A reader with data throws
+to its error boundary, so none of the old identity's rows stay in the document, not even hidden behind a fallback.
+A read still suspended stays suspended for good: its wait never resolves once the client is disposed, and a render
+of a disposed client's handle without data suspends on a promise that never settles, cached weakly per client. It
+never shows the old identity's data, never throws into the next identity's boundary, and holds no listener or
+retention. A boundary showing only its fallback lets the next identity's transition commit. The next identity's
+loader supplies a new handle. A handle disposed or aborted while its client is alive throws `route load was
+disposed`, as `useLoadedQuery`'s mount does, and a handle from another live client throws as well.
 
 The hook suspends with React's `use`, so React 19 is required (as the peer range says). In tests, render inside
 `await act(async () => render(...))`; with a synchronous `act` React can't wait on the read and never retries it.
 
 Server rendering is a non-goal here too. On the server the hook throws before reading anything, so React
-renders the nearest `<Suspense>` fallback in the server HTML and renders that subtree in the browser. A
-`useSuspenseQuery` for a query started at render is not built: it would start a request from render, which the
-loader pattern avoids.
+renders the nearest `<Suspense>` fallback in the server HTML and renders that subtree in the browser. React logs
+that error on the server, and at hydration reports a recoverable "switched to client rendering" error
+(`onRecoverableError`), which error monitors will see; filter it there or keep the hook out of server-rendered
+trees. A `useSuspenseQuery` for a query started at render is not built: it would start a request from render,
+which the loader pattern avoids.
 
 ### Conditional selections and fragment arguments
 

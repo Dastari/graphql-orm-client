@@ -162,6 +162,8 @@ export type SuspenseQueryState<T> = QueryState<T> & { readonly data: T }
 
 /** The identity behind a handle ended; its reads wait here for good, one promise per client, collected with it. */
 const ended = new WeakMap<Client, Promise<never>>()
+/** The snapshot once the handle's client is disposed. */
+const ENDED = {} as QueryState<never>
 
 /**
  * Read a loader handle, suspending until it has data. The loader started the request, so suspending only waits on it: no second
@@ -172,29 +174,51 @@ const ended = new WeakMap<Client, Promise<never>>()
  * re-renders, and a failed refetch keeps the data with `error` set. A new handle (other variables, another navigation) suspends
  * again; set it inside `startTransition` (as routers navigate) to keep the previous screen until the new data arrives.
  *
- * While suspended it retains nothing a render could leak: the handle stays open under its unused-load deadline, which waits for
- * the pending read. Once the handle's client is disposed (the identity changed), the read suspends for good, under any
- * provider: it never resolves, throws or shows data, so the next identity's loader has to supply a new handle. A handle that
- * was disposed or aborted with its client alive throws, as `useLoadedQuery` does. A handle from another live client throws.
+ * While suspended nothing is retained per render: the handle is already open, and `handle.suspend()` holds it for at most twice
+ * its `timeoutMs`. An expired handle is opened again, which sends its request from render. When the handle's client is disposed
+ * (the identity changed), a reader showing data re-renders at once, outside any transition, and throws to the error boundary, so
+ * none of that identity's data stays in the page. A read still suspended then suspends for good: it never resolves, shows data or
+ * throws, so the next identity's loader has to supply a new handle. A handle disposed or aborted with its client alive throws, as
+ * `useLoadedQuery` does. A handle from another live client throws.
  *
  * Browser only. Server rendering is not supported: on the server it throws, so React renders the nearest `<Suspense>` fallback
- * there and renders this subtree in the browser.
+ * there (logging the error on the server) and renders this subtree in the browser, reporting a recoverable "switched to client
+ * rendering" error at hydration.
  */
 export function useSuspenseLoadedQuery<T>(loaded: LoadedQuery<T>): SuspenseQueryState<T> {
   if (typeof window === "undefined") throw new Error("useSuspenseLoadedQuery renders in the browser only; the server shows the Suspense fallback")
   const client = useClient()
-  useEffect(() => loaded.mount(), [loaded])
-  const state = useSyncExternalStore(loaded.subscribe, loaded.getState, loaded.getState) as QueryState<T>
   const owner = loaded.client
-  if (owner.store.isDisposed) {
-    let never = ended.get(owner)
-    if (!never) ended.set(owner, (never = new Promise<never>(() => {})))
-    use(never)
+  useEffect(() => loaded.mount(), [loaded])
+  const subscribe = useCallback(
+    (notify: () => void) => {
+      const off = loaded.subscribe(notify)
+      // Disposing the store notifies nobody else: re-render now, so a reader showing data throws before anything else renders.
+      const end = owner.store.isDisposed ? off : owner.store.observeWrites(() => {}, notify)
+      return () => { off(); end() }
+    },
+    [loaded, owner]
+  )
+  const getSnapshot = useCallback(() => (owner.store.isDisposed ? ENDED : loaded.getState()), [loaded, owner])
+  const state = useSyncExternalStore(subscribe, getSnapshot, getSnapshot) as QueryState<T>
+  if (state === ENDED) {
+    if (loaded.getState().data === undefined) {
+      const wait = loaded.waiting
+      let never = ended.get(owner)
+      if (!never) ended.set(owner, (never = new Promise<never>(() => {})))
+      // A pending wait never resolves after disposal; a settled one would let this render through.
+      use(wait && !("status" in wait) ? wait : never)
+    }
+    throw new Error("useSuspenseLoadedQuery: the client this load belongs to was disposed; load the route again under the current client")
   }
   if (client !== owner) throw new Error("useSuspenseLoadedQuery: loader belongs to a different identity client")
-  if (state.data !== undefined) return state as SuspenseQueryState<T>
-  if (state.status === "error" && state.error) throw state.error
-  use(loaded.suspend())
+  if (state.data === undefined) {
+    if (state.status === "error" && state.error) throw state.error
+    use(loaded.suspend())
+  } else if (loaded.waiting) {
+    // The same promise this reader may have suspended on, now settled: React reads it at once, and expects the call again.
+    use(loaded.waiting)
+  }
   return state as SuspenseQueryState<T>
 }
 
